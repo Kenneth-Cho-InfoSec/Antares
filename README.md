@@ -14,6 +14,23 @@ Coordination of Servo development happens:
 - On the [Servo Zulip](https://servo.zulipchat.com/)
 - In video calls advertised in the [Servo Project](https://github.com/servo/project/issues) repo.
 
+## Antares for Solipsism Browser
+
+This repository publishes the **Antares** experimental Android companion engine used by Solipsism
+Browser. It is not a standalone browser package. Install Solipsism first, then install the matching
+Antares APK from this repository's [releases](https://github.com/Kenneth-Cho-InfoSec/Antares/releases).
+
+### Installing the companion
+
+1. Download and install the signed Solipsism APK from the [Solipsism releases](https://github.com/Kenneth-Cho-InfoSec/Solipsism/releases).
+2. Download and install the arm64 **Antares Engine** APK from the [Antares releases](https://github.com/Kenneth-Cho-InfoSec/Antares/releases). Solipsism and Antares are separate packages and both are required.
+3. Open Solipsism and choose Antares in the browser-core chooser or Debug Settings. Solipsism checks the package identity, signing certificate and protocol before it connects.
+4. To return to the stable Android WebView core, switch the browser core in Solipsism. Your tabs remain managed by Solipsism, but page state is engine-specific.
+
+Antares is experimental and currently arm64-only. Complex sites, including YouTube and Amazon,
+may have incomplete interaction, CAPTCHA or media playback behaviour. Only install the companion
+APK from the linked release page.
+
 ## Getting started
 
 For more detailed build instructions, see the Servo Book under [Getting the Code] and [Building Servo].
