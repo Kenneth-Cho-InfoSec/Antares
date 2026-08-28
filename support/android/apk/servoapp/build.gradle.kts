@@ -13,10 +13,12 @@ android {
 
     defaultConfig {
         applicationId = "com.krystelligence.antares"
-        minSdk = libs.versions.android.sdk.min.get().toInt()
+        // Antares embeds its renderer through SurfaceControlViewHost and is intentionally offered
+        // by Solipsism only on Android 13 and newer.
+        minSdk = 33
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
     }
 
     compileOptions {

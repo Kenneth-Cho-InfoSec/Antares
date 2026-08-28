@@ -118,6 +118,14 @@ class Servo(
         runOnEngine { jni.keyup(keyCode, event.unicodeChar) }
     }
 
+    fun imeInsertText(text: String) {
+        runOnEngine { jni.imeInsertText(text) }
+    }
+
+    fun imeDismissed() {
+        runOnEngine { jni.imeDismissed() }
+    }
+
     fun touchDown(x: Float, y: Float, pointerId: Int) {
         runOnEngine { jni.touchDown(x, y, pointerId) }
     }

@@ -43,6 +43,7 @@ object AntaresMediaBridge {
 
           const mediaSources = [];
           const renewalRequests = [];
+          const renewalCandidates = [];
           const pendingVideos = new WeakSet();
           let lastRequestAt = 0;
 
@@ -75,14 +76,50 @@ object AntaresMediaBridge {
             });
             if (renewalRequests.length > 12) renewalRequests.shift();
           };
+          const looksLikeMediaSource = value =>
+            /\.(?:m3u8|mpd|mp4|m4v|webm|mov|ts)(?:[?#]|${'$'})/i.test(value);
+          const rememberRenewalCandidate = (request, sources) => {
+            if (!request || !sources || !sources.length) return;
+            const normalisedSources = sources.map(normaliseNetworkUrl).filter(Boolean);
+            if (!normalisedSources.length) return;
+            renewalCandidates.push({ request, sources: normalisedSources, observedAt: Date.now() });
+            if (renewalCandidates.length > 12) renewalCandidates.shift();
+            if (normalisedSources.some(looksLikeMediaSource)) {
+              rememberRenewalRequest(
+                request.url,
+                request.method,
+                request.body,
+                request.contentType
+              );
+            }
+          };
+          const associateRenewalWithSource = value => {
+            const source = normaliseNetworkUrl(value);
+            if (!source) return;
+            for (let index = renewalCandidates.length - 1; index >= 0; index -= 1) {
+              const candidate = renewalCandidates[index];
+              if (!candidate.sources.includes(source)) continue;
+              rememberRenewalRequest(
+                candidate.request.url,
+                candidate.request.method,
+                candidate.request.body,
+                candidate.request.contentType
+              );
+              return;
+            }
+          };
           const inspectPayload = payload => {
+            const discovered = [];
             const visit = (value, key, depth) => {
               if (depth > 6 || value == null) return;
               if (typeof value === 'string') {
                 // Page APIs do not use a common field name for a signed stream. Capture every
                 // network URL from a response and only consider those observed after this video
                 // was pressed, rather than making assumptions about a particular service schema.
-                if (isNetworkUrl(value)) rememberMediaSource(value);
+                if (isNetworkUrl(value)) {
+                  rememberMediaSource(value);
+                  discovered.push(normaliseNetworkUrl(value));
+                }
                 return;
               }
               if (Array.isArray(value)) {
@@ -94,21 +131,34 @@ object AntaresMediaBridge {
               }
             };
             visit(payload, '', 0);
+            return discovered;
           };
           const inspectResponseText = text => {
-            if (!text || text.length > 512 * 1024) return;
-            try { inspectPayload(JSON.parse(text)); } catch (_) {
+            if (!text || text.length > 512 * 1024) return [];
+            try { return inspectPayload(JSON.parse(text)); } catch (_) {
               const urls = text.match(/https?:[^\s"'<>\\]+/g) || [];
               urls.forEach(rememberMediaSource);
+              return urls.map(normaliseNetworkUrl).filter(Boolean);
             }
           };
           const observeFetch = () => {
             if (typeof window.fetch !== 'function') return;
             const originalFetch = window.fetch.bind(window);
             window.fetch = function() {
+              const input = arguments[0];
+              const options = arguments[1] || {};
+              const request = {
+                url: typeof input === 'string' ? input : input && input.url,
+                method: options.method || (input && input.method) || 'GET',
+                body: options.body,
+                contentType: options.headers &&
+                  (options.headers['Content-Type'] || options.headers['content-type'])
+              };
               return originalFetch.apply(null, arguments).then(response => {
                 try {
-                  response.clone().text().then(inspectResponseText).catch(() => {});
+                  response.clone().text().then(text => {
+                    rememberRenewalCandidate(request, inspectResponseText(text));
+                  }).catch(() => {});
                 } catch (_) {}
                 return response;
               });
@@ -131,16 +181,17 @@ object AntaresMediaBridge {
             };
             XMLHttpRequest.prototype.send = function() {
               if (this.__antaresMediaRequest) {
-                rememberRenewalRequest(
-                  this.__antaresMediaRequest.url,
-                  this.__antaresMediaRequest.method,
-                  arguments[0],
-                  this.__antaresMediaRequest.contentType
-                );
+                this.__antaresMediaRequest.body =
+                  typeof arguments[0] === 'string' ? arguments[0] : '';
               }
               this.addEventListener('load', () => {
                 try {
-                  if (typeof this.responseText === 'string') inspectResponseText(this.responseText);
+                  if (typeof this.responseText === 'string') {
+                    rememberRenewalCandidate(
+                      this.__antaresMediaRequest,
+                      inspectResponseText(this.responseText)
+                    );
+                  }
                 } catch (_) {}
               });
               return originalSend.apply(this, arguments);
@@ -152,15 +203,6 @@ object AntaresMediaBridge {
               if (!jquery || !jquery.ajax || jquery.__antaresMediaObserved) return;
               const originalAjax = jquery.ajax;
               jquery.ajax = function() {
-                const options = arguments[0] || {};
-                if (typeof options === 'object') {
-                  rememberRenewalRequest(
-                    options.url || location.href,
-                    options.type || options.method || 'GET',
-                    options.data,
-                    options.contentType
-                  );
-                }
                 const request = originalAjax.apply(this, arguments);
                 try {
                   if (request && typeof request.done === 'function') {
@@ -185,6 +227,7 @@ object AntaresMediaBridge {
                 get: descriptor.get,
                 set: function(value) {
                   rememberMediaSource(value);
+                  associateRenewalWithSource(value);
                   return descriptor.set.call(this, value);
                 }
               });
@@ -196,15 +239,15 @@ object AntaresMediaBridge {
           observeMediaSourceAssignment();
 
           const sourceFor = (video, notBefore) => {
-            const candidate = video.currentSrc || video.src ||
-              (video.querySelector('source') && video.querySelector('source').src) || '';
-            const directUrl = normaliseNetworkUrl(candidate);
-            if (directUrl) return directUrl;
             for (let index = mediaSources.length - 1; index >= 0; index -= 1) {
               if (mediaSources[index].observedAt >= notBefore) return mediaSources[index].url;
             }
             return '';
           };
+          const directSourceFor = video => normaliseNetworkUrl(
+            video.currentSrc || video.src ||
+              (video.querySelector('source') && video.querySelector('source').src) || ''
+          );
           const renewalFor = notBefore => {
             for (let index = renewalRequests.length - 1; index >= 0; index -= 1) {
               if (renewalRequests[index].observedAt >= notBefore) return renewalRequests[index];
@@ -243,35 +286,41 @@ object AntaresMediaBridge {
             if (pendingVideos.has(video)) return;
             pendingVideos.add(video);
             const pressedAt = Date.now();
-            let checksRemaining = 18;
+            const sourceBeforePress = directSourceFor(video);
+            let checksRemaining = 24;
             const check = () => {
-              const source = sourceFor(video, pressedAt);
+              const currentSource = directSourceFor(video);
+              const changedSource = currentSource && currentSource !== sourceBeforePress ?
+                currentSource : '';
+              const source = changedSource || sourceFor(video, pressedAt);
               const renewal = renewalFor(pressedAt);
               if (source || renewal) {
                 pendingVideos.delete(video);
                 publishMediaRequest(video, source, renewal);
+              } else if (checksRemaining === 20) {
+                // A media element may clear currentSrc after its built-in decoder rejects the
+                // format. Replaying its most recently observed acquisition request gives the
+                // native decoder a fresh signed URL. Static media instead falls back to the last
+                // source after the page has had one second to replace it.
+                const reusableRenewal = renewalFor(0);
+                const reusableSource = sourceBeforePress || sourceFor(video, 0);
+                pendingVideos.delete(video);
+                publishMediaRequest(video, reusableSource, reusableRenewal);
               } else if (--checksRemaining > 0) {
-                setTimeout(check, 350);
+                setTimeout(check, 250);
               } else {
                 pendingVideos.delete(video);
               }
             };
-            // Do not consume a gesture before a JavaScript player has had a chance to obtain a
-            // fresh signed source. This makes the native fallback work with media pages that
-            // initialise their source asynchronously after the first press.
-            setTimeout(check, 150);
+            // Leave the page's gesture untouched so its player can renew expiring media URLs.
+            // The native fallback opens only after a source or renewal request from this gesture
+            // has been observed.
+            setTimeout(check, 100);
           };
           const requestMedia = event => {
             const video = findVideo(event.target);
             if (!video) return;
-            const source = sourceFor(video, 0);
-            if (!source) {
-              deferUntilSourceIsReady(video);
-              return;
-            }
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            publishMediaRequest(video, source, null);
+            deferUntilSourceIsReady(video);
           };
 
           // Video.js and similar players often begin their own play pipeline on the press rather

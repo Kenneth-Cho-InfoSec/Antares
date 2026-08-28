@@ -541,6 +541,32 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_keyup<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_imeInsertText<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+    text: JString<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let text = JString::cast_local(env, text)?.try_to_string(env)?;
+        call(env, move |s| s.ime_insert_text(text));
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_imeDismissed<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        call(env, |s| s.ime_dismissed());
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_org_servo_servoview_JNIServo_touchDown<'local>(
     mut env: EnvUnowned<'local>,
     _: JClass<'local>,

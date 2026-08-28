@@ -271,7 +271,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
     }
 
     override fun onImeHide() {
-        getSystemService<InputMethodManager>()?.hideSoftInputFromWindow(servoView.windowToken, InputMethodManager.SHOW_IMPLICIT)
+        getSystemService<InputMethodManager>()?.hideSoftInputFromWindow(servoView.windowToken, 0)
     }
 
     override fun onAlert(message: String) {
