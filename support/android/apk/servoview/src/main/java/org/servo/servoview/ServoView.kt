@@ -28,6 +28,7 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
     private var blockAds = false
     private var blockGifs = false
     private var contentBlockingPolicy = ""
+    private var hostManagedInputMethod = false
     private val frameCallbackScheduled = AtomicBoolean(false)
 
     private var experimentalMode = false
@@ -47,6 +48,15 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
 
     fun setClient(client: Servo.Client) {
         surfaceHolderCallback.client = client
+    }
+
+    /**
+     * Leaves Android editor ownership with a separate embedding view while Servo continues to
+     * receive web touch and key events through its explicit bridge.
+     */
+    fun setHostManagedInputMethod(enabled: Boolean) {
+        hostManagedInputMethod = enabled
+        if (enabled) clearFocus()
     }
 
     fun setServoArgs(args: String?, log: String?, experimentalMode: Boolean) {
@@ -87,8 +97,23 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
         return false
     }
 
+    fun commitText(text: String) {
+        if (text.isNotEmpty()) servo?.imeInsertText(text)
+    }
+
+    fun sendKey(keyCode: Int) {
+        val down = KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
+        val up = KeyEvent(KeyEvent.ACTION_UP, keyCode)
+        servo?.onKeyDown(keyCode, down)
+        servo?.onKeyUp(keyCode, up)
+    }
+
+    fun dismissIme() {
+        servo?.imeDismissed()
+    }
+
     override fun onTouchEvent(motionEvent: MotionEvent): Boolean {
-        requestFocus()
+        if (!hostManagedInputMethod) requestFocus()
 
         val action = motionEvent.actionMasked
         val pointerIndex = motionEvent.actionIndex

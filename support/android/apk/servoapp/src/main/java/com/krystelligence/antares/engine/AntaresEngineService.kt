@@ -18,9 +18,9 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.RemoteException
 import android.util.Log
+import android.view.KeyEvent
 import android.view.SurfaceControlViewHost
 import android.view.MotionEvent
-import android.view.inputmethod.InputMethodManager
 import android.window.InputTransferToken
 import com.krystelligence.antares.protocol.IAntaresEngine
 import com.krystelligence.antares.protocol.IAntaresSession
@@ -70,7 +70,10 @@ class AntaresEngineService : Service() {
             } else if (mediaRequest != null) {
                 Log.d(
                     TAG,
-                        "Forwarding native media request (source=true, cookies=${mediaRequest.cookies?.length ?: 0})",
+                    "Forwarding native media request " +
+                        "(source=${mediaRequest.directSource != null}, " +
+                        "renewal=${mediaRequest.renewalRequest != null}, " +
+                        "cookies=${mediaRequest.cookies?.length ?: 0})",
                 )
                 activeSession?.openMedia(mediaRequest)
             } else {
@@ -83,7 +86,13 @@ class AntaresEngineService : Service() {
         }
         override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) =
             activeSession?.onHistoryChanged(canGoBack, canGoForward) ?: Unit
-        override fun onImeShow() = activeSession?.onImeShow() ?: Unit
+        override fun onImeShow() {
+            // The embedded renderer has no application window in which to host Android's IME.
+            // Keep it out of the editor-focus race and let Solipsism's local session view own the
+            // InputConnection while text is forwarded to Servo over the session protocol.
+            renderer?.clearFocus()
+            activeSession?.onImeShow()
+        }
         override fun onImeHide() = activeSession?.onImeHide() ?: Unit
         override fun onMediaSessionMetadata(title: String, artist: String, album: String) =
             activeSession?.onMediaSessionMetadata(title, artist, album) ?: Unit
@@ -199,6 +208,7 @@ class AntaresEngineService : Service() {
                 ?: ServoView(this@AntaresEngineService).apply {
                     setClient(rendererClient)
                     setServoArgs(null, null, experimental)
+                    setHostManagedInputMethod(true)
                 }
             renderHost?.release()
             val newHost = if (Build.VERSION.SDK_INT >= 35) {
@@ -214,12 +224,25 @@ class AntaresEngineService : Service() {
             }
             // Keep the embedded hierarchy on Android's standard SurfaceControlViewHost path.
             // It supplies both the compositor and the normal remote input connection.
-            newHost.setView(currentRenderer, width.coerceAtLeast(1), height.coerceAtLeast(1))
+            val hostWidth = width.coerceAtLeast(1)
+            val hostHeight = height.coerceAtLeast(1)
+            if (Build.VERSION.SDK_INT >= 37) {
+                // Android 17 can explicitly keep an embedded hierarchy out of window focus.
+                // Solipsism relays touch itself and owns the real InputConnection, so allowing
+                // this render-only window to become focusable would replace it with Android's
+                // dummy remote connection and immediately dismiss the keyboard.
+                newHost.setView(
+                    currentRenderer,
+                    SurfaceControlViewHost.LayoutParams(hostWidth, hostHeight, false),
+                )
+            } else {
+                newHost.setView(currentRenderer, hostWidth, hostHeight)
+            }
             currentRenderer.setUserAgent(userAgent)
             currentRenderer.setContentBlocking(blockAds, blockGifs, contentBlockingPolicy)
-            currentRenderer.isFocusable = inputEnabled
-            currentRenderer.isFocusableInTouchMode = inputEnabled
-            if (!inputEnabled) currentRenderer.clearFocus()
+            currentRenderer.isFocusable = false
+            currentRenderer.isFocusableInTouchMode = false
+            currentRenderer.clearFocus()
             renderHost = newHost
             renderer = currentRenderer
             // Antares currently owns one Servo renderer and multiplexes Solipsism's logical tabs
@@ -251,7 +274,15 @@ class AntaresEngineService : Service() {
         override fun resize(width: Int, height: Int) {
             mainHandler.post {
                 if (activeSession === this) {
-                    renderHost?.relayout(width.coerceAtLeast(1), height.coerceAtLeast(1))
+                    val hostWidth = width.coerceAtLeast(1)
+                    val hostHeight = height.coerceAtLeast(1)
+                    if (Build.VERSION.SDK_INT >= 37) {
+                        renderHost?.relayout(
+                            SurfaceControlViewHost.LayoutParams(hostWidth, hostHeight, false),
+                        )
+                    } else {
+                        renderHost?.relayout(hostWidth, hostHeight)
+                    }
                 }
             }
         }
@@ -313,11 +344,11 @@ class AntaresEngineService : Service() {
             inputEnabled = enabled
             if (activeSession === this) {
                 renderer?.apply {
-                    isFocusable = enabled
-                    isFocusableInTouchMode = enabled
-                    // Re-enabling page input must not steal focus back from Solipsism chrome.
-                    // ServoView requests focus itself when the user next touches the webpage.
-                    if (!enabled) clearFocus()
+                    // Page input is relayed explicitly. The remote surface must never compete
+                    // with Solipsism's host-side InputConnection for Android editor focus.
+                    isFocusable = false
+                    isFocusableInTouchMode = false
+                    clearFocus()
                 }
             }
             true
@@ -345,6 +376,37 @@ class AntaresEngineService : Service() {
         override fun click(x: Float, y: Float) {
             mainHandler.post {
                 if (activeSession === this && inputEnabled) renderer?.click(x, y)
+            }
+        }
+
+        override fun commitText(text: String?) {
+            if (text.isNullOrEmpty()) return
+            mainHandler.post {
+                if (activeSession === this && inputEnabled) renderer?.commitText(text)
+            }
+        }
+
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int) {
+            mainHandler.post {
+                if (activeSession !== this || !inputEnabled) return@post
+                repeat(beforeLength.coerceIn(0, MAX_IME_DELETE_COUNT)) {
+                    renderer?.sendKey(KeyEvent.KEYCODE_DEL)
+                }
+                repeat(afterLength.coerceIn(0, MAX_IME_DELETE_COUNT)) {
+                    renderer?.sendKey(KeyEvent.KEYCODE_FORWARD_DEL)
+                }
+            }
+        }
+
+        override fun sendKey(keyCode: Int) {
+            mainHandler.post {
+                if (activeSession === this && inputEnabled) renderer?.sendKey(keyCode)
+            }
+        }
+
+        override fun dismissIme() {
+            mainHandler.post {
+                if (activeSession === this) renderer?.dismissIme()
             }
         }
 
@@ -390,24 +452,10 @@ class AntaresEngineService : Service() {
         override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) =
             safeCallback { callback.onHistoryChanged(canGoBack, canGoForward) }
         override fun onImeShow() {
-            mainHandler.post {
-                if (!inputEnabled || activeSession !== this) return@post
-                getSystemService(InputMethodManager::class.java)?.showSoftInput(
-                    renderer,
-                    0,
-                )
-            }
+            if (inputEnabled && activeSession === this) safeCallback { callback.onImeShow() }
         }
         override fun onImeHide() {
-            mainHandler.post {
-                // Clearing embedded focus is how Solipsism transfers the IME to its address bar.
-                // Do not let the old remote client hide the newly requested host-window keyboard.
-                if (!inputEnabled || activeSession !== this) return@post
-                getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(
-                    renderer?.windowToken,
-                    0,
-                )
-            }
+            if (activeSession === this) safeCallback { callback.onImeHide() }
         }
         override fun onMediaSessionMetadata(title: String, artist: String, album: String) = Unit
         override fun onMediaSessionPlaybackStateChange(state: Int) = Unit
@@ -478,6 +526,7 @@ class AntaresEngineService : Service() {
     private companion object {
         const val TAG = "AntaresEngine"
         const val MEDIA_BRIDGE_INSTALL_DELAY_MS = 750L
+        const val MAX_IME_DELETE_COUNT = 1_024
     }
 
 }

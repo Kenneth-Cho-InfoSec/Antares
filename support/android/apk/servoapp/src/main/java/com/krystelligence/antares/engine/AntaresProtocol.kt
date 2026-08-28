@@ -6,7 +6,7 @@
 package com.krystelligence.antares.engine
 
 internal object AntaresProtocol {
-    const val VERSION = 12
+    const val VERSION = 13
     const val CLIENT_PACKAGE = "com.krystelligence.solipsism"
     const val KEY_INITIAL_URL = "initial_url"
     const val KEY_EXPERIMENTAL = "experimental"
@@ -32,5 +32,6 @@ internal object AntaresProtocol {
         "content_blocking",
         "android_media_bridge",
         "coordinate_probe",
+        "host_input_method",
     )
 }
