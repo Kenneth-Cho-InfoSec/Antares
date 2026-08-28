@@ -1,108 +1,150 @@
-# The Servo Parallel Browser Engine Project
+# Antares Engine
 
-Servo is a prototype web browser engine written in the
-[Rust](https://github.com/rust-lang/rust) language. It is currently developed on
-64-bit macOS, 64-bit Linux, 64-bit Windows, 64-bit OpenHarmony, and Android.
+<p align="center">
+  <img src="resources/antares-icon.png" alt="Antares Engine logo" width="220">
+</p>
 
-Servo welcomes contribution from everyone. Check out:
+<p align="center">
+  <strong>An experimental, privacy-minded Android browser engine for Solipsism Browser.</strong>
+</p>
 
-- The [Servo Book](https://book.servo.org) for documentation
-- [servo.org](https://servo.org/) for news and guides
+<p align="center">
+  <a href="https://github.com/Kenneth-Cho-InfoSec/Antares/releases/latest"><img src="https://img.shields.io/github/v/release/Kenneth-Cho-InfoSec/Antares?label=latest%20release" alt="Latest release"></a>
+  <a href="https://github.com/Kenneth-Cho-InfoSec/Antares/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Kenneth-Cho-InfoSec/Antares" alt="License"></a>
+  <a href="https://github.com/Kenneth-Cho-InfoSec/Solipsism"><img src="https://img.shields.io/badge/Solipsism-companion-6f42c1" alt="Solipsism companion"></a>
+</p>
 
-Coordination of Servo development happens:
-- Here in the Github Issues
-- On the [Servo Zulip](https://servo.zulipchat.com/)
-- In video calls advertised in the [Servo Project](https://github.com/servo/project/issues) repo.
+Antares is an in-house Android browser core designed to give Solipsism Browser an alternative to the system Android WebView. It provides an experimental native rendering path with a focus on privacy, control, and a small host interface that can be embedded in an Android application.
 
-## Antares for Solipsism Browser
+Antares is derived from the open-source [Servo](https://github.com/servo/servo) project and is heavily customised for this use case. Servo is mentioned here as the upstream foundation; Antares development, packaging, Android integration, and release decisions are maintained in this repository.
 
-This repository publishes the **Antares** experimental Android companion engine used by Solipsism
-Browser. It is not a standalone browser package. Install Solipsism first, then install the matching
-Antares APK from this repository's [releases](https://github.com/Kenneth-Cho-InfoSec/Antares/releases).
+## Current status
 
-### Installing the companion
+Antares is experimental software. It is useful for testing an independent browser core, but it is not a drop-in replacement for Android WebView. Compatibility, media playback, text input, accessibility, and complex web applications can vary by Android version and device.
 
-1. Download and install the signed Solipsism APK from the [Solipsism releases](https://github.com/Kenneth-Cho-InfoSec/Solipsism/releases).
-2. Download and install the arm64 **Antares Engine** APK from the [Antares releases](https://github.com/Kenneth-Cho-InfoSec/Antares/releases). Solipsism and Antares are separate packages and both are required.
-3. Open Solipsism and choose Antares in the browser-core chooser or Debug Settings. Solipsism checks the package identity, signing certificate and protocol before it connects.
-4. To return to the stable Android WebView core, switch the browser core in Solipsism. Your tabs remain managed by Solipsism, but page state is engine-specific.
+The stable browsing fallback is Android WebView through [Solipsism Browser](https://github.com/Kenneth-Cho-InfoSec/Solipsism). Keep both packages installed when switching between cores.
 
-Antares is experimental and currently arm64-only. Complex sites, including YouTube and Amazon,
-may have incomplete interaction, CAPTCHA or media playback behaviour. Only install the companion
-APK from the linked release page.
+## Install the companion core
 
-## Getting started
+Antares is distributed as a separate Android package because the native engine is substantially larger than the Solipsism application.
 
-For more detailed build instructions, see the Servo Book under [Getting the Code] and [Building Servo].
+1. Install Solipsism Browser from its [release page](https://github.com/Kenneth-Cho-InfoSec/Solipsism/releases).
+2. Download the matching **Antares Engine** APK from the [Antares releases](https://github.com/Kenneth-Cho-InfoSec/Antares/releases).
+3. Install both packages on the same Android device. The current release targets ARM64 devices running Android 13 or newer.
+4. Open Solipsism and choose **Antares** in the browser-core chooser or Debug Settings.
+5. To return to the stable core, select **Android WebView** in Solipsism.
 
-[Getting the Code]: https://book.servo.org/building/getting-the-code.html
-[Building Servo]: https://book.servo.org/building/building.html
+Solipsism verifies that the companion package is present and trusted before binding to it. Do not install companion APKs from unofficial sources.
 
-### macOS
+## What Antares provides
 
-- Download and install [Xcode](https://developer.apple.com/xcode/) and [`brew`](https://brew.sh/).
-- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh` 
-- Install `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- Restart your shell to make sure `cargo` is available
-- Install the other dependencies: `./mach bootstrap`
-- Build servoshell: `./mach build`
+- Native page layout and rendering through the Antares engine.
+- A small Android service that can be hosted by Solipsism.
+- Cross-process text input with Unicode composition, deletion, Enter, and keyboard dismissal.
+- Generic HTML text and search input sizing that honours the default character width and the `size` attribute.
+- Android 17-safe surface ownership so the renderer does not steal the host keyboard connection.
+- A focused Android packaging path for ARM64 release builds.
 
-### Linux
+The host application remains responsible for browser chrome, tabs, permissions, downloads, bookmarks, settings, and user-facing core selection. Antares does not replace those Solipsism features.
 
-- Install `curl`:
-  - Arch: `sudo pacman -S --needed curl`
-  - Debian, Ubuntu: `sudo apt install curl`
-  - Fedora: `sudo dnf install curl`
-  - Gentoo: `sudo emerge net-misc/curl`
-- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh` 
-- Install `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- Restart your shell to make sure `cargo` is available
-- Install the other dependencies: `./mach bootstrap`
-- Build servoshell: `./mach build`
+## Known limitations
 
-### Windows
+- Web compatibility is incomplete compared with mature Android browser engines.
+- Some JavaScript-heavy applications may render partially or fail to respond to interaction.
+- Media playback depends on the engine, Android media components, codecs, and the page implementation.
+- CAPTCHA, authentication, DRM, WebRTC, downloads, and advanced storage behaviour may differ from WebView.
+- Site isolation and permission enforcement depend on the host integration and Android platform facilities.
+- The Android build currently supports ARM64 release packaging. Other ABIs require their own native build and validation.
 
-- Download [`uv`](https://docs.astral.sh/uv/getting-started/installation/#standalone-installer), and [`rustup`](https://win.rustup.rs/)
-  - Be sure to select *Quick install via the Visual Studio Community installer*
-- Ensure that [`winget`](https://learn.microsoft.com/en-us/windows/package-manager/winget/) is available. It should be preinstalled on Windows 10 1809+ and Windows 11, otherwise can be [`manually installed`](https://github.com/microsoft/winget-cli#installing-the-client).
-- In the Visual Studio Installer, ensure the following components are installed:
-  - **Windows 10/11 SDK (anything >= 10.0.19041.0)** (`Microsoft.VisualStudio.Component.Windows{10, 11}SDK.{>=19041}`)
-  - **MSVC v143 - VS 2022 C++ x64/x86 build tools (Latest)** (`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`)
-  - **C++ ATL for latest v143 build tools (x86 & x64)** (`Microsoft.VisualStudio.Component.VC.ATL`)
-- Restart your shell to make sure `cargo` is available
-- Install the other dependencies: `.\mach bootstrap`
-- Build servoshell: `.\mach build`
+When a page is incompatible, switch back to Android WebView from Solipsism. Please report a reproducible, generic test case rather than a private browsing history or personal data.
 
-### Android
+## Build from source
 
-- Ensure that the following environment variables are set:
-  - `ANDROID_SDK_ROOT`
-  - `ANDROID_NDK_ROOT`: `$ANDROID_SDK_ROOT/ndk/28.2.13676358/`
- `ANDROID_SDK_ROOT` can be any directory (such as `~/android-sdk`).
-  All of the Android build dependencies will be installed there.
-- Install the latest version of the [Android command-line
-  tools](https://developer.android.com/studio#command-tools) to
-  `$ANDROID_SDK_ROOT/cmdline-tools/latest`.
-- Run the following command to install the necessary components:
-  ```shell
-  sudo $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
-   "build-tools;36.0.0" \
-   "emulator" \
-   "ndk;28.2.13676358" \
-   "platform-tools" \
-   "platforms;android-37" \
-   "system-images;android-37;google_apis;x86_64"
-  ```
-- Follow the instructions above for the platform you are building on
+### Prerequisites
 
-### OpenHarmony
+- Linux, macOS, or Windows development environment supported by the upstream build system.
+- Rust toolchain managed by [rustup](https://rustup.rs/).
+- [uv](https://docs.astral.sh/uv/) for the repository's Python tooling.
+- Android SDK and NDK for Android builds.
 
-- Follow the instructions above for the platform you are building on to prepare the environment.
-- Depending on the target distribution (e.g. `HarmonyOS NEXT` vs pure `OpenHarmony`) the build configuration will differ slightly.
-- Ensure that the following environment variables are set
-  - `DEVECO_SDK_HOME` (Required when targeting `HarmonyOS NEXT`)
-  - `OHOS_BASE_SDK_HOME` (Required when targeting `OpenHarmony`)
-  - `OHOS_SDK_NATIVE` (e.g. `${DEVECO_SDK_HOME}/default/openharmony/native` or `${OHOS_BASE_SDK_HOME}/${API_VERSION}/native`)
-  - `SERVO_OHOS_SIGNING_CONFIG`: Path to json file containing a valid signing configuration for the demo app.
-- Review the detailed instructions at [Building for OpenHarmony].
-- The target distribution can be modified by passing `--flavor=<default|harmonyos>` to `mach <build|package|install>`.
+The Android release configuration currently uses:
+
+- Android platform 37
+- Build tools 36.0.0
+- NDK 28.2.13676358
+- Minimum Android version 13
+
+Set `ANDROID_SDK_ROOT` and `ANDROID_NDK_ROOT` before building Android targets. The NDK path should point to the installed `28.2.13676358` directory.
+
+### Desktop development build
+
+```shell
+./mach bootstrap
+./mach build
+```
+
+The desktop build is useful for engine development and layout tests. It is not the Android companion package.
+
+### Android ARM64 release build
+
+```shell
+./mach build --android --release --no-package
+./mach package --android --release
+```
+
+The Gradle companion application can also be assembled directly:
+
+```shell
+cd support/android/apk
+./gradlew :servoapp:assembleArm64Release
+```
+
+The resulting APK is written under `support/android/apk/servoapp/build/outputs/apk/arm64Release/`.
+
+## Testing
+
+Run the repository checks before publishing a change:
+
+```shell
+./mach fmt --check
+./mach test-tidy
+./mach test-unit
+./mach test-wpt
+```
+
+For a focused layout regression test:
+
+```shell
+./mach test-wpt tests/wpt/tests/html/rendering/widgets/input-auto-width-size.html
+```
+
+For Android validation, install the ARM64 debug or release package on a test device, exercise text and search fields, switch between Solipsism cores, and verify that keyboard ownership remains with the host application.
+
+## Repository layout
+
+- `components/` contains engine subsystems, including networking, script, layout, and media.
+- `ports/servoshell/` contains platform entry points and Android engine plumbing.
+- `support/android/apk/` contains the Antares companion Android package.
+- `tests/wpt/tests/` contains Web Platform Test coverage.
+- `docs/` contains Antares-specific development notes.
+- `fdroid/` contains the F-Droid metadata for the companion package.
+
+## Reporting problems
+
+Open an issue with:
+
+- Antares version and APK source.
+- Android version, device model, and CPU architecture.
+- Steps to reproduce using a minimal public test page where possible.
+- Expected and actual behaviour.
+- Relevant logcat output with personal data removed.
+
+Do not include passwords, private URLs, tokens, or identifying browsing history.
+
+## Licensing
+
+Antares is distributed under the [Mozilla Public License 2.0](LICENSE). Components inherited from or adapted from upstream projects retain their applicable copyright notices and licence requirements. Review `LICENSE`, `LICENSE_WHATWG_SPECS`, and individual component notices before redistributing modified builds.
+
+## Related project
+
+[Solipsism Browser](https://github.com/Kenneth-Cho-InfoSec/Solipsism) is the Android browser application that hosts and selects the Antares core. Install both projects when testing the integrated experience.
