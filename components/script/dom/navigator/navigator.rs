@@ -305,12 +305,12 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-productsub>
     fn ProductSub(&self) -> DOMString {
-        navigatorinfo::ProductSub()
+        navigatorinfo::ProductSub(&pref!(user_agent))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-vendor>
     fn Vendor(&self) -> DOMString {
-        navigatorinfo::Vendor()
+        navigatorinfo::Vendor(&pref!(user_agent))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-vendorsub>
@@ -335,7 +335,7 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-platform>
     fn Platform(&self) -> DOMString {
-        navigatorinfo::Platform()
+        navigatorinfo::Platform(&pref!(user_agent))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-useragent>
@@ -345,7 +345,7 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-appversion>
     fn AppVersion(&self) -> DOMString {
-        navigatorinfo::AppVersion()
+        navigatorinfo::AppVersion(&pref!(user_agent))
     }
 
     // https://webbluetoothcg.github.io/web-bluetooth/#dom-navigator-bluetooth

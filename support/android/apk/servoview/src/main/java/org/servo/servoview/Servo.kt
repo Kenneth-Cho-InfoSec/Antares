@@ -9,6 +9,7 @@ import android.content.Context
 import android.util.Size
 import android.view.KeyEvent
 import android.view.Surface
+import java.util.concurrent.atomic.AtomicBoolean
 
 class Servo(
     args: String?,
@@ -18,6 +19,10 @@ class Servo(
     logStr: String?,
     enableLogs: Boolean,
     experimentalMode: Boolean,
+    userAgent: String,
+    blockAds: Boolean,
+    blockGifs: Boolean,
+    contentBlockingPolicy: String,
     private val runCallback: RunCallback,
     client: Client,
     context: Context,
@@ -25,9 +30,22 @@ class Servo(
 ) {
     private val jni = JNIServo()
     private val servoCallbacks = Callbacks(client, jni, runCallback)
+    private val frameQueued = AtomicBoolean(false)
+
+    private fun runOnEngine(action: () -> Unit) {
+        runCallback.inGLThread {
+            action()
+            if (!servoCallbacks.suspended && jni.needsVsync()) {
+                runCallback.requestVsync()
+            }
+        }
+    }
 
     init {
-        this.runCallback.inGLThread {
+        runOnEngine {
+            // Configure filtering before init consumes the initial URL. Applying it afterwards
+            // permits the first document's early subresources to escape the policy.
+            jni.setContentBlocking(blockAds, blockGifs, contentBlockingPolicy)
             jni.init(
                 context,
                 args,
@@ -37,6 +55,7 @@ class Servo(
                 logStr,
                 enableLogs,
                 experimentalMode,
+                userAgent,
                 servoCallbacks,
                 surface,
             )
@@ -48,99 +67,126 @@ class Servo(
     }
 
     fun performUpdates() {
-        runCallback.inGLThread { jni.performUpdates() }
+        runOnEngine { jni.performUpdates() }
     }
 
     fun resize(size: Size) {
-        runCallback.inGLThread { jni.resize(size) }
+        runOnEngine { jni.resize(size) }
     }
 
     fun reload() {
-        runCallback.inGLThread { jni.reload() }
+        runOnEngine { jni.reload() }
     }
 
     fun stop() {
-        runCallback.inGLThread { jni.stop() }
+        runOnEngine { jni.stop() }
     }
 
     fun goBack() {
-        runCallback.inGLThread { jni.goBack() }
+        runOnEngine { jni.goBack() }
     }
 
     fun goForward() {
-        runCallback.inGLThread { jni.goForward() }
+        runOnEngine { jni.goForward() }
     }
 
     fun loadUri(uri: String) {
-        runCallback.inGLThread { jni.loadUri(uri) }
+        runOnEngine { jni.loadUri(uri) }
+    }
+
+    fun evaluateJavascript(script: String) {
+        runOnEngine { jni.evaluateJavascript(script) }
+    }
+
+    fun setUserAgent(userAgent: String) {
+        runOnEngine { jni.setUserAgent(userAgent) }
+    }
+
+    fun setContentBlocking(blockAds: Boolean, blockGifs: Boolean, policy: String) {
+        runOnEngine { jni.setContentBlocking(blockAds, blockGifs, policy) }
     }
 
     fun scroll(dx: Int, dy: Int, x: Int, y: Int) {
-        runCallback.inGLThread { jni.scroll(dx, dy, x, y) }
+        runOnEngine { jni.scroll(dx, dy, x, y) }
     }
 
     fun onKeyDown(keyCode: Int, event: KeyEvent) {
-        runCallback.inGLThread { jni.keydown(keyCode, event.unicodeChar) }
+        runOnEngine { jni.keydown(keyCode, event.unicodeChar) }
     }
 
     fun onKeyUp(keyCode: Int, event: KeyEvent) {
-        runCallback.inGLThread { jni.keyup(keyCode, event.unicodeChar) }
+        runOnEngine { jni.keyup(keyCode, event.unicodeChar) }
     }
 
     fun touchDown(x: Float, y: Float, pointerId: Int) {
-        runCallback.inGLThread { jni.touchDown(x, y, pointerId) }
+        runOnEngine { jni.touchDown(x, y, pointerId) }
     }
 
     fun touchMove(x: Float, y: Float, pointerId: Int) {
-        runCallback.inGLThread { jni.touchMove(x, y, pointerId) }
+        runOnEngine { jni.touchMove(x, y, pointerId) }
     }
 
     fun touchUp(x: Float, y: Float, pointerId: Int) {
-        runCallback.inGLThread { jni.touchUp(x, y, pointerId) }
+        runOnEngine { jni.touchUp(x, y, pointerId) }
     }
 
     fun touchCancel(x: Float, y: Float, pointerId: Int) {
-        runCallback.inGLThread { jni.touchCancel(x, y, pointerId) }
+        runOnEngine { jni.touchCancel(x, y, pointerId) }
     }
 
     fun pinchZoomStart(factor: Float, x: Float, y: Float) {
-        runCallback.inGLThread { jni.pinchZoomStart(factor, x, y) }
+        runOnEngine { jni.pinchZoomStart(factor, x, y) }
     }
 
     fun pinchZoom(factor: Float, x: Float, y: Float) {
-        runCallback.inGLThread { jni.pinchZoom(factor, x, y) }
+        runOnEngine { jni.pinchZoom(factor, x, y) }
     }
 
     fun pinchZoomEnd(factor: Float, x: Float, y: Float) {
-        runCallback.inGLThread { jni.pinchZoomEnd(factor, x, y) }
+        runOnEngine { jni.pinchZoomEnd(factor, x, y) }
     }
 
     fun click(x: Float, y: Float) {
-        runCallback.inGLThread { jni.click(x, y) }
+        runOnEngine { jni.click(x, y) }
     }
 
     fun pausePainting() {
-        runCallback.inGLThread { jni.pausePainting() }
+        runOnEngine { jni.pausePainting() }
     }
 
     fun resumePainting(surface: Surface, size: Size) {
-        runCallback.inGLThread { jni.resumePainting(surface, size) }
+        runOnEngine { jni.resumePainting(surface, size) }
     }
 
     fun suspend(suspended: Boolean) {
         servoCallbacks.suspended = suspended
+        if (!suspended) runOnEngine { }
     }
 
     fun mediaSessionAction(action: Int) {
-        runCallback.inGLThread { jni.mediaSessionAction(action) }
+        runOnEngine { jni.mediaSessionAction(action) }
     }
 
     fun setExperimentalMode(enable: Boolean) {
-        runCallback.inGLThread { jni.setExperimentalMode(enable) }
+        runOnEngine { jni.setExperimentalMode(enable) }
     }
 
-    fun onDoFrame() {
-        runCallback.inGLThread { jni.doFrame() }
+    fun onDoFrame(frameTimeNanos: Long) {
+        // Choreographer keeps producing vsync callbacks even when a complex page takes longer
+        // than one frame to update. Keep at most one frame job queued so touch, keyboard and
+        // navigation work cannot be starved behind stale frame requests.
+        if (frameQueued.compareAndSet(false, true)) {
+            runCallback.inGLThread {
+                try {
+                    jni.doFrame(frameTimeNanos)
+                } finally {
+                    frameQueued.set(false)
+                }
+                if (!servoCallbacks.suspended && jni.needsVsync()) {
+                    runCallback.requestVsync()
+                }
+            }
+        }
     }
 
     interface Client {
@@ -171,6 +217,8 @@ class Servo(
         fun inGLThread(f: Runnable)
 
         fun inUIThread(f: Runnable)
+
+        fun requestVsync()
     }
 
     private class Callbacks(
@@ -179,10 +227,22 @@ class Servo(
         private val runCallback: RunCallback,
     ) : JNIServo.Callbacks, Client {
         var suspended: Boolean = false
+        // Servo can wake the embedder repeatedly while a busy page is loading. Coalesce
+        // callbacks so the GL looper cannot accumulate an unbounded performUpdates queue.
+        private val updateQueued = AtomicBoolean(false)
 
         override fun wakeup() {
-            if (!suspended) {
-                runCallback.inGLThread { jni.performUpdates() }
+            if (!suspended && updateQueued.compareAndSet(false, true)) {
+                runCallback.inGLThread {
+                    try {
+                        jni.performUpdates()
+                    } finally {
+                        updateQueued.set(false)
+                    }
+                    if (!suspended && jni.needsVsync()) {
+                        runCallback.requestVsync()
+                    }
+                }
             }
         }
 

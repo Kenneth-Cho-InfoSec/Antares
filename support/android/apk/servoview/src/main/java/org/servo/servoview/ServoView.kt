@@ -16,6 +16,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
     private val glThread: GLThread
@@ -23,6 +24,11 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
     private var servo: Servo? = null
     private var servoArgs: String? = null
     private var initialUri: String? = null
+    private var userAgent: String = ""
+    private var blockAds = false
+    private var blockGifs = false
+    private var contentBlockingPolicy = ""
+    private val frameCallbackScheduled = AtomicBoolean(false)
 
     private var experimentalMode = false
 
@@ -55,6 +61,14 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
 
     override fun inUIThread(r: Runnable) {
         post(r)
+    }
+
+    override fun requestVsync() {
+        post {
+            if (servo != null && frameCallbackScheduled.compareAndSet(false, true)) {
+                Choreographer.getInstance().postFrameCallback(this)
+            }
+        }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -93,11 +107,13 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
     }
 
     override fun doFrame(frameTimeNanos: Long) {
-        servo?.onDoFrame()
-        Choreographer.getInstance().postFrameCallback(this)
+        frameCallbackScheduled.set(false)
+        servo?.onDoFrame(frameTimeNanos)
     }
 
     fun onPause() {
+        Choreographer.getInstance().removeFrameCallback(this)
+        frameCallbackScheduled.set(false)
         servo?.suspend(true)
     }
 
@@ -121,6 +137,14 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
         servo!!.stop()
     }
 
+    fun click(x: Float, y: Float) {
+        servo?.click(x, y)
+    }
+
+    fun scroll(dx: Int, dy: Int, x: Int, y: Int) {
+        servo?.scroll(dx, dy, x, y)
+    }
+
     fun loadUri(uri: String) {
         val servo = servo
         if (servo != null) {
@@ -128,6 +152,22 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
         } else {
             initialUri = uri
         }
+    }
+
+    fun evaluateJavascript(script: String) {
+        servo?.evaluateJavascript(script)
+    }
+
+    fun setUserAgent(value: String) {
+        userAgent = value
+        servo?.setUserAgent(value)
+    }
+
+    fun setContentBlocking(blockAds: Boolean, blockGifs: Boolean, policy: String) {
+        this.blockAds = blockAds
+        this.blockGifs = blockGifs
+        contentBlockingPolicy = policy
+        servo?.setContentBlocking(blockAds, blockGifs, policy)
     }
 
     fun mediaSessionAction(action: Int) {
@@ -171,6 +211,10 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
                     servoLog,
                     true,
                     servoView.experimentalMode,
+                    servoView.userAgent,
+                    servoView.blockAds,
+                    servoView.blockGifs,
+                    servoView.contentBlockingPolicy,
                     servoView,
                     client!!,
                     servoView.context,
@@ -181,7 +225,7 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
                 servoView.servo!!.resumePainting(surface, size)
             }
 
-            Choreographer.getInstance().postFrameCallback(servoView)
+            servoView.requestVsync()
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
@@ -192,6 +236,8 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
         override fun surfaceDestroyed(holder: SurfaceHolder) {
             Log.d(LOGTAG, "GLThread::surfaceDestroyed")
             paused = true
+            Choreographer.getInstance().removeFrameCallback(servoView)
+            servoView.frameCallbackScheduled.set(false)
             servoView.servo!!.pausePainting()
         }
     }

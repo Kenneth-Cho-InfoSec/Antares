@@ -5,6 +5,8 @@
  */
 package org.servo.servoshell
 
+import com.krystelligence.antares.R
+
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity

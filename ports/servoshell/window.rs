@@ -218,8 +218,9 @@ impl ServoShellWindow {
     }
 
     pub(crate) fn update_and_request_repaint_if_necessary(&self, state: &RunningAppState) {
-        let updated_user_interface = self.needs_update.take() &&
-            self.platform_window
+        let updated_user_interface = self.needs_update.take()
+            && self
+                .platform_window
                 .update_user_interface_state(state, self);
 
         // Delegate handlers may have asked us to present or update painted WebView contents.

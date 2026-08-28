@@ -75,5 +75,15 @@ support/macos/Brewfile.lock.json
 # direnv
 .envrc
 
+# Local credentials and signing material
+.env
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+
 # Justfiles
 justfile

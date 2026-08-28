@@ -16,7 +16,7 @@ use euclid::{Point2D, Rect, Scale, Size2D};
 use jni::errors::{Error, ThrowRuntimeExAndDefault};
 use jni::objects::{Global, JClass, JObject, JString, JValue, JValueOwned};
 use jni::strings::JNIStr;
-use jni::sys::{jboolean, jfloat, jint, jobject};
+use jni::sys::{jboolean, jfloat, jint, jlong, jobject};
 use jni::{Env, EnvUnowned, JavaVM, jni_sig, jni_str};
 use keyboard_types::{Key, NamedKey};
 use log::{debug, error, info, warn};
@@ -95,6 +95,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
     logStr: JString<'local>,
     log: jboolean,
     experimental_mode: jboolean,
+    user_agent: JString<'local>,
     callbacks_obj: JObject<'local>,
     surface: JObject<'local>,
 ) {
@@ -102,6 +103,9 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         let args = JString::cast_local(env, args)?.try_to_string(env).ok();
         let url = JString::cast_local(env, url)?.try_to_string(env).ok();
         let log_str = JString::cast_local(env, logStr)?.try_to_string(env).ok();
+        let user_agent = JString::cast_local(env, user_agent)?
+            .try_to_string(env)
+            .unwrap_or_default();
 
         let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &size)?;
 
@@ -208,6 +212,9 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
             };
 
         preferences.set_value("viewport_meta_enabled", servo::PrefValue::Bool(true));
+        if !user_agent.is_empty() {
+            preferences.set_value("user_agent", servo::PrefValue::Str(user_agent));
+        }
 
         crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
 
@@ -295,6 +302,19 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_performUpdates<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_needsVsync<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) -> jboolean {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let mut needs_vsync = false;
+        call(env, |app| needs_vsync = app.needs_vsync());
+        Ok(needs_vsync)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_org_servo_servoview_JNIServo_loadUri<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -303,6 +323,53 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_loadUri<'local>(
     env.with_env(|env| -> jni::errors::Result<_> {
         debug!("loadUri");
         call(env, |s| s.load_uri(&url.to_string()));
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_evaluateJavascript<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    script: JString<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let script = JString::cast_local(env, script)?.try_to_string(env)?;
+        debug!("evaluateJavascript");
+        call(env, |app| app.evaluate_javascript(&script));
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_setUserAgent<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    user_agent: JString<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let user_agent = JString::cast_local(env, user_agent)?.try_to_string(env)?;
+        debug!("setUserAgent");
+        call(env, |app| app.set_user_agent(&user_agent));
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_setContentBlocking<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    block_ads: jni::sys::jboolean,
+    block_gifs: jni::sys::jboolean,
+    policy: JString<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let policy = JString::cast_local(env, policy)?.try_to_string(env)?;
+        debug!("setContentBlocking");
+        net::content_blocker::configure(&policy, block_ads, block_gifs);
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
@@ -381,6 +448,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_scroll<'local>(
 pub extern "C" fn Java_org_servo_servoview_JNIServo_doFrame<'local>(
     mut env: EnvUnowned<'local>,
     _: JClass<'local>,
+    _frame_time_nanos: jlong,
 ) {
     env.with_env(|env| -> jni::errors::Result<_> {
         call(env, |s| s.notify_vsync());

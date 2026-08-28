@@ -13,10 +13,10 @@ use servo::{
     DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
     DeviceVector2D, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
     KeyboardEvent, LoadStatus, MediaSessionActionType, MediaSessionEvent, MouseButton,
-    MouseButtonAction, MouseButtonEvent, MouseMoveEvent, Opts, Preferences, RefreshDriver,
-    RenderingContext, ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog, TouchEvent,
-    TouchEventType, TouchId, TouchPointerType, UserContentManager, WebView, WebViewId,
-    WindowRenderingContext, convert_rect_to_css_pixel,
+    MouseButtonAction, MouseButtonEvent, MouseMoveEvent, Opts, PrefValue, Preferences,
+    RefreshDriver, RenderingContext, ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog,
+    TouchEvent, TouchEventType, TouchId, TouchPointerType, UserContentManager, UserScript, WebView,
+    WebViewId, WindowRenderingContext, convert_rect_to_css_pixel,
 };
 use url::Url;
 
@@ -25,10 +25,78 @@ use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{PlatformWindow, ServoShellWindow, ServoShellWindowId};
 
+fn chromium_major_version(user_agent: &str) -> Option<&str> {
+    let tail = user_agent.split("Chrome/").nth(1)?;
+    let major = tail.split('.').next()?;
+    (!major.is_empty() && major.bytes().all(|byte| byte.is_ascii_digit())).then_some(major)
+}
+
+/// Provides the low-entropy JavaScript half of the Chromium compatibility identity. Without this,
+/// Antares sent Chromium UA-CH headers while `navigator.userAgentData` was absent, an internally
+/// contradictory fingerprint that compatibility checks can reject immediately.
+fn chromium_identity_script(user_agent: &str) -> Option<UserScript> {
+    let major = chromium_major_version(user_agent)?;
+    if !user_agent.contains("AppleWebKit/") || !user_agent.contains("Safari/") {
+        return None;
+    }
+    let mobile = user_agent.contains(" Mobile ") || user_agent.contains(" Mobile Safari/");
+    let platform = if user_agent.contains("Android") {
+        "Android"
+    } else if user_agent.contains("Windows") {
+        "Windows"
+    } else if user_agent.contains("Macintosh") {
+        "macOS"
+    } else {
+        "Linux"
+    };
+    let script = r#"(() => {
+      const brands = Object.freeze([
+        Object.freeze({brand: 'Not:A-Brand', version: '99'}),
+        Object.freeze({brand: 'Google Chrome', version: '__MAJOR__'}),
+        Object.freeze({brand: 'Chromium', version: '__MAJOR__'})
+      ]);
+      const fullVersionList = Object.freeze([
+        Object.freeze({brand: 'Not:A-Brand', version: '99.0.0.0'}),
+        Object.freeze({brand: 'Google Chrome', version: '__MAJOR__.0.0.0'}),
+        Object.freeze({brand: 'Chromium', version: '__MAJOR__.0.0.0'})
+      ]);
+      const low = {brands, mobile: __MOBILE__, platform: '__PLATFORM__'};
+      const data = Object.freeze({
+        ...low,
+        toJSON() { return {...low}; },
+        async getHighEntropyValues(hints) {
+          const result = {...low};
+          for (const hint of hints || []) {
+            if (hint === 'architecture' || hint === 'bitness' || hint === 'model') result[hint] = '';
+            else if (hint === 'platformVersion') result[hint] = '';
+            else if (hint === 'uaFullVersion') result[hint] = '__MAJOR__.0.0.0';
+            else if (hint === 'fullVersionList') result[hint] = fullVersionList;
+            else if (hint === 'wow64') result[hint] = false;
+          }
+          return result;
+        }
+      });
+      if (!('userAgentData' in navigator)) {
+        Object.defineProperty(Object.getPrototypeOf(navigator), 'userAgentData', {
+          configurable: true,
+          enumerable: true,
+          get() { return data; }
+        });
+      }
+    })();"#
+        .replace("__MAJOR__", major)
+        .replace("__MOBILE__", if mobile { "true" } else { "false" })
+        .replace("__PLATFORM__", platform);
+    Some(UserScript::from(script))
+}
+
 pub(crate) struct EmbeddedPlatformWindow {
     host: Rc<dyn HostTrait>,
     rendering_context: Rc<WindowRenderingContext>,
     refresh_driver: Rc<VsyncRefreshDriver>,
+    /// Damage waiting for the next Android Choreographer frame. Android must not present
+    /// directly from an arbitrary Servo wake-up or input callback.
+    pending_repaint: Cell<bool>,
     viewport_rect: RefCell<Rect<i32, DevicePixel>>,
     /// The HiDPI scaling factor to use for the display of [`WebView`]s.
     hidpi_scale_factor: Scale<f32, DeviceIndependentPixel, DevicePixel>,
@@ -159,8 +227,8 @@ impl PlatformWindow for EmbeddedPlatformWindow {
         title_changed || url_changed || back_forward_changed || load_status_changed
     }
 
-    fn request_repaint(&self, window: &ServoShellWindow) {
-        window.repaint_webviews();
+    fn request_repaint(&self, _window: &ServoShellWindow) {
+        self.pending_repaint.set(true);
     }
 
     fn request_resize(&self, _: &WebView, _: DeviceIntSize) -> Option<DeviceIntSize> {
@@ -262,6 +330,10 @@ impl VsyncRefreshDriver {
             start_frame_callback()
         }
     }
+
+    fn has_pending_frame(&self) -> bool {
+        !self.start_frame_callbacks.borrow().is_empty()
+    }
 }
 
 impl RefreshDriver for VsyncRefreshDriver {
@@ -300,6 +372,9 @@ pub struct App {
     // multiple PRs.
     host: Rc<dyn HostTrait>,
     initial_url: Url,
+    default_user_agent: String,
+    user_content_manager: Rc<UserContentManager>,
+    chromium_identity_script: RefCell<Option<Rc<UserScript>>>,
 }
 
 #[expect(unused)]
@@ -320,12 +395,17 @@ impl App {
             .or_else(|| Url::parse("about:blank").ok())
             .expect("Failed to parse initial URL");
 
+        let default_user_agent = init.preferences.user_agent.clone();
         let user_content_manager = Rc::new(UserContentManager::new(&servo));
+        let chromium_identity_script = chromium_identity_script(&default_user_agent).map(Rc::new);
+        if let Some(script) = &chromium_identity_script {
+            user_content_manager.add_script(script.clone());
+        }
         let state = Rc::new(RunningAppState::new(
             servo,
             init.servoshell_preferences,
             init.event_loop_waker,
-            user_content_manager,
+            user_content_manager.clone(),
             init.preferences,
         ));
 
@@ -333,6 +413,9 @@ impl App {
             state,
             host: init.host,
             initial_url,
+            default_user_agent,
+            user_content_manager,
+            chromium_identity_script: RefCell::new(chromium_identity_script),
         })
     }
 
@@ -361,6 +444,7 @@ impl App {
             host: self.host.clone(),
             rendering_context,
             refresh_driver,
+            pending_repaint: Cell::new(true),
             viewport_rect: RefCell::new(viewport_rect),
             hidpi_scale_factor,
             visible_input_methods: Default::default(),
@@ -425,6 +509,42 @@ impl App {
     pub fn load_uri(&self, location: &str) {
         self.window()
             .queue_user_interface_command(UserInterfaceCommand::Go(location.into()));
+        self.spin_event_loop();
+    }
+
+    /// Evaluate JavaScript in the active document.
+    ///
+    /// Android uses this to install small, auditable integration bridges after a page finishes
+    /// loading. The bridge is intentionally one-way and does not expose a general Java object to
+    /// untrusted page script.
+    pub fn evaluate_javascript(&self, script: &str) {
+        if let Some(webview) = self.active_or_newest_webview() {
+            webview.evaluate_javascript(script, |result| {
+                if let Err(error) = result {
+                    warn!("Android integration script failed: {error:?}");
+                }
+            });
+            self.spin_event_loop();
+        }
+    }
+
+    /// Set the user agent used by DOM APIs and subsequent network requests. An empty override
+    /// restores the native Servo Android identity captured when this instance was created.
+    pub fn set_user_agent(&self, user_agent: &str) {
+        let value = if user_agent.is_empty() {
+            self.default_user_agent.clone()
+        } else {
+            user_agent.to_owned()
+        };
+        self.servo()
+            .set_preference("user_agent", PrefValue::Str(value.clone()));
+        if let Some(previous) = self.chromium_identity_script.borrow_mut().take() {
+            self.user_content_manager.remove_script(previous);
+        }
+        if let Some(script) = chromium_identity_script(&value).map(Rc::new) {
+            self.user_content_manager.add_script(script.clone());
+            self.chromium_identity_script.replace(Some(script));
+        }
         self.spin_event_loop();
     }
 
@@ -674,6 +794,20 @@ impl App {
             .expect("No headed window");
         embedded_platform_window.refresh_driver.notify_vsync();
         self.spin_event_loop();
+        if embedded_platform_window.pending_repaint.replace(false) {
+            self.window().repaint_webviews();
+        }
+    }
+
+    /// True when Android should request one Choreographer callback. This mirrors Chromium
+    /// WebView's demand-driven BeginFrame source and provides back-pressure to the embedder.
+    pub fn needs_vsync(&self) -> bool {
+        let platform_window = self.window().platform_window();
+        let embedded_platform_window = platform_window
+            .as_headed_window()
+            .expect("No headed window");
+        embedded_platform_window.pending_repaint.get()
+            || embedded_platform_window.refresh_driver.has_pending_frame()
     }
 
     pub fn pause_painting(&self) {

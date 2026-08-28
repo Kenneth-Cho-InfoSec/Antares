@@ -6,6 +6,7 @@
 
 pub mod async_runtime;
 pub mod connector;
+pub mod content_blocker;
 pub mod cookie;
 pub mod cookie_storage;
 mod decoder;

@@ -209,8 +209,8 @@ impl Dialog {
                         ui,
                         |_ui| {},
                         |ui| {
-                            if ui.button("Close").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            if ui.button("Close").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
                             {
                                 is_open = false;
                             }
@@ -235,13 +235,13 @@ impl Dialog {
                         ui,
                         |_ui| {},
                         |ui| {
-                            if ui.button("Ok").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            if ui.button("Ok").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Enter))
                             {
                                 dialog_action = DialogAction::Submit;
                             }
-                            if ui.button("Cancel").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            if ui.button("Cancel").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
                             {
                                 dialog_action = DialogAction::Dismiss;
                             }
@@ -278,14 +278,14 @@ impl Dialog {
                         ui,
                         |_ui| {},
                         |ui| {
-                            if ui.button("Ok").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            if ui.button("Ok").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Enter))
                             {
                                 prompt_dialog.set_current_value(&prompt_text);
                                 dialog_action = DialogAction::Submit;
                             }
-                            if ui.button("Cancel").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            if ui.button("Cancel").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
                             {
                                 dialog_action = DialogAction::Dismiss;
                             }
@@ -347,16 +347,16 @@ impl Dialog {
                         ui,
                         |_ui| {},
                         |ui| {
-                            if ui.button("Sign in").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            if ui.button("Sign in").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Enter))
                             {
                                 let request =
                                     request.take().expect("non-None until dialog is closed");
                                 request.authenticate(username.clone(), password.clone());
                                 is_open = false;
                             }
-                            if ui.button("Cancel").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            if ui.button("Cancel").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
                             {
                                 is_open = false;
                             }
@@ -374,16 +374,16 @@ impl Dialog {
                         ui,
                         |_ui| {},
                         |ui| {
-                            if ui.button("Allow").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            if ui.button("Allow").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Enter))
                             {
                                 let request =
                                     request.take().expect("non-None until dialog is closed");
                                 request.allow();
                                 is_open = false;
                             }
-                            if ui.button("Deny").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            if ui.button("Deny").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
                             {
                                 let request =
                                     request.take().expect("non-None until dialog is closed");
@@ -437,9 +437,9 @@ impl Dialog {
                             let has_selected_device = request.as_ref().is_some_and(|request| {
                                 request.devices().get(*selected_device_index).is_some()
                             });
-                            if ui.add_enabled(has_selected_device, ok_button).clicked() ||
-                                (has_selected_device &&
-                                    ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                            if ui.add_enabled(has_selected_device, ok_button).clicked()
+                                || (has_selected_device
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                             {
                                 let request =
                                     request.take().expect("non-None until dialog is closed");
@@ -449,8 +449,8 @@ impl Dialog {
                                 }
                                 is_open = false;
                             }
-                            if ui.button("Cancel").clicked() ||
-                                ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            if ui.button("Cancel").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
                             {
                                 let request =
                                     request.take().expect("non-None until dialog is closed");
@@ -615,8 +615,8 @@ impl Dialog {
 
                         ui.add_space(10.);
 
-                        if ui.button("Dismiss").clicked() ||
-                            ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        if ui.button("Dismiss").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
                         {
                             is_open = false;
                             prompt.select(None);
@@ -706,8 +706,8 @@ impl Dialog {
                         is_open = false;
                     }
 
-                    if let Some(action) = selected_action &&
-                        let Some(context_menu) = menu.take()
+                    if let Some(action) = selected_action
+                        && let Some(context_menu) = menu.take()
                     {
                         context_menu.select(action);
                         return false;

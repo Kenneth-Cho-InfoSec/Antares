@@ -20,6 +20,7 @@ use crate::{
 };
 
 static FONT_LIST: LazyLock<FontList> = LazyLock::new(FontList::new);
+const SYSTEM_FALLBACK_FAMILY: &str = "Android System Fallback";
 
 // Android doesn't provide an API to query system fonts until Android O:
 // https://developer.android.com/reference/android/text/FontConfig.html
@@ -108,6 +109,7 @@ static FONT_LIST: LazyLock<FontList> = LazyLock::new(FontList::new);
 
 struct Font {
     filename: String,
+    face_index: u16,
     weight: Option<i32>,
     style: Option<String>,
 }
@@ -216,6 +218,7 @@ impl FontList {
                 name: item.0.into(),
                 fonts: vec![Font {
                     filename: item.1.into(),
+                    face_index: 0,
                     weight: None,
                     style: None,
                 }],
@@ -264,12 +267,11 @@ impl FontList {
             return;
         }
 
-        // Parse family name
-        let name = if let Some(name) = Self::find_attrib("name", attrs) {
-            name
-        } else {
-            return;
-        };
+        // Android's language-specific fallback families are intentionally unnamed. Keep them in
+        // one ordered family so Servo can use the full platform fallback chain instead of dropping
+        // every non-Latin font from the system configuration.
+        let name =
+            Self::find_attrib("name", attrs).unwrap_or_else(|| SYSTEM_FALLBACK_FAMILY.to_owned());
 
         let mut fonts = Vec::new();
         // Parse font variants
@@ -286,6 +288,15 @@ impl FontList {
             }
         }
 
+        if name == SYSTEM_FALLBACK_FAMILY {
+            if let Some(family) = out
+                .iter_mut()
+                .find(|family| family.name == SYSTEM_FALLBACK_FAMILY)
+            {
+                family.fonts.extend(fonts);
+                return;
+            }
+        }
         out.push(FontFamily { name, fonts });
     }
 
@@ -325,6 +336,7 @@ impl FontList {
                 .iter()
                 .map(|f| Font {
                     filename: f.clone(),
+                    face_index: 0,
                     weight: None,
                     style: None,
                 })
@@ -343,10 +355,14 @@ impl FontList {
         if let Some(filename) = Self::text_content(nodes) {
             // Parse font weight
             let weight = Self::find_attrib("weight", attrs).and_then(|w| w.parse().ok());
+            let face_index = Self::find_attrib("index", attrs)
+                .and_then(|index| index.parse().ok())
+                .unwrap_or(0);
             let style = Self::find_attrib("style", attrs);
 
             out.push(Font {
                 filename,
+                face_index,
                 weight,
                 style,
             })
@@ -432,7 +448,7 @@ where
     let mut produce_font = |font: &Font| {
         let local_font_identifier = LocalFontIdentifier {
             path: Atom::from(FontList::font_absolute_path(&font.filename)),
-            face_index: 0,
+            face_index: font.face_index,
             named_instance_index: 0,
         };
         let stretch = StyleFontStretch::NORMAL;
@@ -571,6 +587,7 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
         }
     }
 
+    families.push(SYSTEM_FALLBACK_FAMILY);
     families.push("Droid Sans Fallback");
     families
 }

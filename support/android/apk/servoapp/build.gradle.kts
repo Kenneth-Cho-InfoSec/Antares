@@ -9,19 +9,24 @@ android {
     compileSdk = 37
     buildToolsVersion = "36.0.0"
 
-    namespace = "org.servo.servoshell"
+    namespace = "com.krystelligence.antares"
 
     defaultConfig {
-        applicationId = "org.servo.servoshell"
+        applicationId = "com.krystelligence.antares"
         minSdk = libs.versions.android.sdk.min.get().toInt()
         targetSdk = 34
-        versionCode = generatedVersionCode
-        versionName = "0.5.0"
+        versionCode = 1
+        versionName = "0.1.0"
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    buildFeatures {
+        aidl = true
+        buildConfig = true
     }
 
     val signingKeyInfo = getSigningKeyInfo()

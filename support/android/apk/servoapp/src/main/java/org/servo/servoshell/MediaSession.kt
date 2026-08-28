@@ -5,6 +5,8 @@
  */
 package org.servo.servoshell
 
+import com.krystelligence.antares.R
+
 import android.app.Notification
 import android.app.Notification.MediaStyle
 import android.app.NotificationChannel

@@ -108,8 +108,8 @@ fn try_as_search_page(request: &str, searchpage: &str) -> Option<ServoUrl> {
 }
 
 fn is_domain_like(s: &str) -> bool {
-    !s.starts_with('/') && s.contains('/') ||
-        (!s.contains(' ') && !s.starts_with('.') && s.split('.').count() > 1)
+    !s.starts_with('/') && s.contains('/')
+        || (!s.contains(' ') && !s.starts_with('.') && s.split('.').count() > 1)
 }
 
 fn is_localhost(s: &str) -> bool {

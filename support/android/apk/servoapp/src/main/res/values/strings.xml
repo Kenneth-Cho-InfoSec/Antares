@@ -1,5 +1,7 @@
 <resources>
-  <string name="app_name">Servo</string>
+  <string name="app_name">Antares Engine</string>
+  <string name="antares_diagnostics_status">Package %1$s\nProtocol %2$d\nArchitectures %3$s</string>
+  <string name="antares_diagnostics_explanation">Antares is an experimental Servo-based browser engine for Solipsism Browser. Open Solipsism and select Antares in Debug Settings to use it. The engine runs in an isolated process and remains MPL 2.0 open-source software.</string>
   <string name="back">Back</string>
   <string name="media_channel_name">ServoMedia</string>
   <string name="media_channel_description">Notication channel for multimedia activity</string>

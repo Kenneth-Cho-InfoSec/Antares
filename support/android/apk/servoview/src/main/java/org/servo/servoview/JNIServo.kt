@@ -29,11 +29,14 @@ internal class JNIServo {
         logStr: String?,
         enableLogs: Boolean,
         experimentalMode: Boolean,
+        userAgent: String,
         callbacks: Callbacks,
         surface: Surface,
     )
 
     external fun performUpdates()
+
+    external fun needsVsync(): Boolean
 
     external fun resize(size: Size)
 
@@ -46,6 +49,12 @@ internal class JNIServo {
     external fun goForward()
 
     external fun loadUri(uri: String)
+
+    external fun evaluateJavascript(script: String)
+
+    external fun setUserAgent(userAgent: String)
+
+    external fun setContentBlocking(blockAds: Boolean, blockGifs: Boolean, policy: String)
 
     external fun scroll(dx: Int, dy: Int, x: Int, y: Int)
 
@@ -77,7 +86,7 @@ internal class JNIServo {
 
     external fun setExperimentalMode(enable: Boolean)
 
-    external fun doFrame()
+    external fun doFrame(frameTimeNanos: Long)
 
     interface Callbacks {
         fun wakeup()

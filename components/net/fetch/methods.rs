@@ -195,6 +195,11 @@ pub async fn fetch_with_cors_cache(
     target: Target<'_>,
     context: &FetchContext,
 ) -> Response {
+    if crate::content_blocker::should_block(&request.current_url()) {
+        return Response::network_error(NetworkError::ResourceLoadError(
+            "Blocked by the user content policy".into(),
+        ));
+    }
     // Step 8. Let fetchParams be a new fetch params whose request is request
     let mut fetch_params = FetchParams::new(request);
     // Each net side fetch invocation owns closing its local deserialized request-body sender state
