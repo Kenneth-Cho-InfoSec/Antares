@@ -44,8 +44,8 @@ use crate::dom::bindings::root::{AsHandleValue, Dom};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::event_loop::script_thread::ScriptThread;
-use crate::microtask::MicrotaskRunnable;
 use crate::realms::enter_auto_realm;
+use crate::runtime::microtask::MicrotaskRunnable;
 
 #[dom_struct]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::allow_unrooted_in_rc)]
@@ -628,5 +628,17 @@ impl script_bindings::interfaces::PromiseHelpers<crate::DomTypeHolder> for Promi
 
     fn reject_error(&self, cx: &mut js::context::JSContext, error: script_bindings::error::Error) {
         Promise::reject_error(self, cx, error);
+    }
+
+    fn is_rejected(&self) -> bool {
+        self.is_rejected()
+    }
+
+    fn is_pending(&self) -> bool {
+        self.is_pending()
+    }
+
+    fn resolve_native<T: ToJSValConvertible>(&self, cx: &mut JSContext, val: &T) {
+        self.resolve_native(cx, val);
     }
 }

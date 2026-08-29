@@ -730,6 +730,20 @@ impl<T: MallocSizeOf> MallocSizeOf for std::sync::Weak<T> {
     }
 }
 
+impl MallocSizeOf for bytes::Bytes {
+    fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
+        // This is an underapproximation but because it is efficiently stored, we might not have the correct data.
+        if self.is_unique() { self.len() } else { 0 }
+    }
+}
+
+impl MallocSizeOf for bytes::BytesMut {
+    fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
+        // This is an underapproximation but because it is efficiently stored, we might not have the correct data.
+        self.len()
+    }
+}
+
 /// If a mutex is stored directly as a member of a data type that is being measured,
 /// it is the unique owner of its contents and deserves to be measured.
 ///
@@ -1230,11 +1244,32 @@ malloc_size_of_is_0!(style::queries::values::PrefersColorScheme);
 malloc_size_of_is_0!(style::stylesheets::Stylesheet);
 malloc_size_of_is_0!(style::stylesheets::FontFaceRule);
 malloc_size_of_is_0!(style::values::specified::source_size_list::SourceSizeList);
-malloc_size_of_is_0!(taffy::Layout);
 malloc_size_of_is_0!(time::Duration);
 malloc_size_of_is_0!(unicode_bidi::Level);
 malloc_size_of_is_0!(unicode_script::Script);
 malloc_size_of_is_0!(std::net::TcpStream);
+
+malloc_size_of_is_0!(taffy::Layout);
+malloc_size_of_is_0!(taffy::Baselines);
+malloc_size_of_is_0!(taffy::DetailedGridItemsInfo);
+impl<T> MallocSizeOf for taffy::Line<T>
+where
+    T: MallocSizeOf,
+{
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.start.size_of(ops) + self.end.size_of(ops)
+    }
+}
+impl<T> MallocSizeOf for taffy::DetailedGridInfo<T>
+where
+    T: MallocSizeOf + taffy::CheapCloneStr,
+{
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.items.size_of(ops) +
+            self.rows.positions.size_of(ops) +
+            self.columns.positions.size_of(ops)
+    }
+}
 
 impl MallocSizeOf for urlpattern::UrlPattern {
     fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {

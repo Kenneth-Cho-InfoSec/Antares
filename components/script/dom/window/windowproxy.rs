@@ -10,8 +10,10 @@ use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use dom_struct::dom_struct;
 use html5ever::local_name;
 use indexmap::map::IndexMap;
+use itertools::Either;
 use js::JSCLASS_IS_GLOBAL;
 use js::context::JSContext;
+use js::gc::MutableHandleObject;
 use js::glue::{
     CreateWrapperProxyHandler, DeleteWrapperProxyHandler, GetProxyPrivate, GetProxyReservedSlot,
     ProxyTraps, SetProxyReservedSlot,
@@ -34,8 +36,12 @@ use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use net_traits::ReferrerPolicy;
 use net_traits::request::Referrer;
 use script_bindings::cell::DomRefCell;
-use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
-use script_bindings::proxyhandler::set_property_descriptor;
+use script_bindings::codegen::GenericBindings::WindowBinding::{GetProtoObject, WindowMethods};
+use script_bindings::proxyhandler::{
+    is_extensible, maybe_cross_origin_get_prototype,
+    maybe_cross_origin_get_prototype_if_ordinary_rawcx, maybe_cross_origin_set_prototype_rawcx,
+    prevent_extensions, set_property_descriptor,
+};
 use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 use script_traits::NewPipelineInfo;
 use serde::{Deserialize, Serialize};
@@ -46,10 +52,11 @@ use servo_constellation_traits::{
     AuxiliaryWebViewCreationRequest, LoadData, LoadOrigin, NavigationHistoryBehavior,
     ScriptToConstellationMessage, TargetSnapshotParams,
 };
-use servo_url::{ImmutableOrigin, ServoUrl};
+use servo_url::{ImmutableOrigin, OriginSnapshot, ServoUrl};
 use storage_traits::webstorage_thread::WebStorageThreadMsg;
 use style::attr::parse_integer;
 
+use crate::DomTypeHolder;
 use crate::dom::bindings::conversions::{ToJSValConvertible, root_from_handleobject};
 use crate::dom::bindings::error::{Error, Fallible, throw_dom_exception};
 use crate::dom::bindings::inheritance::Castable;
@@ -63,6 +70,7 @@ use crate::dom::dissimilaroriginwindow::DissimilarOriginWindow;
 use crate::dom::document::Document;
 use crate::dom::element::Element;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::node::node::NodeTraits;
 use crate::dom::window::Window;
 use crate::event_loop::script_thread::{ScriptThread, with_script_thread};
 use crate::event_loop::script_window_proxies::ScriptWindowProxies;
@@ -390,7 +398,7 @@ impl WindowProxy {
 
         let new_window_proxy = ScriptThread::find_document(response.new_pipeline_id)
             .and_then(|doc| doc.browsing_context())?;
-        if name.to_lowercase() != "_blank" {
+        if !name.eq_ignore_ascii_case("_blank") {
             new_window_proxy.set_name(name);
         }
         if noopener {
@@ -415,11 +423,6 @@ impl WindowProxy {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#delaying-load-events-mode>
-    pub(crate) fn is_delaying_load_events_mode(&self) -> bool {
-        self.delaying_load_events_mode.get()
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#delaying-load-events-mode>
     pub(crate) fn start_delaying_load_events_mode(&self) {
         self.delaying_load_events_mode.set(true);
     }
@@ -427,11 +430,6 @@ impl WindowProxy {
     /// <https://html.spec.whatwg.org/multipage/#delaying-load-events-mode>
     pub(crate) fn stop_delaying_load_events_mode(&self) {
         self.delaying_load_events_mode.set(false);
-        if let Some(document) = self.document() &&
-            !document.loader().events_inhibited()
-        {
-            ScriptThread::mark_document_with_no_blocked_loads(&document);
-        }
     }
 
     // https://html.spec.whatwg.org/multipage/#disowned-its-opener
@@ -535,7 +533,7 @@ impl WindowProxy {
         };
         // Step 5. If target is the empty string, then set target to "_blank".
         let non_empty_target = if target.is_empty() {
-            DOMString::from("_blank")
+            DOMString::from_static("_blank")
         } else {
             target
         };
@@ -562,7 +560,7 @@ impl WindowProxy {
         // Let targetNavigable and windowType be the result of applying the rules for
         // choosing a navigable given target, sourceDocument's node navigable, and noopener.
         // If targetNavigable is null, then return null.
-        let (chosen, new) = match self.choose_browsing_context(cx, non_empty_target, noopener) {
+        let (chosen, new) = match self.choose_a_navigable(cx, non_empty_target, noopener) {
             (Some(chosen), new) => (chosen, new),
             (None, _) => return Ok(None),
         };
@@ -642,47 +640,184 @@ impl WindowProxy {
         Ok(target_document.browsing_context())
     }
 
-    // https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-browsing-context-given-a-browsing-context-name
-    pub(crate) fn choose_browsing_context(
+    /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
+    pub(crate) fn choose_a_navigable(
         &self,
         cx: &mut JSContext,
         name: DOMString,
         noopener: bool,
     ) -> (Option<DomRoot<WindowProxy>>, bool) {
-        match name.to_lowercase().as_ref() {
-            "" | "_self" => {
-                // Step 3.
-                (Some(DomRoot::from_ref(self)), false)
-            },
-            "_parent" => {
-                // Step 4
-                if let Some(parent) = self.parent() {
-                    return (Some(DomRoot::from_ref(parent)), false);
-                }
-                (None, false)
-            },
-            "_top" => {
-                // Step 5
-                (Some(DomRoot::from_ref(self.top())), false)
-            },
-            "_blank" => (
-                self.create_auxiliary_browsing_context(cx, name, noopener),
-                true,
-            ),
-            _ => {
-                // Step 6.
-                // TODO: expand the search to all 'familiar' bc,
-                // including auxiliaries familiar by way of their opener.
-                // See https://html.spec.whatwg.org/multipage/#familiar-with
-                match ScriptThread::find_window_proxy_by_name(&name) {
-                    Some(proxy) => (Some(proxy), false),
-                    None => (
-                        self.create_auxiliary_browsing_context(cx, name, noopener),
-                        true,
-                    ),
-                }
-            },
+        // Step 1. Let chosen be null.
+        // Step 2. Let windowType be "existing or none".
+        // Step 3. Let sandboxingFlagSet be currentNavigable's active document's active
+        // sandboxing flag set.
+        // TODO: Implement this.
+
+        let chosen = if name.is_empty() || name.eq_ignore_ascii_case("_self") {
+            // Step 4. If name is the empty string or an ASCII case-insensitive match for
+            // "_self", then set chosen to currentNavigable.
+            Some((Some(DomRoot::from_ref(self)), false))
+        } else if name.eq_ignore_ascii_case("_parent") {
+            // Step 5. Otherwise, if name is an ASCII case-insensitive match for
+            // "_parent", set chosen to currentNavigable's parent, if any, and
+            // currentNavigable otherwise.
+            Some(
+                self.parent()
+                    .map(|parent| (Some(DomRoot::from_ref(parent)), false))
+                    .unwrap_or_else(|| (Some(DomRoot::from_ref(self)), false)),
+            )
+        } else if name.eq_ignore_ascii_case("_top") {
+            // Step 6. Otherwise, if name is an ASCII case-insensitive match for "_top",
+            // set chosen to currentNavigable's traversable navigable.
+            Some((Some(DomRoot::from_ref(self.top())), false))
+        } else if !name.eq_ignore_ascii_case("_blank") {
+            // Step 7. Otherwise, if name is not an ASCII case-insensitive match for
+            // "_blank" and noopener is false, then set chosen to the result of finding a
+            // navigable by target name given name and currentNavigable.
+            //
+            // Note: The noopener==false condition here seems to break WPT tests and
+            // is likely a specification bug.
+            // See <https://github.com/whatwg/html/issues/12839>
+            self.find_navigable_by_target_name(&name)
+                .map(|proxy| (Some(proxy), false))
+        } else {
+            None
+        };
+
+        if let Some(chosen) = chosen {
+            return chosen;
         }
+
+        // Step 8. If chosen is null, then a new top-level traversable is being requested,
+        // and what happens depends on the user agent's configuration and abilities — it
+        // is determined by the rules given for the first applicable option from the
+        // following list:
+        (
+            self.create_auxiliary_browsing_context(cx, name, noopener),
+            true,
+        )
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#find-a-navigable-by-target-name>
+    fn find_navigable_by_target_name(&self, name: &DOMString) -> Option<DomRoot<WindowProxy>> {
+        // Step 1. Let currentDocument be currentNavigable's active document.
+        //
+        // Step 2. Let sourceSnapshotParams be the result of snapshotting source snapshot
+        // params given currentDocument.
+        // TODO: This is unimplemented.
+        //
+        // Step 3. Let subtreesToSearch be an implementation-defined choice of one of the
+        // following:
+        //     - « currentNavigable's traversable navigable, currentNavigable »
+        //     - the inclusive ancestor navigables of currentDocument
+        //
+        // From <https://github.com/whatwg/html/issues/10848>:
+        // > WebKit and Chromium search the requesting window's subtree then search from
+        // > the top. Firefox iterates and searches from each ancestor. If there's a way to
+        // > express in the spec that the implementation-defined behavior is fixed for the
+        // > instance of the user agent, then that'd be appropriate here.
+        //
+        // We use the Webkit and Chrome approach here and the reversal is done here
+        // rather than below.
+        let top = self.top();
+        let subtrees_to_search = if top != self {
+            Either::Left([self, top])
+        } else {
+            Either::Right([self])
+        };
+
+        // Step 4. For each subtreeToSearch of subtreesToSearch, in reverse order:
+        for subtree_to_search in subtrees_to_search.into_iter() {
+            // Step 4.1. Let documentToSearch be subtreeToSearch's active document.
+            // Step 4.2. For each navigable of the inclusive descendant navigables of
+            // documentToSearch:
+            if let Some(result) =
+                subtree_to_search.find_navigable_by_target_name_in_descendants(name)
+            {
+                return Some(result);
+            }
+        }
+
+        // Step 5. Let currentTopLevelBrowsingContext be currentNavigable's active
+        // browsing context's top-level browsing context.
+        // Step 6. Let group be currentTopLevelBrowsingContext's group.
+        //
+        // TODO: Servo doesn't have a concept of the browsing context group in script, so
+        // we just look through all top-level WindowProxy instances.
+        let mut top_level_window_proxies = self.script_window_proxies.top_level_window_proxies();
+
+        // Step 7. For each topLevelBrowsingContext of group's browsing context set, in an
+        // implementation-defined order (the user agent should pick a consistent ordering,
+        // such as the most recently opened, most recently focused, or more closely
+        // related):
+        //
+        // Sorting by `BrowsingContextId` is an attempt to make the order consistent.
+        // This also ensures that newer `BrowsingContextId`s are sorted first.
+        top_level_window_proxies
+            .sort_by_key(|proxy| std::cmp::Reverse(proxy.browsing_context_id()));
+
+        for window_proxy in top_level_window_proxies {
+            // Step 7.1. If currentTopLevelBrowsingContext is topLevelBrowsingContext, then
+            // continue.
+            if &*window_proxy == top {
+                continue;
+            }
+            // Step 7.2. Let documentToSearch be topLevelBrowsingContext's active document.
+            // Step 7.3. For each navigable of the inclusive descendant navigables of
+            // documentToSearch:
+            //
+            // Step 7.3.1 If currentNavigable's active browsing context is not familiar
+            // with navigable's active browsing context, then continue.
+            //
+            // TODO: Servo does not implement the concept of "familiar with".
+            // See: <https://html.spec.whatwg.org/multipage/#familiar-with>
+            // TODO: Properly support navigables in other script threads and with
+            // dissimilar origins, which requires that they be accessible here and
+            // WindowProxy::get_name() returns something useful.
+            //
+            // Step 7.3.2. If currentNavigable is not allowed by sandboxing to navigate
+            // navigable given sourceSnapshotParams, then optionally continue.
+            // Step 7.3.3 If navigable's target name is name, then return navigable.
+            // These steps are handled by `find_navigable_by_target_name_in_descendants`.
+            if let Some(result) = window_proxy.find_navigable_by_target_name_in_descendants(name) {
+                return Some(result);
+            }
+        }
+
+        // Step 8. Return null.
+        None
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#find-a-navigable-by-target-name> step 4 and 7 substeps.
+    fn find_navigable_by_target_name_in_descendants(
+        &self,
+        name: &DOMString,
+    ) -> Option<DomRoot<WindowProxy>> {
+        // Never traverse or return a `WindowProxy` with a discarded browsing context.
+        if self.is_browsing_context_discarded() {
+            return None;
+        }
+
+        // Step 4.2.1 If currentNavigable is not allowed by sandboxing to navigate
+        // navigable given sourceSnapshotParams, then optionally continue.
+        // TODO: This is unimplemented.
+
+        // Step 4.2.2. If navigable's target name is name, then return navigable.
+        if self.get_name() == *name {
+            return Some(DomRoot::from_ref(self));
+        }
+
+        let document = self.document()?;
+        let iframes: Vec<_> = document.iframes().iter().collect();
+        iframes.iter().find_map(|iframe| {
+            iframe
+                .browsing_context_id()
+                .and_then(|browsing_context_id| {
+                    self.script_window_proxies
+                        .find_window_proxy(browsing_context_id)?
+                        .find_navigable_by_target_name_in_descendants(name)
+                })
+        })
     }
 
     pub(crate) fn is_auxiliary(&self) -> bool {
@@ -730,7 +865,7 @@ impl WindowProxy {
         result
     }
 
-    pub fn document_origin(&self) -> Option<String> {
+    pub(crate) fn document_origin(&self) -> Option<OriginSnapshot> {
         let pipeline_id = self.currently_active()?;
         let (result_sender, result_receiver) = generic_channel::channel().unwrap();
         self.global()
@@ -741,6 +876,55 @@ impl WindowProxy {
             ))
             .ok()?;
         result_receiver.recv().ok()?
+    }
+
+    pub(crate) fn internal_ancestor_origin_objects_list(&self) -> Option<Vec<ImmutableOrigin>> {
+        let pipeline_id = self.currently_active()?;
+        let (result_sender, result_receiver) = generic_channel::channel().unwrap();
+        self.global()
+            .script_to_constellation_chan()
+            .send(
+                ScriptToConstellationMessage::GetInternalAncestorOriginObjectsList(
+                    pipeline_id,
+                    result_sender,
+                ),
+            )
+            .ok()?;
+        result_receiver.recv().ok()?
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#internal-ancestor-origin-objects-list-creation-steps>
+    pub(crate) fn parent_origin_and_internal_ancestor_origin_objects_list(
+        &self,
+    ) -> Option<(OriginSnapshot, Vec<ImmutableOrigin>)> {
+        if let Some(frame_element) = self.frame_element() {
+            let parent_document = frame_element.owner_document();
+            // Step 4. Assert: parentDoc is fully active.
+            // TODO(47417): Once "creating a new browsing context" properly exists, remove this check
+            if !parent_document.is_fully_active() {
+                return None;
+            }
+            Some((
+                parent_document.origin().snapshot(),
+                parent_document
+                    .internal_ancestor_origin_objects_list()
+                    .clone()
+                    .expect("Must always be fully active"),
+            ))
+        } else if let Some(parent_proxy) = self.parent() {
+            // Step 4. Assert: parentDoc is fully active.
+            assert!(parent_proxy.currently_active().is_some());
+
+            let origin = parent_proxy
+                .document_origin()
+                .expect("Must always be active");
+            let list = parent_proxy
+                .internal_ancestor_origin_objects_list()
+                .expect("Must always be active");
+            Some((origin, list))
+        } else {
+            None
+        }
     }
 
     #[expect(unsafe_code)]
@@ -800,6 +984,10 @@ impl WindowProxy {
             );
             self.reflector.rootable().set(new_js_proxy.get());
         }
+    }
+
+    pub(crate) fn set_pipeline_id(&self, pipeline_id: PipelineId) {
+        self.currently_active.set(Some(pipeline_id));
     }
 
     pub(crate) fn set_currently_active(&self, cx: &mut JSContext, window: &Window) {
@@ -1194,9 +1382,28 @@ unsafe extern "C" fn get_prototype_if_ordinary(
     true
 }
 
+#[expect(unsafe_code)]
+unsafe extern "C" fn maybe_cross_origin_get_prototype_wrapper_rawcx(
+    cx: *mut RawJSContext,
+    proxy: RawHandleObject,
+    result: RawMutableHandleObject,
+) -> bool {
+    let mut cx = unsafe { JSContext::from_ptr(ptr::NonNull::new(cx).unwrap()) };
+    let mut realm = CurrentRealm::assert(&mut cx);
+    let proxy = unsafe { Handle::from_raw(proxy) };
+    let result = unsafe { MutableHandleObject::from_raw(result) };
+    maybe_cross_origin_get_prototype::<DomTypeHolder>(
+        &mut realm,
+        proxy,
+        GetProtoObject::<DomTypeHolder>,
+        result,
+    )
+}
+
+// TODO: These traps should change their behavior depending on
+// `IsPlatformObjectSameOrigin(this.[[Window]])`
+// See <https://github.com/servo/servo/issues/44669>
 static PROXY_TRAPS: ProxyTraps = ProxyTraps {
-    // TODO: These traps should change their behavior depending on
-    //       `IsPlatformObjectSameOrigin(this.[[Window]])`
     enter: None,
     getOwnPropertyDescriptor: Some(get_own_property_descriptor),
     defineProperty: Some(define_property),
@@ -1204,11 +1411,11 @@ static PROXY_TRAPS: ProxyTraps = ProxyTraps {
     delete_: None,
     enumerate: None,
     getPrototypeIfOrdinary: Some(get_prototype_if_ordinary),
-    getPrototype: None, // TODO: return `null` if cross origin-domain
-    setPrototype: None,
+    getPrototype: Some(maybe_cross_origin_get_prototype_wrapper_rawcx),
+    setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
     setImmutablePrototype: None,
-    preventExtensions: None,
-    isExtensible: None,
+    preventExtensions: Some(prevent_extensions),
+    isExtensible: Some(is_extensible),
     has: Some(has),
     get: Some(get),
     set: Some(set),
@@ -1265,7 +1472,7 @@ impl WindowProxyHandler {
         /// Sharing a single instance should be fine because all methods on this pointer in C++
         /// are const and don't modify its internal state.
         static SINGLETON: OnceLock<WindowProxyHandler> = OnceLock::new();
-        SINGLETON.get_or_init(|| Self::new(&XORIGIN_PROXY_TRAPS))
+        SINGLETON.get_or_init(|| Self::new(&CROSS_ORIGIN_PROXY_TRAPS))
     }
 
     /// Returns a single, shared WindowProxyHandler that contains normal PROXY_TRAPS.
@@ -1321,7 +1528,7 @@ fn throw_security_error(realm: &mut CurrentRealm) -> bool {
 }
 
 #[expect(unsafe_code)]
-unsafe extern "C" fn has_xorigin(
+unsafe extern "C" fn cross_origin_has(
     cx: *mut RawJSContext,
     proxy: RawHandleObject,
     id: RawHandleId,
@@ -1346,7 +1553,7 @@ unsafe extern "C" fn has_xorigin(
 }
 
 #[expect(unsafe_code)]
-unsafe extern "C" fn get_xorigin(
+unsafe extern "C" fn cross_origin_get(
     cx: *mut RawJSContext,
     proxy: RawHandleObject,
     receiver: RawHandleValue,
@@ -1354,12 +1561,12 @@ unsafe extern "C" fn get_xorigin(
     vp: RawMutableHandleValue,
 ) -> bool {
     let mut found = false;
-    unsafe { has_xorigin(cx, proxy, id, &mut found) };
+    unsafe { cross_origin_has(cx, proxy, id, &mut found) };
     found && unsafe { get(cx, proxy, receiver, id, vp) }
 }
 
 #[expect(unsafe_code)]
-unsafe extern "C" fn set_xorigin(
+unsafe extern "C" fn cross_origin_set(
     cx: *mut RawJSContext,
     _: RawHandleObject,
     _: RawHandleId,
@@ -1391,8 +1598,7 @@ unsafe extern "C" fn delete_xorigin(
 }
 
 #[expect(unsafe_code)]
-#[expect(non_snake_case)]
-unsafe extern "C" fn getOwnPropertyDescriptor_xorigin(
+unsafe extern "C" fn cross_origin_get_own_property_descriptor(
     cx: *mut RawJSContext,
     proxy: RawHandleObject,
     id: RawHandleId,
@@ -1400,13 +1606,12 @@ unsafe extern "C" fn getOwnPropertyDescriptor_xorigin(
     is_none: *mut bool,
 ) -> bool {
     let mut found = false;
-    unsafe { has_xorigin(cx, proxy, id, &mut found) };
+    unsafe { cross_origin_has(cx, proxy, id, &mut found) };
     found && unsafe { get_own_property_descriptor(cx, proxy, id, desc, is_none) }
 }
 
 #[expect(unsafe_code)]
-#[expect(non_snake_case)]
-unsafe extern "C" fn defineProperty_xorigin(
+unsafe extern "C" fn cross_origin_define_property(
     cx: *mut RawJSContext,
     _: RawHandleObject,
     _: RawHandleId,
@@ -1421,40 +1626,30 @@ unsafe extern "C" fn defineProperty_xorigin(
     throw_security_error(&mut realm)
 }
 
-#[expect(unsafe_code)]
-#[expect(non_snake_case)]
-unsafe extern "C" fn preventExtensions_xorigin(
-    cx: *mut RawJSContext,
-    _: RawHandleObject,
-    _: *mut ObjectOpResult,
-) -> bool {
-    let mut cx = unsafe {
-        // SAFETY: We are in SM hook
-        JSContext::from_ptr(NonNull::new(cx).expect("JSContext should not be null in SM hook"))
-    };
-    let mut realm = CurrentRealm::assert(&mut cx);
-    throw_security_error(&mut realm)
-}
-
-static XORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
+// TODO: Some of these callbacks need proper support for handling cross-origin
+// properties, notably `set` and `ownPropertyKeys`, but there may also be others.
+//
+// TODO: Implement `getOwnPropertyKeys` for cross-origin `WindowProxy`.
+// https://github.com/servo/servo/issues/47548.
+static CROSS_ORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
     enter: None,
-    getOwnPropertyDescriptor: Some(getOwnPropertyDescriptor_xorigin),
-    defineProperty: Some(defineProperty_xorigin),
+    getOwnPropertyDescriptor: Some(cross_origin_get_own_property_descriptor),
+    defineProperty: Some(cross_origin_define_property),
     ownPropertyKeys: None,
     delete_: Some(delete_xorigin),
     enumerate: None,
-    getPrototypeIfOrdinary: None,
-    getPrototype: None,
-    setPrototype: None,
+    getPrototypeIfOrdinary: Some(maybe_cross_origin_get_prototype_if_ordinary_rawcx),
+    getPrototype: Some(maybe_cross_origin_get_prototype_wrapper_rawcx),
+    setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
     setImmutablePrototype: None,
-    preventExtensions: Some(preventExtensions_xorigin),
-    isExtensible: None,
-    has: Some(has_xorigin),
-    get: Some(get_xorigin),
-    set: Some(set_xorigin),
+    preventExtensions: Some(prevent_extensions),
+    isExtensible: Some(is_extensible),
+    has: Some(cross_origin_has),
+    get: Some(cross_origin_get),
+    set: Some(cross_origin_set),
     call: None,
     construct: None,
-    hasOwn: Some(has_xorigin),
+    hasOwn: Some(cross_origin_has),
     getOwnEnumerablePropertyKeys: None,
     nativeCall: None,
     objectClassIs: None,

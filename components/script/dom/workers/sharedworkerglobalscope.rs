@@ -58,8 +58,8 @@ use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
 use crate::modules::script_module::fetch_a_module_script_graph;
-use crate::script_runtime::ScriptThreadEventCategory::WorkerEvent;
-use crate::script_runtime::{IntroductionType, Runtime};
+use crate::runtime::script_runtime::ScriptThreadEventCategory::WorkerEvent;
+use crate::runtime::script_runtime::{IntroductionType, Runtime};
 use crate::tasks::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
 use crate::tasks::task_source::TaskSourceName;
 
@@ -674,7 +674,7 @@ impl SharedWorkerGlobalScope {
                 let inside_port = inside_port.root();
 
                 rooted!(&in(cx) let mut data = UndefinedValue());
-                DOMString::from("").safe_to_jsval(cx,
+                DOMString::new().safe_to_jsval(cx,
                     data.handle_mut(),
                 );
 
@@ -688,7 +688,7 @@ impl SharedWorkerGlobalScope {
                     false,
                     false,
                     data.handle(),
-                    DOMString::from(""),
+                    DOMString::new(),
                     Some(&source),
                     DOMString::new(),
                     vec![inside_port],

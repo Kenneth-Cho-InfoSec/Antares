@@ -8,7 +8,7 @@ use script_bindings::inheritance::Castable;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{DomRoot, UnrootedDom};
 use crate::dom::document::Document;
 use crate::dom::execcommand::basecommand::{
     BoolOrOptionalString, CommandName, RecordedStateOfCommand,
@@ -74,8 +74,9 @@ impl Range {
         }
 
         self.ancestor_for_effectively_contained()
-            .traverse_preorder(ShadowIncluding::No)
+            .traverse_preorder_non_rooting(no_gc, ShadowIncluding::No)
             .find(|child| child.is_formattable(no_gc) && self.is_effectively_contained_node(child))
+            .map(|node| node.as_rooted())
     }
 
     pub(crate) fn for_each_effectively_contained_child<Callback: FnMut(&Node)>(
@@ -100,9 +101,12 @@ impl Range {
         }
     }
 
-    pub(crate) fn contained_nodes(&self) -> impl Iterator<Item = DomRoot<Node>> {
+    pub(crate) fn contained_nodes<'a>(
+        &self,
+        no_gc: &'a NoGC,
+    ) -> impl Iterator<Item = UnrootedDom<'a, Node>> {
         self.CommonAncestorContainer()
-            .traverse_preorder(ShadowIncluding::No)
+            .traverse_preorder_non_rooting(no_gc, ShadowIncluding::No)
             .filter(|node| self.contains(node))
     }
 
@@ -192,8 +196,8 @@ impl Range {
         // Step 8. Let new range be a new range whose start and end nodes and offsets are start node,
         // start offset, end node, and end offset.
         let new_range = document.CreateRange(cx);
-        new_range.set_start(&start_node, start_offset);
-        new_range.set_end(&end_node, end_offset);
+        let _ = new_range.SetStart(&start_node, start_offset);
+        let _ = new_range.SetEnd(&end_node, end_offset);
         // Step 9. Return new range.
         new_range
     }

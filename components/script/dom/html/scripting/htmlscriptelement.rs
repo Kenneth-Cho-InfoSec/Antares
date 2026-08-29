@@ -9,6 +9,7 @@ use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use bytes::{Bytes, BytesMut};
 use dom_struct::dom_struct;
 use encoding_rs::Encoding;
 use html5ever::{LocalName, Prefix, local_name};
@@ -51,11 +52,12 @@ use crate::dom::element::{
 };
 use crate::dom::event::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::globalscope::script_execution::{ClassicScript, ErrorReporting, RethrowErrors};
+use crate::dom::globalscope::script_execution::{ClassicScript, RethrowErrors};
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{ChildrenMutation, CloneChildrenFlag, Node, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
+use crate::dom::script_execution::ScriptOptions;
 use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::dom::trustedtypes::trustedscripturl::TrustedScriptURL;
 use crate::dom::window::Window;
@@ -66,7 +68,7 @@ use crate::modules::import_map::{ImportMap, parse_an_import_map_string, register
 use crate::modules::script_module::{
     ModuleTree, ScriptFetchOptions, fetch_an_external_module_script, fetch_inline_module_script,
 };
-use crate::script_runtime::IntroductionType;
+use crate::runtime::script_runtime::IntroductionType;
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 #[dom_struct]
@@ -280,7 +282,7 @@ struct ClassicContext {
     /// script" algorithm.
     character_encoding: &'static Encoding,
     /// The response body received to date.
-    data: Vec<u8>,
+    data: BytesMut,
     /// The response metadata received to date.
     metadata: Option<Metadata>,
     /// The initial URL requested.
@@ -337,10 +339,10 @@ impl FetchResponseListener for ClassicContext {
         &mut self,
         _: &mut js::context::JSContext,
         _: RequestId,
-        mut chunk: Vec<u8>,
+        chunk: Bytes,
     ) {
         if self.status.is_ok() {
-            self.data.append(&mut chunk);
+            self.data.extend_from_slice(&chunk);
         }
     }
 
@@ -394,7 +396,11 @@ impl FetchResponseListener for ClassicContext {
         }
 
         // Step 5.6. Let mutedErrors be true if response was CORS-cross-origin, and false otherwise.
-        let muted_errors = self.response_was_cors_cross_origin;
+        let mut script_options = ScriptOptions::External;
+        script_options.set(
+            ScriptOptions::MutedErrors,
+            self.response_was_cors_cross_origin,
+        );
 
         // Step 5.7. Let script be the result of creating a classic script given
         // sourceText, settingsObject, response's URL, options, mutedErrors, and url.
@@ -402,11 +408,10 @@ impl FetchResponseListener for ClassicContext {
             cx,
             source_text,
             final_url,
+            script_options,
             self.fetch_options.clone(),
-            ErrorReporting::from(muted_errors),
             Some(IntroductionType::SRC_SCRIPT),
             1,
-            true,
         );
 
         /*
@@ -531,7 +536,7 @@ fn fetch_a_classic_script(
         elem: Trusted::new(script),
         kind,
         character_encoding,
-        data: vec![],
+        data: BytesMut::new(),
         metadata: None,
         url,
         status: Ok(()),
@@ -760,7 +765,7 @@ impl HTMLScriptElement {
         };
 
         // Step 29. Fetch options.
-        let mut options = ScriptFetchOptions {
+        let mut script_fetch_options = ScriptFetchOptions {
             cryptographic_nonce,
             integrity_metadata,
             parser_metadata,
@@ -818,20 +823,27 @@ impl HTMLScriptElement {
 
             // Step 31.9. If el is currently render-blocking, then set options's render-blocking to true.
             if self.marked_as_render_blocking.get() {
-                options.render_blocking = true;
+                script_fetch_options.render_blocking = true;
             }
 
             // Step 31.11. Switch on el's type:
             match script_type {
                 ScriptType::Classic => {
                     // Step 31.11. Fetch a classic script.
-                    fetch_a_classic_script(self, kind, url, cors_setting, options, encoding);
+                    fetch_a_classic_script(
+                        self,
+                        kind,
+                        url,
+                        cors_setting,
+                        script_fetch_options,
+                        encoding,
+                    );
                 },
                 ScriptType::Module => {
                     // If el does not have an integrity attribute, then set options's integrity metadata to
                     // the result of resolving a module integrity metadata with url and settings object.
                     if integrity_val_is_none {
-                        options.integrity_metadata = global
+                        script_fetch_options.integrity_metadata = global
                             .import_map()
                             .resolve_a_module_integrity_metadata(&url.url());
                     }
@@ -843,7 +855,7 @@ impl HTMLScriptElement {
                         cx,
                         url,
                         global,
-                        options,
+                        script_fetch_options,
                         move |cx, module_tree| {
                             let load = module_tree.map(Script::Module).ok_or(());
                             *script.result.borrow_mut() = Some(load);
@@ -868,11 +880,10 @@ impl HTMLScriptElement {
                         cx,
                         text,
                         base_url,
-                        options,
-                        ErrorReporting::Unmuted,
+                        ScriptOptions::empty(),
+                        script_fetch_options,
                         introduction_type,
                         self.line_number as u32,
-                        false,
                     );
                     let result = Ok(Script::Classic(script));
 
@@ -902,7 +913,7 @@ impl HTMLScriptElement {
                         doc.increment_render_blocking_element_count();
 
                         // Step 32.2.2.2.2 Set options's render-blocking to true.
-                        options.render_blocking = true;
+                        script_fetch_options.render_blocking = true;
                     }
 
                     let script = DomRoot::from_ref(self);
@@ -913,7 +924,7 @@ impl HTMLScriptElement {
                         global,
                         text,
                         base_url,
-                        options,
+                        script_fetch_options,
                         self.line_number as u32,
                         introduction_type,
                         move |_, module_tree| {
@@ -1012,9 +1023,12 @@ impl HTMLScriptElement {
                 }
 
                 // Step 6."classic".3. Run the classic script given by el's result.
-                _ = self
-                    .owner_global()
-                    .run_a_classic_script(cx, script, RethrowErrors::No);
+                _ = self.owner_global().run_a_classic_script(
+                    cx,
+                    script,
+                    RethrowErrors::No,
+                    None, // return_value
+                );
 
                 // Step 6."classic".4. Set document's currentScript attribute to oldCurrentScript.
                 document.set_current_script(old_script.as_deref());
@@ -1384,7 +1398,7 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
         let value = TrustedScript::get_trusted_type_compliant_string(
             cx,
             &self.owner_global(),
-            value.unwrap_or(TrustedScriptOrString::String(DOMString::from(""))),
+            value.unwrap_or(TrustedScriptOrString::String(DOMString::new())),
             "HTMLScriptElement textContent",
         )?;
         // Step 2: Set this's script text value to value.

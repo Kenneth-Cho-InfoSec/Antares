@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose;
+use bytes::Bytes;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use devtools_traits::ScriptToDevtoolsControlMsg;
 use dom_struct::dom_struct;
@@ -39,7 +40,7 @@ use script_traits::DocumentActivity;
 use servo_base::id::{PipelineId, WebViewId};
 use servo_config::pref;
 use servo_constellation_traits::{LoadOrigin, TargetSnapshotParams};
-use servo_url::{MutableOrigin, ServoUrl};
+use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use style::context::QuirksMode as ServoQuirksMode;
 use tendril::stream::LossyDecoder;
 use tendril::{ByteTendril, TendrilSink};
@@ -65,9 +66,10 @@ use crate::dom::characterdata::CharacterData;
 use crate::dom::comment::Comment;
 use crate::dom::csp::{Violation, parse_csp_list_from_metadata};
 use crate::dom::customelementregistry::{CustomElementReactionStack, CustomElementRegistry};
-use crate::dom::document::{Document, DocumentSource, HasBrowsingContext, IsHTMLDocument};
+use crate::dom::document::{Document, HasBrowsingContext, IsHTMLDocument};
 use crate::dom::documentfragment::DocumentFragment;
 use crate::dom::documenttype::DocumentType;
+use crate::dom::domstringlist::DOMStringList;
 use crate::dom::element::create::create_element;
 use crate::dom::element::{CustomElementCreationMode, Element, ElementCreator};
 use crate::dom::globalscope::GlobalScope;
@@ -95,7 +97,7 @@ use crate::event_loop::script_thread::ScriptThread;
 use crate::fetch::network_listener::FetchResponseListener;
 use crate::navigation::determine_the_origin;
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::IntroductionType;
+use crate::runtime::script_runtime::IntroductionType;
 
 mod async_html;
 pub(crate) mod encoding;
@@ -256,7 +258,6 @@ impl ServoParser {
             None,
             None,
             DocumentActivity::Inactive,
-            DocumentSource::FromParser,
             loader,
             None,
             None,
@@ -487,7 +488,7 @@ impl ServoParser {
 
         // Step 2.
         self.document
-            .set_ready_state(cx, DocumentReadyState::Interactive);
+            .update_the_current_document_readiness(cx, DocumentReadyState::Interactive);
 
         // Step 3.
         self.tokenizer.end(cx);
@@ -495,7 +496,7 @@ impl ServoParser {
 
         // Step 4.
         self.document
-            .set_ready_state(cx, DocumentReadyState::Complete);
+            .update_the_current_document_readiness(cx, DocumentReadyState::Complete);
     }
 
     pub(crate) fn get_current_line(&self) -> u32 {
@@ -584,12 +585,12 @@ impl ServoParser {
         self.network_input.push_back(chunk);
     }
 
-    fn push_bytes_input_chunk(&self, chunk: Vec<u8>) {
+    fn push_bytes_input_chunk(&self, chunk: &[u8]) {
         // For byte input, we convert it to text using the network decoder.
         if let Some(decoded_chunk) = self
             .network_decoder
             .borrow_mut()
-            .push(&chunk, &self.document)
+            .push(chunk, &self.document)
         {
             self.push_tendril_input_chunk(decoded_chunk);
         }
@@ -601,7 +602,7 @@ impl ServoParser {
             // to overwrite the network input, this prefetching may
             // have been wasted, but in most cases it won't.
             let mut prefetch_decoder = self.prefetch_decoder.borrow_mut();
-            prefetch_decoder.process(ByteTendril::from(&*chunk));
+            prefetch_decoder.process(ByteTendril::from(chunk));
 
             self.prefetch_input
                 .push_back(mem::take(&mut prefetch_decoder.inner_sink_mut().output));
@@ -684,11 +685,11 @@ impl ServoParser {
         }
     }
 
-    fn parse_bytes_chunk(&self, cx: &mut JSContext, input: Vec<u8>) {
+    fn parse_bytes_chunk(&self, cx: &mut JSContext, input: &[u8]) {
         let mut realm = enter_auto_realm(cx, &*self.document);
         let cx = &mut realm.current_realm();
         self.document.set_current_parser(Some(self));
-        self.push_bytes_input_chunk(input);
+        self.push_bytes_input_chunk(input.as_ref());
         if !self.suspended.get() {
             self.parse_sync(cx);
         }
@@ -765,7 +766,7 @@ impl ServoParser {
         self.tokenizer.end(cx);
         // Step 3. Update the current document readiness to "interactive".
         self.document
-            .set_ready_state(cx, DocumentReadyState::Interactive);
+            .update_the_current_document_readiness(cx, DocumentReadyState::Interactive);
         // Step 4. Pop all the nodes off the stack of open elements.
         self.document.set_current_parser(None);
         // Step 5. While the list of scripts that will execute when the document has finished parsing is not empty:
@@ -911,6 +912,8 @@ struct NavigationParams {
     resource_header: Vec<u8>,
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-about-base-url>
     about_base_url: Option<ServoUrl>,
+    /// <https://html.spec.whatwg.org/multipage/#navigation-params-iframe-referrer-policy>
+    iframe_element_referrer_policy: ReferrerPolicy,
 }
 
 /// The context required for asynchronously fetching a document
@@ -965,6 +968,7 @@ impl ParserContext {
                 final_sandboxing_flag_set: creation_sandboxing_flag_set,
                 resource_header: vec![],
                 about_base_url: Default::default(),
+                iframe_element_referrer_policy: Default::default(),
             },
             target_snapshot_params,
             load_origin,
@@ -1014,11 +1018,27 @@ impl ParserContext {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>
-    fn initialize_document_object(&self, document: &Document) {
+    fn initialize_document_object(&self, cx: &mut JSContext, document: &Document) {
         // Step 9. Let document be a new Document, with
+        // policy container: navigationParams's policy container
         document.set_policy_container(self.navigation_params.policy_container.clone());
+        // active sandboxing flag: set navigationParams's final sandboxing flag set
         document.set_active_sandboxing_flag_set(self.navigation_params.final_sandboxing_flag_set);
+        // current document readiness: "loading"
+        document.set_document_readiness_to_loading_for_initialization();
+        // about base URL: navigationParams's about base URL
         document.set_about_base_url(self.navigation_params.about_base_url.clone());
+        // Step 11. Set document's internal ancestor origin objects list to the result of
+        // running the internal ancestor origin objects list creation steps given
+        // document and navigationParams's iframe element referrer policy.
+        document.set_internal_ancestor_origin_objects_list(
+            document.internal_ancestor_origin_objects_list_creation_steps(
+                &self.navigation_params.iframe_element_referrer_policy,
+            ),
+        );
+        // Step 12. Set document's ancestor origins list to the result of
+        // running the ancestor origins list creation steps given document.
+        document.set_ancestor_origins_list(&document.ancestor_origins_list_creation_steps(cx));
         // Step 17. Process link headers given document, navigationParams's response, and "pre-media".
         process_link_headers(
             &self.navigation_params.link_headers,
@@ -1083,7 +1103,7 @@ impl ParserContext {
             // Return the result of loading an HTML document, given navigationParams.
             MediaType::Html => self.load_html_document(cx, document),
             // Return the result of loading an XML document given navigationParams and type.
-            MediaType::Xml => self.load_xml_document(document),
+            MediaType::Xml => self.load_xml_document(cx, document),
             // Return the result of loading a text document given navigationParams and type.
             MediaType::JavaScript | MediaType::Text | MediaType::Css => {
                 self.load_text_document(cx, parser.expect("Must have a parser for text"))
@@ -1119,7 +1139,7 @@ impl ParserContext {
         if let Some(parser) = parser {
             parser.parse_bytes_chunk(
                 cx,
-                std::mem::take(&mut self.navigation_params.resource_header),
+                std::mem::take(&mut self.navigation_params.resource_header).as_ref(),
             );
         }
     }
@@ -1128,7 +1148,7 @@ impl ParserContext {
     fn load_html_document(&mut self, cx: &mut JSContext, document: &Document) {
         // Step 1. Let document be the result of creating and initializing a
         // Document object given "html", "text/html", and navigationParams.
-        self.initialize_document_object(document);
+        self.initialize_document_object(cx, document);
         // Step 2. If document's URL is about:blank, then populate with html/head/body given document.
         if document.is_initial_about_blank() {
             populate_about_blank(cx, document);
@@ -1140,13 +1160,13 @@ impl ParserContext {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#read-xml>
-    fn load_xml_document(&mut self, document: &Document) {
+    fn load_xml_document(&mut self, cx: &mut JSContext, document: &Document) {
         // When faced with displaying an XML file inline, provided navigation params navigationParams
         // and a string type, user agents must follow the requirements defined in XML and Namespaces in XML,
         // XML Media Types, DOM, and other relevant specifications to create and initialize a
         // Document object document, given "xml", type, and navigationParams, and return that Document.
         // They must also create a corresponding XML parser. [XML] [XMLNS] [RFC7303] [DOM]
-        self.initialize_document_object(document);
+        self.initialize_document_object(cx, document);
         // The first task that the networking task source places on the task queue while fetching
         // runs must process link headers given document, navigationParams's response, and "media",
         // after the task has been processed by the XML parser.
@@ -1157,7 +1177,7 @@ impl ParserContext {
     fn load_text_document(&mut self, cx: &mut JSContext, parser: &ServoParser) {
         // Step 1. Let document be the result of creating and initializing a Document
         // object given "html", type, and navigationParams.
-        self.initialize_document_object(&parser.document);
+        self.initialize_document_object(cx, &parser.document);
         // Step 4. Create an HTML parser and associate it with the document.
         // Act as if the tokenizer had emitted a start tag token with the tag name "pre" followed by
         // a single U+000A LINE FEED (LF) character, and switch the HTML parser's tokenizer to the PLAINTEXT state.
@@ -1184,7 +1204,7 @@ impl ParserContext {
     ) {
         // Step 1. Let document be the result of creating and initializing a Document
         // object given "html", type, and navigationParams.
-        self.initialize_document_object(&parser.document);
+        self.initialize_document_object(cx, &parser.document);
         // Step 8. Act as if the user agent had stopped parsing document.
         self.is_synthesized_document = true;
         parser.last_chunk_received.set(true);
@@ -1248,7 +1268,7 @@ impl ParserContext {
 
     /// Load a JSON document with a pretty-printing, interactive viewer.
     fn load_json_document(&mut self, cx: &mut JSContext, parser: &ServoParser) {
-        self.initialize_document_object(&parser.document);
+        self.initialize_document_object(cx, &parser.document);
         parser.push_string_input_chunk(resources::read_string(Resource::JsonViewerHTML));
         parser.parse_sync(cx);
         parser.tokenizer.set_plaintext_state();
@@ -1289,11 +1309,20 @@ impl ParserContext {
             .queue_entry(performance_entry.upcast::<PerformanceEntry>());
     }
 
-    fn finish_synchronous_load(&self, cx: &mut JSContext, document: &Document) {
-        document.set_ready_state(cx, DocumentReadyState::Complete);
+    fn finish_synchronous_load_for_initial_about_blank(
+        &self,
+        cx: &mut JSContext,
+        document: &Document,
+    ) {
+        // Synchronous loads for initial `about:blank` always start in the `Complete` state
+        // which is why we do not notify the embedder of completion via
+        // `Document::update_the_current_document_readiness`.
+        debug_assert_eq!(document.ReadyState(), DocumentReadyState::Complete);
+
         document.set_current_parser(None);
-        document.start_the_end_loading_phase();
         document.finish_load(LoadType::PageSource(self.url.clone()), cx);
+
+        document.notify_embedder_of_load_completion();
     }
 }
 
@@ -1457,6 +1486,9 @@ impl FetchResponseListener for ParserContext {
             link_headers,
             about_base_url: document.about_base_url(),
             resource_header: vec![],
+            iframe_element_referrer_policy: self
+                .target_snapshot_params
+                .iframe_element_referrer_policy,
         };
         self.submit_resource_timing(cx);
 
@@ -1527,7 +1559,7 @@ impl FetchResponseListener for ParserContext {
         }
     }
 
-    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, payload: Vec<u8>) {
+    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, payload: Bytes) {
         if self.is_synthesized_document {
             return;
         }
@@ -1544,13 +1576,13 @@ impl FetchResponseListener for ParserContext {
             // https://mimesniff.spec.whatwg.org/#read-the-resource-header
             self.navigation_params
                 .resource_header
-                .extend_from_slice(&payload);
+                .extend_from_slice(payload.as_ref());
             // the number of bytes in buffer is greater than or equal to 1445.
             if self.navigation_params.resource_header.len() >= 1445 {
                 self.load_document(cx, Some(&parser), &document);
             }
         } else {
-            parser.parse_bytes_chunk(cx, payload);
+            parser.parse_bytes_chunk(cx, payload.as_ref());
         }
     }
 
@@ -1612,7 +1644,7 @@ impl FetchResponseListener for ParserContext {
         }
 
         if document.is_initial_about_blank() {
-            self.finish_synchronous_load(cx, &document);
+            self.finish_synchronous_load_for_initial_about_blank(cx, &document);
         }
     }
 
@@ -2327,4 +2359,72 @@ fn populate_about_blank(cx: &mut JSContext, document: &Document) {
     let _ = html.upcast::<Node>().AppendChild(cx, head.upcast());
     // Step 6. Append body to html.
     let _ = html.upcast::<Node>().AppendChild(cx, body.upcast());
+}
+
+impl Document {
+    /// <https://html.spec.whatwg.org/multipage/#internal-ancestor-origin-objects-list-creation-steps>
+    fn internal_ancestor_origin_objects_list_creation_steps(
+        &self,
+        referrer_policy: &ReferrerPolicy,
+    ) -> Vec<ImmutableOrigin> {
+        // Step 1. Let output be « ».
+        let mut output = vec![];
+        // Step 2. Let parentDoc be document's container document.
+        // Step 4. Assert: parentDoc is fully active.
+        // Step 5. Let ancestorOrigins be parentDoc's internal ancestor origin objects list.
+        let window_proxy = self.window().window_proxy();
+        let Some((parent_origin, ancestor_origins)) =
+            window_proxy.parent_origin_and_internal_ancestor_origin_objects_list()
+        else {
+            // Step 3. If parentDoc is null, then return output.
+            return output;
+        };
+        // Step 6. Let masked be false.
+        let mut masked =
+            // Step 7. If referrerPolicy is "no-referrer", then set masked to true.
+            *referrer_policy == ReferrerPolicy::NoReferrer ||
+            // Step 8. Otherwise, if referrerPolicy is "same-origin" and parentDoc's origin
+            // is not same origin with document's origin, then set masked to true.
+            (*referrer_policy == ReferrerPolicy::SameOrigin && !parent_origin.same_origin(&self.origin()));
+        // Step 9. If masked is true, then append a new opaque origin to output.
+        if masked {
+            output.push(ImmutableOrigin::new_opaque());
+        } else {
+            // Step 10. Otherwise, append parentDoc's origin to output.
+            output.push(parent_origin.immutable().clone());
+        }
+        // Step 11. For each ancestorOrigin of ancestorOrigins:
+        for ancestor_origin in ancestor_origins {
+            // Step 11.1. If masked is true and ancestorOrigin is same origin with parentDoc's origin,
+            // then append a new opaque origin to output and continue.
+            if masked && ancestor_origin.same_origin(&parent_origin) {
+                output.push(ImmutableOrigin::new_opaque());
+                continue;
+            }
+            // Step 11.2. Append ancestorOrigin to output and set masked to false.
+            output.push(ancestor_origin.clone());
+            masked = false;
+        }
+        // Step 12. Return output.
+        output
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#ancestor-origins-list-creation-steps>
+    fn ancestor_origins_list_creation_steps(&self, cx: &mut JSContext) -> DomRoot<DOMStringList> {
+        // Step 1. Let ancestorOrigins be document's internal ancestor origin objects list.
+        // Step 2. Assert: ancestorOrigins is not null.
+        let ancestor_origins = self.internal_ancestor_origin_objects_list();
+        let ancestor_origins = ancestor_origins
+            .as_ref()
+            .expect("Must always have initialized ancestor origin objects list");
+        // Step 3. Let output be « ».
+        let mut output = Vec::with_capacity(ancestor_origins.len());
+        // Step 4. For each origin of ancestorOrigins:
+        for origin in ancestor_origins {
+            // Step 4.1. Append the serialization of origin to output.
+            output.push(origin.ascii_serialization().into());
+        }
+        // Step 5. Return a new DOMStringList object whose associated list is output.
+        DOMStringList::new(cx, &self.global(), output)
+    }
 }

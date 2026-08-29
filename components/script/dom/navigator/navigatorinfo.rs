@@ -6,30 +6,22 @@ use crate::dom::bindings::str::DOMString;
 
 #[expect(non_snake_case)]
 pub(crate) fn Product() -> DOMString {
-    DOMString::from("Gecko")
+    DOMString::from_static("Gecko")
 }
 
 #[expect(non_snake_case)]
-pub(crate) fn ProductSub(user_agent: &str) -> DOMString {
-    DOMString::from(if is_chromium_identity(user_agent) {
-        "20030107"
-    } else {
-        "20100101"
-    })
+pub(crate) fn ProductSub() -> DOMString {
+    DOMString::from_static("20100101")
 }
 
 #[expect(non_snake_case)]
-pub(crate) fn Vendor(user_agent: &str) -> DOMString {
-    DOMString::from(if is_chromium_identity(user_agent) {
-        "Google Inc."
-    } else {
-        ""
-    })
+pub(crate) fn Vendor() -> DOMString {
+    DOMString::new()
 }
 
 #[expect(non_snake_case)]
 pub(crate) fn VendorSub() -> DOMString {
-    DOMString::from("")
+    DOMString::new()
 }
 
 #[expect(non_snake_case)]
@@ -39,41 +31,35 @@ pub(crate) fn TaintEnabled() -> bool {
 
 #[expect(non_snake_case)]
 pub(crate) fn AppName() -> DOMString {
-    DOMString::from("Netscape") // Like Gecko/Webkit
+    DOMString::from_static("Netscape") // Like Gecko/Webkit
 }
 
 #[expect(non_snake_case)]
 pub(crate) fn AppCodeName() -> DOMString {
-    DOMString::from("Mozilla")
+    DOMString::from_static("Mozilla")
 }
 
 #[expect(non_snake_case)]
 #[cfg(target_os = "windows")]
-pub(crate) fn Platform(_user_agent: &str) -> DOMString {
+pub(crate) fn Platform() -> DOMString {
     DOMString::from("Win32")
 }
 
 #[expect(non_snake_case)]
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "freebsd"))]
-pub(crate) fn Platform(user_agent: &str) -> DOMString {
-    DOMString::from(
-        if cfg!(target_os = "android") && is_chromium_identity(user_agent) {
-            "Linux armv81"
-        } else {
-            "Linux"
-        },
-    )
+pub(crate) fn Platform() -> DOMString {
+    DOMString::from_static("Linux")
 }
 
 #[expect(non_snake_case)]
 #[cfg(target_os = "macos")]
-pub(crate) fn Platform(_user_agent: &str) -> DOMString {
+pub(crate) fn Platform() -> DOMString {
     DOMString::from("Mac")
 }
 
 #[expect(non_snake_case)]
 #[cfg(target_os = "ios")]
-pub(crate) fn Platform(_user_agent: &str) -> DOMString {
+pub(crate) fn Platform() -> DOMString {
     DOMString::from("iOS")
 }
 
@@ -83,19 +69,8 @@ pub(crate) fn UserAgent(user_agent: &str) -> DOMString {
 }
 
 #[expect(non_snake_case)]
-pub(crate) fn AppVersion(user_agent: &str) -> DOMString {
-    DOMString::from(
-        user_agent
-            .strip_prefix("Mozilla/")
-            .filter(|_| is_chromium_identity(user_agent))
-            .unwrap_or("4.0"),
-    )
-}
-
-fn is_chromium_identity(user_agent: &str) -> bool {
-    user_agent.contains("AppleWebKit/")
-        && user_agent.contains("Chrome/")
-        && user_agent.contains("Safari/")
+pub(crate) fn AppVersion() -> DOMString {
+    DOMString::from_static("4.0")
 }
 
 #[expect(non_snake_case)]

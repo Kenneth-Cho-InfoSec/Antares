@@ -58,7 +58,7 @@ use crate::dom::node::Node;
 use crate::dom::promise::Promise;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::url::URL;
-use crate::timers::OneshotTimerCallback;
+use crate::event_loop::timers::OneshotTimerCallback;
 
 #[dom_struct]
 pub(crate) struct TestBinding {
@@ -627,7 +627,7 @@ impl TestBindingMethods<crate::DomTypeHolder> for TestBinding {
             elementSequence: None,
             shortValue: None,
             stringValue: None,
-            type_: Some(DOMString::from("success")),
+            type_: Some(DOMString::from_static("success")),
             unrestrictedDoubleValue: None,
             unrestrictedFloatValue: None,
             unsignedLongLongValue: None,

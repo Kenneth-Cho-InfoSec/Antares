@@ -7,6 +7,7 @@ use std::cell::Cell;
 use std::default::Default;
 use std::str::FromStr;
 
+use bytes::{Bytes, BytesMut};
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
 use js::context::{JSContext, NoGC};
@@ -57,6 +58,7 @@ use crate::dom::html::document_metadata::processingoptions::{
     LinkFetchContext, LinkFetchContextType, LinkProcessingOptions,
 };
 use crate::dom::html::htmlelement::HTMLElement;
+use crate::dom::html::links::relations::LinkRelations;
 use crate::dom::medialist::MediaList;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, Node, NodeTraits, UnbindContext};
@@ -66,7 +68,6 @@ use crate::dom::types::{EventTarget, GlobalScope};
 use crate::fetch::network_listener::{
     FetchResponseListener, ResourceTimingListener, submit_timing,
 };
-use crate::links::LinkRelations;
 use crate::modules::script_module::{ScriptFetchOptions, fetch_a_modulepreload_module};
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
@@ -674,7 +675,7 @@ impl HTMLLinkElement {
             link: Some(Trusted::new(self)),
             global: Trusted::new(&document.global()),
             type_: LinkFetchContextType::Prefetch,
-            response_body: vec![],
+            response_body: BytesMut::new(),
         };
 
         document.fetch_background(request, fetch_context);
@@ -1313,11 +1314,11 @@ impl FetchResponseListener for FaviconFetchContext {
         &mut self,
         _: &mut js::context::JSContext,
         request_id: RequestId,
-        chunk: Vec<u8>,
+        chunk: Bytes,
     ) {
         self.image_cache.notify_pending_response(
             self.id,
-            FetchResponseMsg::ProcessResponseChunk(request_id, chunk.into()),
+            FetchResponseMsg::ProcessResponseChunk(request_id, chunk),
         );
     }
 

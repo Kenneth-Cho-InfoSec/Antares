@@ -14,6 +14,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::{mem, ptr};
 
+use bytes::{Bytes, BytesMut};
 use encoding_rs::UTF_8;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
 use hyper_serde::Serde;
@@ -65,11 +66,12 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::globalscope::script_execution::{ErrorReporting, fill_compile_options};
+use crate::dom::globalscope::script_execution::fill_compile_options;
 use crate::dom::html::htmlscriptelement::{SCRIPT_JS_MIMES, substitute_with_local_script};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::promise::Promise;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
+use crate::dom::script_execution::ScriptOptions;
 use crate::dom::types::{
     DedicatedWorkerGlobalScope, SharedWorkerGlobalScope, WorkerGlobalScope, WorkletGlobalScope,
 };
@@ -80,7 +82,7 @@ use crate::modules::module_loading::{
     LoadState, Payload, host_load_imported_module, load_requested_modules,
 };
 use crate::realms::enter_auto_realm;
-use crate::script_runtime::IntroductionType;
+use crate::runtime::script_runtime::IntroductionType;
 use crate::tasks::task::NonSendTaskBox;
 use crate::unminify::{ScriptSource, unminify_js};
 
@@ -281,9 +283,8 @@ impl ModuleTree {
         let compile_options = fill_compile_options(
             cx,
             url.as_str(),
+            ScriptOptions::empty(),
             introduction_type,
-            ErrorReporting::Unmuted,
-            true, // noScriptRval
             line_number,
         );
 
@@ -367,10 +368,9 @@ impl ModuleTree {
         let compile_options = fill_compile_options(
             cx,
             url.as_str(),
+            ScriptOptions::empty(),
             introduction_type,
-            ErrorReporting::Unmuted,
-            true, // noScriptRval
-            1,    // lineno
+            1, // line_number
         );
 
         rooted!(&in(cx) let mut module_script: *mut JSObject = std::ptr::null_mut());
@@ -585,7 +585,7 @@ struct ModuleContext {
     /// The owner of the module that initiated the request.
     owner: Trusted<GlobalScope>,
     /// The response body received to date.
-    data: Vec<u8>,
+    data: BytesMut,
     /// The response metadata received to date.
     metadata: Option<Metadata>,
     /// Url and type of the requested module.
@@ -641,10 +641,10 @@ impl FetchResponseListener for ModuleContext {
         &mut self,
         _: &mut js::context::JSContext,
         _: RequestId,
-        mut chunk: Vec<u8>,
+        chunk: Bytes,
     ) {
         if self.status.is_ok() {
-            self.data.append(&mut chunk);
+            self.data.extend_from_slice(&chunk);
         }
     }
 
@@ -1507,7 +1507,7 @@ pub(crate) fn fetch_a_single_module_script(
 
     let context = ModuleContext {
         owner: Trusted::new(global),
-        data: vec![],
+        data: BytesMut::new(),
         metadata: None,
         module_request,
         options,

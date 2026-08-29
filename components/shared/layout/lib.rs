@@ -55,7 +55,7 @@ use servo_arc::Arc as ServoArc;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
-use servo_base::text::Utf32CodeUnits;
+use servo_base::text::{Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::Atom;
 use style::animation::DocumentAnimationSet;
@@ -269,8 +269,9 @@ pub struct LayoutConfig {
 }
 
 bitflags! {
+    #[derive(Copy, Clone)]
     pub struct HitTestFlags: u8 {
-        /// Whether to populate [`ElementsFromPointResult::dom_position_for_selection`]
+        /// Whether to populate [`HitTestResult::dom_position_for_selection`]
         const IncludeDomPosition = 0b0000_0001;
     }
 }
@@ -419,20 +420,17 @@ pub trait Layout {
     /// Returns whether accessibility is active for this Layout.
     fn accessibility_active(&self) -> bool;
 
-    /// Whether the accessibility tree needs updating. This is set to true when
+    /// Whether the accessibility tree must be updated. This is set to true when
     /// - accessibility is activated; or
     /// - a page is loaded after accesibility is activated.
     ///
-    /// In future, this should be set to true if DOM or style have changed in a way that
-    /// impacts the accessibility tree.
-    ///
     /// Checked in can_skip_reflow_request_entirely(), as a dirty accessibility tree
-    /// should force a reflow, and handle_reflow() to determine whether to update the
-    /// accessibility tree during reflow.
-    fn needs_accessibility_update(&self) -> bool;
+    /// should force a reflow, and handle_accessibility_tree_update() to determine whether to
+    /// update the accessibility tree during reflow.
+    fn force_accessibility_update(&self) -> bool;
 
-    /// See [Self::needs_accessibility_update()].
-    fn set_needs_accessibility_update(&self);
+    /// See [Self::force_accessibility_update()].
+    fn set_force_accessibility_update(&self);
 
     fn font_context(&self) -> &Arc<FontContext>;
 }
@@ -688,6 +686,9 @@ pub struct ReflowStatistics {
     /// A count of the number of accessibility nodes which were checked for changes based on data
     /// already in the accessibility tree (whether the check resulted in changes or not).
     pub nodes_updated_from_tree: u32,
+    /// A count of the number of accessibility nodes which had their bounds recomputed from layout
+    /// geometry (whether the recomputation resulted in changes or not).
+    pub nodes_updated_bounds: u32,
     /// A count of the number of accessibility nodes actually serialized to the TreeUpdate.
     pub nodes_in_tree_update: u32,
 }
@@ -729,6 +730,10 @@ pub struct ReflowRequest {
     pub animating_images: Arc<RwLock<AnimatingImages>>,
     /// The node highlighted by the devtools, if any
     pub highlighted_dom_node: Option<OpaqueNode>,
+    /// Whether LCP computation should be halted for this reflow.
+    /// From <https://www.w3.org/TR/largest-contentful-paint/#limitations>:
+    /// > The LargestContentfulPaint ... algorithm halts ... inputs.
+    pub halt_lcp: bool,
     /// The current font context.
     pub document_context: WebFontDocumentContext,
     /// Damage to the accessibility tree from DOM mutations.
@@ -922,7 +927,7 @@ impl ImageAnimationState {
 #[derive(Debug, Default)]
 pub struct HitTestResult {
     pub items: Vec<HitTestResultItem>,
-    pub dom_position_for_selection: Option<(OpaqueNode, Utf32CodeUnits)>,
+    pub dom_position_for_selection: Option<(OpaqueNode, Utf32CodeUnitsOrNodeOffset)>,
 }
 
 /// Describe an item that matched a hit-test query.

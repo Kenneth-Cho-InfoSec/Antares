@@ -45,7 +45,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.getSystemService
 import androidx.preference.PreferenceManager
 import androidx.window.core.layout.WindowSizeClass
@@ -75,7 +74,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        servoView = ServoView(this)
+        servoView = ServoView(this, this)
 
         historyManager = HistoryManager(this)
 
@@ -107,7 +106,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                         Omnibox(
                             urlTextFieldState,
                             onSearch = { search ->
-                                loadUrl(search)
+                                servoView.loadUri(search)
                                 servoView.requestFocus()
                             },
                             modifier = Modifier
@@ -179,8 +178,8 @@ class MainActivity : ComponentActivity(), Servo.Client {
                     }
                 },
             ) { innerPadding ->
-                AndroidView(
-                    factory = { _ -> servoView },
+                Servo(
+                    servoView = servoView,
                     modifier = Modifier.padding(innerPadding),
                 )
                 BackHandler(enabled = canGoBackState.value) {
@@ -200,7 +199,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
             }
         }
 
-        servoView.setClient(this)
         servoView.requestFocus()
 
         val sdcard = getExternalFilesDir("")
@@ -262,10 +260,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
         startActivityForResult(Intent(this, HistoryActivity::class.java), HISTORY_REQUEST_CODE)
     }
 
-    private fun loadUrl(search: String) {
-        servoView.loadUri(search.trim { it <= ' ' })
-    }
-
     override fun onImeShow() {
         getSystemService<InputMethodManager>()?.showSoftInput(servoView, InputMethodManager.SHOW_IMPLICIT)
     }
@@ -312,13 +306,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
         canGoForwardState.value = canGoForward
     }
 
-    public override fun onPause() {
-        servoView.onPause()
-        super.onPause()
-    }
-
     public override fun onResume() {
-        servoView.onResume()
         super.onResume()
         updateSettingsIfNecessary(false)
     }
@@ -330,7 +318,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
             val url = data.getStringExtra("url")
             if (!url.isNullOrEmpty()) {
                 urlTextFieldState.edit { replace(0, length, url) }
-                loadUrl(urlTextFieldState.text.toString())
+                servoView.loadUri(urlTextFieldState.text.toString())
             }
         }
     }
