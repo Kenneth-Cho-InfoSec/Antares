@@ -218,9 +218,8 @@ impl ServoShellWindow {
     }
 
     pub(crate) fn update_and_request_repaint_if_necessary(&self, state: &RunningAppState) {
-        let updated_user_interface = self.needs_update.take()
-            && self
-                .platform_window
+        let updated_user_interface = self.needs_update.take() &&
+            self.platform_window
                 .update_user_interface_state(state, self);
 
         // Delegate handlers may have asked us to present or update painted WebView contents.
@@ -416,6 +415,8 @@ pub(crate) trait PlatformWindow {
     fn theme(&self) -> servo::Theme {
         servo::Theme::Light
     }
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    fn set_theme(&self, _theme: servo::Theme) {}
     fn window_rect(&self) -> DeviceIndependentIntRect;
     fn maximize(&self, _: &WebView) {}
     fn focus(&self) {}

@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 pub(crate) use self::serviceworker::*;
-pub(crate) mod cache;
 pub(crate) mod cachestorage;
 pub(crate) mod client;
 pub(crate) mod extendableevent;

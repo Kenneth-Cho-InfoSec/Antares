@@ -203,8 +203,8 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         };
 
-        if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id)))
-            && let Some(headed_window) = window.platform_window().as_headed_window()
+        if let Some(window) = state.window(ServoShellWindowId::from(u64::from(window_id))) &&
+            let Some(headed_window) = window.platform_window().as_headed_window()
         {
             headed_window.handle_winit_window_event(state.clone(), window, window_event);
         }
@@ -225,8 +225,8 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Waker => (),
             AppEvent::Accessibility(ref event) => {
                 if let Some(window) =
-                    state.window(ServoShellWindowId::from(u64::from(event.window_id)))
-                    && let Some(headed_window) = window.platform_window().as_headed_window()
+                    state.window(ServoShellWindowId::from(u64::from(event.window_id))) &&
+                    let Some(headed_window) = window.platform_window().as_headed_window()
                 {
                     headed_window.handle_winit_app_event(state.clone(), app_event);
                 }

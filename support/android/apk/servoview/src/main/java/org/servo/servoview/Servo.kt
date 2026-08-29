@@ -20,6 +20,7 @@ class Servo(
     enableLogs: Boolean,
     experimentalMode: Boolean,
     userAgent: String,
+    darkTheme: Boolean,
     blockAds: Boolean,
     blockGifs: Boolean,
     contentBlockingPolicy: String,
@@ -56,6 +57,7 @@ class Servo(
                 enableLogs,
                 experimentalMode,
                 userAgent,
+                darkTheme,
                 servoCallbacks,
                 surface,
             )
@@ -100,6 +102,10 @@ class Servo(
 
     fun setUserAgent(userAgent: String) {
         runOnEngine { jni.setUserAgent(userAgent) }
+    }
+
+    fun setTheme(darkTheme: Boolean) {
+        runOnEngine { jni.setTheme(darkTheme) }
     }
 
     fun setContentBlocking(blockAds: Boolean, blockGifs: Boolean, policy: String) {

@@ -24,6 +24,8 @@ interface IAntaresSession {
     oneway void stop();
     /** Overrides Servo's runtime user agent. Empty restores Antares' native Servo identity. */
     oneway void setUserAgent(String userAgent);
+    /** Updates the CSS preferred colour scheme. 0 is light and 1 is dark. */
+    oneway void setTheme(int theme);
     /** Replaces the request-blocking policy used by this engine process. */
     void setContentBlocking(in ParcelFileDescriptor policyFile, boolean blockAds, boolean blockGifs);
     /**

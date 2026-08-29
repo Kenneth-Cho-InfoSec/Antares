@@ -1,0 +1,9 @@
+<resources>
+
+    <!-- Android-owned Antares surfaces follow the system at process start. Web content uses the
+         explicit Solipsism-to-Antares colour-scheme protocol and can change without recreation. -->
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#000000</item>
+    </style>
+
+</resources>

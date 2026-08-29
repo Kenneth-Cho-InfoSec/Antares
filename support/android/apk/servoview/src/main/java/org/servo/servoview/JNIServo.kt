@@ -30,6 +30,7 @@ internal class JNIServo {
         enableLogs: Boolean,
         experimentalMode: Boolean,
         userAgent: String,
+        darkTheme: Boolean,
         callbacks: Callbacks,
         surface: Surface,
     )
@@ -53,6 +54,8 @@ internal class JNIServo {
     external fun evaluateJavascript(script: String)
 
     external fun setUserAgent(userAgent: String)
+
+    external fun setTheme(darkTheme: Boolean)
 
     external fun setContentBlocking(blockAds: Boolean, blockGifs: Boolean, policy: String)
 

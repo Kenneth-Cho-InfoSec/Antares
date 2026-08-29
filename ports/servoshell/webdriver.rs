@@ -255,8 +255,8 @@ impl RunningAppState {
                         continue;
                     };
                     let platform_window = self.platform_window_for_webview(&webview);
-                    let size = platform_window.rendering_context().size2d().to_f32()
-                        / platform_window.hidpi_scale_factor();
+                    let size = platform_window.rendering_context().size2d().to_f32() /
+                        platform_window.hidpi_scale_factor();
                     if let Err(error) = response_sender.send(size) {
                         warn!("Failed to send response of GetViewportSize: {error}");
                     }

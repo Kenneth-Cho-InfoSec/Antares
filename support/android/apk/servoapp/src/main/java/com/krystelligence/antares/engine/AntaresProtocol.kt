@@ -6,11 +6,14 @@
 package com.krystelligence.antares.engine
 
 internal object AntaresProtocol {
-    const val VERSION = 13
+    const val VERSION = 14
     const val CLIENT_PACKAGE = "com.krystelligence.solipsism"
     const val KEY_INITIAL_URL = "initial_url"
     const val KEY_EXPERIMENTAL = "experimental"
     const val KEY_USER_AGENT = "user_agent"
+    const val KEY_THEME = "theme"
+    const val THEME_LIGHT = 0
+    const val THEME_DARK = 1
     const val KEY_SURFACE_PACKAGE = "surface_package"
     const val KEY_ERROR = "error"
     const val KEY_HOST_TOKEN = "host_token"
@@ -29,6 +32,7 @@ internal object AntaresProtocol {
         "forwarded_touch_input",
         "basic_web_platform",
         "custom_user_agent",
+        "preferred_colour_scheme",
         "content_blocking",
         "android_media_bridge",
         "coordinate_probe",

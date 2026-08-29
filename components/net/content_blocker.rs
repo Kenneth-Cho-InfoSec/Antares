@@ -54,8 +54,8 @@ pub fn should_block(url: &ServoUrl) -> bool {
         .unwrap_or_default()
         .trim_end_matches('.')
         .to_ascii_lowercase();
-    if host.is_empty()
-        || state
+    if host.is_empty() ||
+        state
             .policy
             .domain_matches(&state.policy.allowed_domains, &host)
     {
@@ -81,12 +81,12 @@ impl FilterPolicy {
         let mut policy = Self::default();
         for input in lines {
             let line = input.trim();
-            if line.is_empty()
-                || line.starts_with('!')
-                || line.starts_with('#')
-                || line.starts_with('[')
-                || line.contains("##")
-                || line.contains("#@#")
+            if line.is_empty() ||
+                line.starts_with('!') ||
+                line.starts_with('#') ||
+                line.starts_with('[') ||
+                line.contains("##") ||
+                line.contains("#@#")
             {
                 continue;
             }

@@ -118,19 +118,27 @@ impl LayoutBoxBase {
         // their computed inline size is auto. Their internal shadow text can be empty, so using
         // only descendant content sizes incorrectly collapses the widget to its padding.
         //
-        // <https://html.spec.whatwg.org/multipage/rendering.html#the-input-element-as-a-text-entry-widget>
+        // <https://html.spec.whatwg.org/multipage/#the-input-element-as-a-text-entry-widget>
         if self
             .base_fragment_info
             .flags
             .contains(crate::fragment_tree::FragmentFlags::IS_TEXT_INPUT_ELEMENT) &&
-            self.style.box_size(self.style.writing_mode).inline.is_initial()
+            self.style
+                .box_size(self.style.writing_mode)
+                .inline
+                .is_initial()
         {
             let character_count = self.base_fragment_info.input_size.unwrap_or(20);
             let font_size: Au = self.style.get_font().font_size.computed_size().into();
-            let default_preferred_inline_size =
-                font_size.scale_by(character_count as f32 * 0.5);
-            result.sizes.min_content.max_assign(default_preferred_inline_size);
-            result.sizes.max_content.max_assign(default_preferred_inline_size);
+            let default_preferred_inline_size = font_size.scale_by(character_count as f32 * 0.5);
+            result
+                .sizes
+                .min_content
+                .max_assign(default_preferred_inline_size);
+            result
+                .sizes
+                .max_content
+                .max_assign(default_preferred_inline_size);
         }
         *cache = Some(Box::new((constraint_space.block_size, result)));
         result

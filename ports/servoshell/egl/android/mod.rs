@@ -96,6 +96,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
     log: jboolean,
     experimental_mode: jboolean,
     user_agent: JString<'local>,
+    dark_theme: jboolean,
     callbacks_obj: JObject<'local>,
     surface: JObject<'local>,
 ) {
@@ -124,6 +125,11 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         if experimental_mode {
             args.push("--enable-experimental-web-platform-features".to_owned());
         }
+
+        // Remote automation is a development facility. Never let arguments supplied by an
+        // embedding application start a WebDriver listener in a production Android engine.
+        #[cfg(servo_production)]
+        args.retain(|argument| argument != "--webdriver" && !argument.starts_with("--webdriver="));
 
         let (display_handle, window_handle) = display_and_window_handle(env, &surface);
 
@@ -238,6 +244,11 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
                 opts,
                 preferences,
                 servoshell_preferences,
+                theme: if dark_theme {
+                    servo::Theme::Dark
+                } else {
+                    servo::Theme::Light
+                },
                 #[cfg(feature = "webxr")]
                 xr_discovery: None,
             });
@@ -353,6 +364,25 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_setUserAgent<'local>(
         let user_agent = JString::cast_local(env, user_agent)?.try_to_string(env)?;
         debug!("setUserAgent");
         call(env, |app| app.set_user_agent(&user_agent));
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_setTheme<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    dark_theme: jboolean,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let theme = if dark_theme {
+            servo::Theme::Dark
+        } else {
+            servo::Theme::Light
+        };
+        debug!("setTheme {theme:?}");
+        call(env, |app| app.set_theme(theme));
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()

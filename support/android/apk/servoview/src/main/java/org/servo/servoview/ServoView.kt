@@ -25,6 +25,7 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
     private var servoArgs: String? = null
     private var initialUri: String? = null
     private var userAgent: String = ""
+    private var darkTheme = false
     private var blockAds = false
     private var blockGifs = false
     private var contentBlockingPolicy = ""
@@ -65,12 +66,12 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
         this.experimentalMode = experimentalMode
     }
 
-    override fun inGLThread(r: Runnable) {
-        glThread.glLooperHandler!!.post(r)
+    override fun inGLThread(f: Runnable) {
+        glThread.glLooperHandler!!.post(f)
     }
 
-    override fun inUIThread(r: Runnable) {
-        post(r)
+    override fun inUIThread(f: Runnable) {
+        post(f)
     }
 
     override fun requestVsync() {
@@ -188,6 +189,11 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
         servo?.setUserAgent(value)
     }
 
+    fun setTheme(dark: Boolean) {
+        darkTheme = dark
+        servo?.setTheme(dark)
+    }
+
     fun setContentBlocking(blockAds: Boolean, blockGifs: Boolean, policy: String) {
         this.blockAds = blockAds
         this.blockGifs = blockGifs
@@ -237,6 +243,7 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
                     true,
                     servoView.experimentalMode,
                     servoView.userAgent,
+                    servoView.darkTheme,
                     servoView.blockAds,
                     servoView.blockGifs,
                     servoView.contentBlockingPolicy,

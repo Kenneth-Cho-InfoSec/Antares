@@ -135,6 +135,10 @@ class AntaresEngineService : Service() {
                     ?: "about:blank",
                 experimental = configuration.getBoolean(AntaresProtocol.KEY_EXPERIMENTAL, false),
                 userAgent = configuration.getString(AntaresProtocol.KEY_USER_AGENT).orEmpty(),
+                darkTheme = configuration.getInt(
+                    AntaresProtocol.KEY_THEME,
+                    AntaresProtocol.THEME_LIGHT,
+                ) == AntaresProtocol.THEME_DARK,
                 callback = callback,
                 onClosed = ::onSessionClosed,
             ).also(sessions::add)
@@ -186,6 +190,7 @@ class AntaresEngineService : Service() {
         private var initialUrl: String,
         private val experimental: Boolean,
         private var userAgent: String,
+        private var darkTheme: Boolean,
         private val callback: IAntaresSessionCallback,
         private val onClosed: (AntaresSession) -> Unit,
     ) : IAntaresSession.Stub(), Servo.Client {
@@ -210,6 +215,7 @@ class AntaresEngineService : Service() {
                     setServoArgs(null, null, experimental)
                     setHostManagedInputMethod(true)
                 }
+            currentRenderer.setTheme(darkTheme)
             renderHost?.release()
             val newHost = if (Build.VERSION.SDK_INT >= 35) {
                 val inputToken = hostConfiguration.getParcelable(
@@ -319,6 +325,13 @@ class AntaresEngineService : Service() {
             this.userAgent = userAgent.orEmpty()
             mainHandler.post {
                 if (activeSession === this) renderer?.setUserAgent(this.userAgent)
+            }
+        }
+
+        override fun setTheme(theme: Int) {
+            darkTheme = theme == AntaresProtocol.THEME_DARK
+            mainHandler.post {
+                if (activeSession === this) renderer?.setTheme(darkTheme)
             }
         }
 

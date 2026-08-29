@@ -5,7 +5,10 @@
 #![deny(unsafe_code)]
 
 pub mod mem;
-#[cfg_attr(not(target_os = "windows"), expect(unsafe_code))]
+#[cfg_attr(
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "macos"),
+    expect(unsafe_code)
+)]
 pub mod system_reporter;
 pub mod time;
 pub mod trace_dump;

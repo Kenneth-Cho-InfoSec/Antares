@@ -15,8 +15,8 @@ use servo::{
     KeyboardEvent, LoadStatus, MediaSessionActionType, MediaSessionEvent, MouseButton,
     MouseButtonAction, MouseButtonEvent, MouseMoveEvent, Opts, PrefValue, Preferences,
     RefreshDriver, RenderingContext, ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog,
-    TouchEvent, TouchEventType, TouchId, TouchPointerType, UserContentManager, UserScript, WebView,
-    WebViewId, WindowRenderingContext, convert_rect_to_css_pixel,
+    TouchEvent, TouchEventType, TouchId, TouchPointerType, UserContentManager, WebView, WebViewId,
+    WindowRenderingContext, convert_rect_to_css_pixel,
 };
 use url::Url;
 
@@ -24,71 +24,6 @@ use crate::egl::host_trait::HostTrait;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{PlatformWindow, ServoShellWindow, ServoShellWindowId};
-
-fn chromium_major_version(user_agent: &str) -> Option<&str> {
-    let tail = user_agent.split("Chrome/").nth(1)?;
-    let major = tail.split('.').next()?;
-    (!major.is_empty() && major.bytes().all(|byte| byte.is_ascii_digit())).then_some(major)
-}
-
-/// Provides the low-entropy JavaScript half of the Chromium compatibility identity. Without this,
-/// Antares sent Chromium UA-CH headers while `navigator.userAgentData` was absent, an internally
-/// contradictory fingerprint that compatibility checks can reject immediately.
-fn chromium_identity_script(user_agent: &str) -> Option<UserScript> {
-    let major = chromium_major_version(user_agent)?;
-    if !user_agent.contains("AppleWebKit/") || !user_agent.contains("Safari/") {
-        return None;
-    }
-    let mobile = user_agent.contains(" Mobile ") || user_agent.contains(" Mobile Safari/");
-    let platform = if user_agent.contains("Android") {
-        "Android"
-    } else if user_agent.contains("Windows") {
-        "Windows"
-    } else if user_agent.contains("Macintosh") {
-        "macOS"
-    } else {
-        "Linux"
-    };
-    let script = r#"(() => {
-      const brands = Object.freeze([
-        Object.freeze({brand: 'Not:A-Brand', version: '99'}),
-        Object.freeze({brand: 'Google Chrome', version: '__MAJOR__'}),
-        Object.freeze({brand: 'Chromium', version: '__MAJOR__'})
-      ]);
-      const fullVersionList = Object.freeze([
-        Object.freeze({brand: 'Not:A-Brand', version: '99.0.0.0'}),
-        Object.freeze({brand: 'Google Chrome', version: '__MAJOR__.0.0.0'}),
-        Object.freeze({brand: 'Chromium', version: '__MAJOR__.0.0.0'})
-      ]);
-      const low = {brands, mobile: __MOBILE__, platform: '__PLATFORM__'};
-      const data = Object.freeze({
-        ...low,
-        toJSON() { return {...low}; },
-        async getHighEntropyValues(hints) {
-          const result = {...low};
-          for (const hint of hints || []) {
-            if (hint === 'architecture' || hint === 'bitness' || hint === 'model') result[hint] = '';
-            else if (hint === 'platformVersion') result[hint] = '';
-            else if (hint === 'uaFullVersion') result[hint] = '__MAJOR__.0.0.0';
-            else if (hint === 'fullVersionList') result[hint] = fullVersionList;
-            else if (hint === 'wow64') result[hint] = false;
-          }
-          return result;
-        }
-      });
-      if (!('userAgentData' in navigator)) {
-        Object.defineProperty(Object.getPrototypeOf(navigator), 'userAgentData', {
-          configurable: true,
-          enumerable: true,
-          get() { return data; }
-        });
-      }
-    })();"#
-        .replace("__MAJOR__", major)
-        .replace("__MOBILE__", if mobile { "true" } else { "false" })
-        .replace("__PLATFORM__", platform);
-    Some(UserScript::from(script))
-}
 
 pub(crate) struct EmbeddedPlatformWindow {
     host: Rc<dyn HostTrait>,
@@ -112,6 +47,8 @@ pub(crate) struct EmbeddedPlatformWindow {
     current_can_go_forward: Cell<bool>,
     /// The current load status of the active WebView.
     current_load_status: Cell<Option<LoadStatus>>,
+    /// Preferred colour scheme supplied by the Android browser host.
+    theme: Cell<servo::Theme>,
 
     id: ServoShellWindowId,
 }
@@ -123,6 +60,15 @@ impl PlatformWindow for EmbeddedPlatformWindow {
 
     fn id(&self) -> ServoShellWindowId {
         self.id
+    }
+
+    fn theme(&self) -> servo::Theme {
+        self.theme.get()
+    }
+
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    fn set_theme(&self, theme: servo::Theme) {
+        self.theme.set(theme);
     }
 
     fn screen_geometry(&self) -> ScreenGeometry {
@@ -361,6 +307,7 @@ pub(crate) struct AppInitOptions {
     pub opts: Opts,
     pub preferences: Preferences,
     pub servoshell_preferences: ServoShellPreferences,
+    pub theme: servo::Theme,
     #[cfg(feature = "webxr")]
     pub xr_discovery: Option<servo::webxr::Discovery>,
 }
@@ -372,9 +319,8 @@ pub struct App {
     // multiple PRs.
     host: Rc<dyn HostTrait>,
     initial_url: Url,
+    initial_theme: servo::Theme,
     default_user_agent: String,
-    user_content_manager: Rc<UserContentManager>,
-    chromium_identity_script: RefCell<Option<Rc<UserScript>>>,
 }
 
 #[expect(unused)]
@@ -397,10 +343,6 @@ impl App {
 
         let default_user_agent = init.preferences.user_agent.clone();
         let user_content_manager = Rc::new(UserContentManager::new(&servo));
-        let chromium_identity_script = chromium_identity_script(&default_user_agent).map(Rc::new);
-        if let Some(script) = &chromium_identity_script {
-            user_content_manager.add_script(script.clone());
-        }
         let state = Rc::new(RunningAppState::new(
             servo,
             init.servoshell_preferences,
@@ -413,9 +355,8 @@ impl App {
             state,
             host: init.host,
             initial_url,
+            initial_theme: init.theme,
             default_user_agent,
-            user_content_manager,
-            chromium_identity_script: RefCell::new(chromium_identity_script),
         })
     }
 
@@ -453,6 +394,7 @@ impl App {
             current_can_go_back: Default::default(),
             current_can_go_forward: Default::default(),
             current_load_status: Default::default(),
+            theme: Cell::new(self.initial_theme),
         });
         self.state
             .open_window(platform_window, self.initial_url.clone());
@@ -537,14 +479,19 @@ impl App {
             user_agent.to_owned()
         };
         self.servo()
-            .set_preference("user_agent", PrefValue::Str(value.clone()));
-        if let Some(previous) = self.chromium_identity_script.borrow_mut().take() {
-            self.user_content_manager.remove_script(previous);
+            .set_preference("user_agent", PrefValue::Str(value));
+        self.spin_event_loop();
+    }
+
+    /// Update the preferred colour scheme for the platform window and all live pages.
+    pub fn set_theme(&self, theme: servo::Theme) {
+        let window = self.window();
+        window.platform_window().set_theme(theme);
+        for (_, webview) in window.webviews() {
+            webview.notify_theme_change(theme);
         }
-        if let Some(script) = chromium_identity_script(&value).map(Rc::new) {
-            self.user_content_manager.add_script(script.clone());
-            self.chromium_identity_script.replace(Some(script));
-        }
+        window.set_needs_update();
+        window.set_needs_repaint();
         self.spin_event_loop();
     }
 
@@ -806,8 +753,8 @@ impl App {
         let embedded_platform_window = platform_window
             .as_headed_window()
             .expect("No headed window");
-        embedded_platform_window.pending_repaint.get()
-            || embedded_platform_window.refresh_driver.has_pending_frame()
+        embedded_platform_window.pending_repaint.get() ||
+            embedded_platform_window.refresh_driver.has_pending_frame()
     }
 
     pub fn pause_painting(&self) {

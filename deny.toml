@@ -11,11 +11,9 @@ feature-depth = 1
 # More documentation for the advisories section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
 [advisories]
-# Our `mach` integration currently errors on warnings. We should add support
-# for warnings without failing tidy to mach and then change this to `warn`.
-# We don't want to deny yanked crates, since it creates incentives to update
-# quickly, which could be abused by supply-chain attacks that yank old versions.
-yanked = "allow"
+# Keep the default deny policy for yanked dependencies. Required exceptions must
+# be scoped to an audited package and version rather than disabling the signal
+# for the whole dependency graph.
 ignore = [
     # The crate `paste` is no longer maintained.
     "RUSTSEC-2024-0436",

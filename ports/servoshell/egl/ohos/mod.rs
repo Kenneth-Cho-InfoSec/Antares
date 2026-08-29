@@ -319,6 +319,7 @@ fn init_app(
         opts,
         preferences,
         servoshell_preferences,
+        theme: servo::Theme::Light,
         #[cfg(feature = "webxr")]
         xr_discovery: None,
     }))

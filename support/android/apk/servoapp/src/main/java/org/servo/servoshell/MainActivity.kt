@@ -45,6 +45,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.getSystemService
 import androidx.preference.PreferenceManager
 import androidx.window.core.layout.WindowSizeClass
@@ -74,7 +75,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        servoView = ServoView(this, this)
+        servoView = ServoView(this).also { it.setClient(this) }
 
         historyManager = HistoryManager(this)
 
@@ -178,8 +179,8 @@ class MainActivity : ComponentActivity(), Servo.Client {
                     }
                 },
             ) { innerPadding ->
-                Servo(
-                    servoView = servoView,
+                AndroidView(
+                    factory = { servoView },
                     modifier = Modifier.padding(innerPadding),
                 )
                 BackHandler(enabled = canGoBackState.value) {
