@@ -47,6 +47,20 @@ Solipsism verifies that the companion package is present and trusted before bind
 
 The host application remains responsible for browser chrome, tabs, permissions, downloads, bookmarks, settings, and user-facing core selection. Antares does not replace those Solipsism features.
 
+## Android feature profile
+
+The Antares Android package is built without WebGPU and WebXR. Their native
+runtimes, graphics backends, and XR device integrations are therefore not
+included in the companion APK, which keeps the package focused on ordinary
+2D browsing and avoids advertising APIs that are not available in this
+Android integration. WebGL remains available where supported by the renderer.
+
+The upstream Servo feature switches are retained in the Cargo manifests for
+desktop experiments and source compatibility, but they are not part of
+Antares's default Android feature set. WebXR is also disabled in the packaged
+preferences. Applications embedding Antares should treat WebGPU and WebXR as
+unsupported and provide a normal WebGL or non-XR fallback.
+
 ## Known limitations
 
 - Web compatibility is incomplete compared with mature Android browser engines.
@@ -88,8 +102,8 @@ The desktop build is useful for engine development and layout tests. It is not t
 ### Android ARM64 release build
 
 ```shell
-./mach build --android --release --no-package
-./mach package --android --release
+./mach build --android --profile production-stripped --no-package
+./mach package --android --profile production-stripped
 ```
 
 The Gradle companion application can also be assembled directly:

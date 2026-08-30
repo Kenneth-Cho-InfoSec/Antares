@@ -17,8 +17,8 @@ android {
         // by Solipsism only on Android 13 and newer.
         minSdk = 33
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.2.0"
     }
 
     compileOptions {
@@ -29,6 +29,13 @@ android {
     buildFeatures {
         aidl = true
         buildConfig = true
+    }
+
+    // Release artifacts are distributed for ARM64 phones only. Debug variants
+    // for emulator and legacy ABIs remain available for development.
+    packaging {
+        jniLibs.useLegacyPackaging = true
+        resources.excludes += setOf("**/*.prof", "**/*.profraw", "**/*.so.dbg", "**/symbols/**")
     }
 
     val signingKeyInfo = getSigningKeyInfo()
@@ -51,8 +58,12 @@ android {
         release {
             signingConfig =
                 signingConfigs.getByName(if (signingKeyInfo != null) "release" else "debug")
-            isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
 
         // Custom build types
@@ -116,6 +127,9 @@ android {
 androidComponents {
     beforeVariants {
         if (it.buildType == "release" || it.buildType == "debug") {
+            it.enable = false
+        }
+        if (it.buildType?.endsWith("Release") == true && it.name != "arm64Release") {
             it.enable = false
         }
     }

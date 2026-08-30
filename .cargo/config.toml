@@ -1,17 +1,22 @@
 [target.aarch64-linux-android]
 linker = "aarch64-linux-android30-clang"
+rustflags = ["-C", "link-arg=-Wl,--gc-sections", "-C", "link-arg=-Wl,--icf=safe"]
 
 [target.armv7-linux-androideabi]
 linker = "armv7a-linux-androideabi30-clang"
+rustflags = ["-C", "link-arg=-Wl,--gc-sections", "-C", "link-arg=-Wl,--icf=safe"]
 
 [target.armv-linux-androideabi]
 linker = "armv7a-linux-androideabi30-clang"
+rustflags = ["-C", "link-arg=-Wl,--gc-sections", "-C", "link-arg=-Wl,--icf=safe"]
 
 [target.i686-linux-android]
 linker = "i686-linux-android30-clang"
+rustflags = ["-C", "link-arg=-Wl,--gc-sections", "-C", "link-arg=-Wl,--icf=safe"]
 
 [target.x86_64-linux-android]
 linker = "x86_64-linux-android30-clang"
+rustflags = ["-C", "link-arg=-Wl,--gc-sections", "-C", "link-arg=-Wl,--icf=safe"]
 
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link.exe"

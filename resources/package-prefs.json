@@ -3,11 +3,14 @@
   "all": {},
   "macosx": {},
   "linux": {},
-  "android": {},
+  "android": {
+    "dom.bluetooth.enabled": false,
+    "dom.gamepad.enabled": false
+  },
   "windows": {},
   "vr": {
     "_comment": "settings specific to VR builds",
     "dom.webvr.enabled": true,
-    "dom.webxr.enabled": true
+    "dom.webxr.enabled": false
   }
 }

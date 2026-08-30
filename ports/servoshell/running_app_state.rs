@@ -246,6 +246,7 @@ impl RunningAppState {
     ) -> Self {
         servo.set_delegate(Rc::new(ServoShellServoDelegate));
 
+        #[cfg(not(target_os = "android"))]
         let webdriver_receiver = servoshell_preferences.webdriver_port.get().map(|port| {
             let (embedder_sender, embedder_receiver) = unbounded();
             webdriver_server::start_server(
@@ -256,6 +257,8 @@ impl RunningAppState {
             );
             embedder_receiver
         });
+        #[cfg(target_os = "android")]
+        let webdriver_receiver = None;
 
         let experimental_preferences_enabled =
             Cell::new(servoshell_preferences.experimental_preferences_enabled);

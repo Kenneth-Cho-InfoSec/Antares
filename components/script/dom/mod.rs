@@ -233,6 +233,8 @@ pub(crate) use self::clipboard::*;
 pub(crate) mod console;
 pub(crate) mod cookiestore;
 pub(crate) use self::cookiestore::*;
+pub(crate) mod cookiestoremanager;
+pub(crate) use self::cookiestoremanager::*;
 pub(crate) mod credentialmanagement;
 pub(crate) use self::credentialmanagement::*;
 pub(crate) mod css;

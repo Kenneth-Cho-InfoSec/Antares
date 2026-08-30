@@ -429,6 +429,10 @@ opt-level = "s"
 [profile.production-stripped]
 inherits = "production"
 strip = true
+# Android companion releases do not need unwind tables. This also lets the
+# linker discard more unreachable code from the native engine.
+panic = "abort"
+debug = 0
 
 [profile.profiling]
 inherits = "release"
