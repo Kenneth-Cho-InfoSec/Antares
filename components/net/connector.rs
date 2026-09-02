@@ -671,8 +671,12 @@ pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
     let connector = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls_config)
         .https_or_http()
+        // Keep the Android embedder on the HTTP/1.1 path for now. Some large HTTPS services send
+        // an HTTP/2 stream reset before returning their document (PROTOCOL_ERROR), which Hyper's
+        // legacy client surfaces as a terminal load failure instead of retrying over HTTP/1.1.
+        // HTTP/1.1 is fully standards-compliant and gives the engine a reliable compatibility
+        // baseline while retaining TLS, connection pooling, and keep-alive.
         .enable_http1()
-        .enable_http2()
         .wrap_connector(ProxyConnector::new());
 
     Client::builder(TokioExecutor {})

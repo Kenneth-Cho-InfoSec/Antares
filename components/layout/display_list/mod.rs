@@ -35,6 +35,7 @@ use style::properties::ComputedValues;
 use style::properties::longhands::visibility::computed_value::T as Visibility;
 use style::properties::style_structs::Border;
 use style::values::computed::basic_shape::ClipPath as ComputedClipPath;
+use style::values::computed::image::Image as ComputedImage;
 use style::values::computed::{
     BorderImageSideWidth, BorderImageWidth, BorderStyle, LengthPercentage,
     NonNegativeLengthOrNumber, NumberOrPercentage, OutlineStyle,
@@ -1065,6 +1066,8 @@ impl Fragment {
 
         let parent_style = fragment.style();
         let color = parent_style.clone_color();
+        let text_fill_color =
+            parent_style.resolve_color(&parent_style.clone__webkit_text_fill_color());
         let font_size = parent_style.clone_font_size();
         let font_metrics = &fragment.font_metrics;
         let dppx = builder.device_pixel_ratio.get();
@@ -1158,14 +1161,57 @@ impl Fragment {
             }
         }
 
-        builder.wr().push_text(
-            &common,
-            glyph_bounds,
-            &glyphs,
-            fragment.font_key,
-            rgba(color),
-            None,
-        );
+        let background = parent_style.get_background();
+        let text_clipped_gradient =
+            background
+                .background_image
+                .0
+                .iter()
+                .enumerate()
+                .find_map(|(index, image)| {
+                    if !background::layer_clips_to_text(&parent_style, index) {
+                        return None;
+                    }
+                    match image {
+                        ComputedImage::Gradient(gradient) => Some(gradient.as_ref()),
+                        _ => None,
+                    }
+                });
+
+        // Per CSS Color and the WebKit compatibility property, a non-transparent
+        // text fill is painted over a text-clipped background. When the fill is
+        // transparent, sample supported gradients across the glyph run. This is
+        // glyph-granular because WebRender's text primitive accepts one solid
+        // colour per submitted glyph run.
+        if text_fill_color.alpha <= f32::EPSILON &&
+            let Some(gradient) = text_clipped_gradient
+        {
+            let gradient_box = rect.size.to_webrender();
+            let gradient_origin = rect.origin.to_webrender();
+            for glyph in &glyphs {
+                let sample_point = glyph.point - gradient_origin.to_vector();
+                let glyph_color =
+                    gradient::sample_linear(&parent_style, gradient, gradient_box, sample_point)
+                        .unwrap_or_else(|| rgba(color));
+                builder.wr().push_text(
+                    &common,
+                    glyph_bounds,
+                    std::slice::from_ref(glyph),
+                    fragment.font_key,
+                    glyph_color,
+                    None,
+                );
+            }
+        } else {
+            builder.wr().push_text(
+                &common,
+                glyph_bounds,
+                &glyphs,
+                fragment.font_key,
+                rgba(text_fill_color),
+                None,
+            );
+        }
 
         builder.check_if_paintable(glyph_bounds, common.clip_rect, parent_style.clone_opacity());
 
@@ -1651,6 +1697,10 @@ impl<'a> BuilderForBoxFragment<'a> {
             // “The background color is clipped according to the background-clip
             //  value associated with the bottom-most background image layer.”
             let layer_index = b.background_image.0.len() - 1;
+            if background::layer_clips_to_text(painter.style, layer_index) {
+                self.build_background_image(builder, state, painter);
+                return;
+            }
             let bounds = painter.painting_area(self, builder, layer_index);
             let common = painter.common_properties(self, builder, state, layer_index, bounds);
             builder
@@ -1770,6 +1820,11 @@ impl<'a> BuilderForBoxFragment<'a> {
         let node = self.fragment.base.tag.map(|tag| tag.node);
         // Reverse because the property is top layer first, we want to paint bottom layer first.
         for (index, image) in b.background_image.0.iter().enumerate().rev() {
+            // `background-clip: text` is painted while emitting the text glyphs.
+            // Painting it here would incorrectly expose the gradient's box.
+            if background::layer_clips_to_text(style, index) {
+                continue;
+            }
             let Ok(resolved_image) = builder.image_resolver.resolve_image(node, image) else {
                 continue;
             };

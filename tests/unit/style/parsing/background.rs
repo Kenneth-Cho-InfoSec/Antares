@@ -11,6 +11,12 @@ use style::properties::shorthands::background;
 use crate::parsing::parse;
 
 #[test]
+fn background_clip_text_should_parse() {
+    let result = parse_longhand!(background_clip, "text");
+    assert_eq!(result, parse_longhand!(background_clip, "text"));
+}
+
+#[test]
 fn background_shorthand_should_parse_all_available_properties_when_specified() {
     let input = "url(\"http://servo/test.png\") top center / 200px 200px repeat-x fixed padding-box content-box red";
     let result = parse(background::parse_value, input).unwrap();

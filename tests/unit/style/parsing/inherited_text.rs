@@ -7,6 +7,17 @@ use style::values::specified::text::Spacing;
 use crate::parsing::parse;
 
 #[test]
+fn webkit_text_fill_color_should_parse() {
+    use style::properties::longhands::_webkit_text_fill_color;
+
+    let result = parse_longhand!(_webkit_text_fill_color, "transparent");
+    assert_eq!(
+        result,
+        parse_longhand!(_webkit_text_fill_color, "transparent")
+    );
+}
+
+#[test]
 fn negative_letter_spacing_should_parse_properly() {
     use style::properties::longhands::letter_spacing;
     use style::values::specified::LetterSpacing;

@@ -698,7 +698,9 @@ impl ComputedValuesExt for ComputedValues {
         //    used value of the contain property, such as content-visibility:
         //    hidden.
         //
-        // TODO: Support `mask-image`, `mask-border-source`, and `contain`.
+        // CSS Masking creates a stacking context whenever a mask is present. Native mask
+        // compositing is handled by the embedder compatibility path until WebRender image-mask
+        // clips are wired into the fragment display list.
         let effects = self.get_effects();
         let overflow = self.effective_overflow(fragment_flags);
         if !matches!(overflow.x, Overflow::Visible | Overflow::Clip) ||
@@ -706,6 +708,7 @@ impl ComputedValuesExt for ComputedValues {
             effects.opacity < 1.0 ||
             !effects.filter.0.is_empty() ||
             !effects.clip.is_auto() ||
+            self.get_svg().mask_image != style::values::computed::Image::None ||
             self.get_svg().clip_path != ClipPath::None ||
             self.get_box().isolation == ComputedIsolation::Isolate ||
             effects.mix_blend_mode != ComputedMixBlendMode::Normal

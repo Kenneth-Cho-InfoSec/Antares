@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>background-clip: text clips a gradient to glyphs</title>
+<link rel="help" href="https://drafts.csswg.org/css-backgrounds-4/#background-clip">
+<link rel="help" href="https://compat.spec.whatwg.org/#the-webkit-text-fill-color">
+<link rel="match" href="background-clip-text-gradient-ref.html">
+<style>
+  body { background: white; }
+  .subject {
+    display: inline-block;
+    padding: 16px;
+    background-image: linear-gradient(to right, green, green);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: red;
+    font: 40px sans-serif;
+  }
+</style>
+<p class="subject">Clipped text</p>

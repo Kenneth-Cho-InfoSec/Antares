@@ -41,6 +41,18 @@ pub(crate) fn get_cyclic<T>(values: &[T], layer_index: usize) -> &T {
     &values[layer_index % values.len()]
 }
 
+/// Returns whether a background layer is clipped to the foreground text.
+///
+/// Text clipping cannot be represented by a rectangular WebRender clip. The
+/// text display-list builder therefore paints supported background images into
+/// the glyphs instead of allowing this module to paint the image as a box.
+pub(super) fn layer_clips_to_text(style: &ComputedValues, layer_index: usize) -> bool {
+    matches!(
+        get_cyclic(&style.get_background().background_clip.0, layer_index),
+        Clip::Text
+    )
+}
+
 pub(super) struct BackgroundPainter<'a> {
     pub style: &'a ComputedValues,
     pub positioning_area_override: Option<units::LayoutRect>,
@@ -74,7 +86,9 @@ impl<'a> BackgroundPainter<'a> {
         match get_cyclic(&background.background_clip.0, layer_index) {
             Clip::ContentBox => *fragment_builder.content_rect(),
             Clip::PaddingBox => *fragment_builder.padding_rect(),
-            Clip::BorderBox | Clip::BorderArea => fragment_builder.border_rect,
+            // The geometry of a text-clipped background is still established
+            // from the border box. Its actual paint is emitted with the text.
+            Clip::BorderBox | Clip::BorderArea | Clip::Text => fragment_builder.border_rect,
         }
     }
 
@@ -107,6 +121,9 @@ impl<'a> BackgroundPainter<'a> {
             Clip::BorderBox => {
                 fragment_builder.border_edge_clip(builder, state, force_clip_creation)
             },
+            // Glyph clipping is handled by the text display-list builder. Keep
+            // the normal border clip here for geometry and rounded overflow.
+            Clip::Text => fragment_builder.border_edge_clip(builder, state, force_clip_creation),
             Clip::BorderArea => unreachable!("Should be disabled behind a pref"),
         }
     }

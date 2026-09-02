@@ -26,6 +26,138 @@ pub(super) enum WebRenderGradient {
     Conic(WebRenderConicGradient),
 }
 
+fn linear_gradient_line(
+    line_direction: &LineDirection,
+    gradient_box: Size2D<f32, LayoutPixel>,
+) -> (units::LayoutPoint, units::LayoutPoint, f32) {
+    use style::values::specified::position::HorizontalPositionKeyword::*;
+    use style::values::specified::position::VerticalPositionKeyword::*;
+    use units::LayoutVector2D as Vec2;
+
+    let direction = match line_direction {
+        LineDirection::Horizontal(Right) => Vec2::new(1., 0.),
+        LineDirection::Vertical(Top) => Vec2::new(0., -1.),
+        LineDirection::Horizontal(Left) => Vec2::new(-1., 0.),
+        LineDirection::Vertical(Bottom) => Vec2::new(0., 1.),
+        LineDirection::Angle(angle) => {
+            let radians = angle.radians();
+            Vec2::new(radians.sin(), -radians.cos())
+        },
+        LineDirection::Corner(horizontal, vertical) => {
+            let x = match horizontal {
+                Right => gradient_box.height,
+                Left => -gradient_box.height,
+            };
+            let y = match vertical {
+                Top => -gradient_box.width,
+                Bottom => gradient_box.width,
+            };
+            Vec2::new(x, y).normalize()
+        },
+    };
+
+    let gradient_line_length =
+        (gradient_box.width * direction.x).abs() + (gradient_box.height * direction.y).abs();
+    let half_gradient_line = direction * (gradient_line_length / 2.);
+    let center = (gradient_box / 2.).to_vector().to_point();
+    (
+        center - half_gradient_line,
+        center + half_gradient_line,
+        gradient_line_length,
+    )
+}
+
+/// Samples a linear CSS gradient at a point in its gradient box.
+///
+/// WebRender currently accepts a single colour for a glyph run, so this is used
+/// to approximate `background-clip: text` at glyph granularity while retaining
+/// CSS Images gradient geometry, stop fix-up, repeating behaviour, colour-space
+/// conversion, and premultiplied-alpha interpolation.
+pub(super) fn sample_linear(
+    style: &ComputedValues,
+    gradient: &Gradient,
+    gradient_box: Size2D<f32, LayoutPixel>,
+    point: units::LayoutPoint,
+) -> Option<wr::ColorF> {
+    let Gradient::Linear {
+        items,
+        direction,
+        color_interpolation_method,
+        flags,
+        compat_mode: _,
+    } = gradient
+    else {
+        return None;
+    };
+
+    let (start_point, end_point, gradient_line_length) =
+        linear_gradient_line(direction, gradient_box);
+    if gradient_line_length <= f32::EPSILON {
+        return None;
+    }
+
+    let extend_mode = if flags.contains(GradientFlags::REPEATING) {
+        wr::ExtendMode::Repeat
+    } else {
+        wr::ExtendMode::Clamp
+    };
+    let mut color_stops =
+        gradient_items_to_color_stops(style, items, Au::from_f32_px(gradient_line_length));
+    if color_stops.is_empty() {
+        return None;
+    }
+    let stops = create_webrender_stops(&mut color_stops, color_interpolation_method, extend_mode);
+    if stops.is_empty() {
+        return None;
+    }
+
+    let line = end_point - start_point;
+    let line_length_squared = line.x * line.x + line.y * line.y;
+    if line_length_squared <= f32::EPSILON {
+        return stops.first().map(|stop| stop.color);
+    }
+    let from_start = point - start_point;
+    let mut offset = (from_start.x * line.x + from_start.y * line.y) / line_length_squared;
+    offset = match extend_mode {
+        wr::ExtendMode::Repeat => offset.rem_euclid(1.0),
+        wr::ExtendMode::Clamp => offset,
+    };
+
+    if offset <= stops[0].offset {
+        return Some(stops[0].color);
+    }
+    for pair in stops.windows(2) {
+        let start = &pair[0];
+        let end = &pair[1];
+        if offset > end.offset {
+            continue;
+        }
+        let span = end.offset - start.offset;
+        let amount = if span.abs() <= f32::EPSILON {
+            1.0
+        } else {
+            ((offset - start.offset) / span).clamp(0.0, 1.0)
+        };
+        let alpha = start.color.a + (end.color.a - start.color.a) * amount;
+        let premultiplied = |channel_start: f32, channel_end: f32| {
+            let start = channel_start * start.color.a;
+            let end = channel_end * end.color.a;
+            if alpha <= f32::EPSILON {
+                0.0
+            } else {
+                (start + (end - start) * amount) / alpha
+            }
+        };
+        return Some(wr::ColorF::new(
+            premultiplied(start.color.r, end.color.r),
+            premultiplied(start.color.g, end.color.g),
+            premultiplied(start.color.b, end.color.b),
+            alpha,
+        ));
+    }
+    stops.last().map(|stop| stop.color)
+}
+
 pub(super) fn build(
     style: &ComputedValues,
     gradient: &Gradient,
@@ -94,82 +226,8 @@ pub(super) fn build_linear(
     gradient_box: Size2D<f32, LayoutPixel>,
     builder: &mut super::DisplayListBuilder,
 ) -> WebRenderGradient {
-    use style::values::specified::position::HorizontalPositionKeyword::*;
-    use style::values::specified::position::VerticalPositionKeyword::*;
-    use units::LayoutVector2D as Vec2;
-
-    // A vector of length 1.0 in the direction of the gradient line
-    let direction = match line_direction {
-        LineDirection::Horizontal(Right) => Vec2::new(1., 0.),
-        LineDirection::Vertical(Top) => Vec2::new(0., -1.),
-        LineDirection::Horizontal(Left) => Vec2::new(-1., 0.),
-        LineDirection::Vertical(Bottom) => Vec2::new(0., 1.),
-
-        LineDirection::Angle(angle) => {
-            let radians = angle.radians();
-            // “`0deg` points upward,
-            //  and positive angles represent clockwise rotation,
-            //  so `90deg` point toward the right.”
-            Vec2::new(radians.sin(), -radians.cos())
-        },
-
-        LineDirection::Corner(horizontal, vertical) => {
-            // “If the argument instead specifies a corner of the box such as `to top left`,
-            //  the gradient line must be angled such that it points
-            //  into the same quadrant as the specified corner,
-            //  and is perpendicular to a line intersecting
-            //  the two neighboring corners of the gradient box.”
-
-            // Note that that last line is a diagonal of the gradient box rectangle,
-            // since two neighboring corners of a third corner
-            // are necessarily opposite to each other.
-
-            // `{ x: gradient_box.width, y: gradient_box.height }` is such a diagonal vector,
-            // from the bottom left corner to the top right corner of the gradient box.
-            // (Both coordinates are positive.)
-            // Changing either or both signs produces the other three (oriented) diagonals.
-
-            // Swapping the coordinates `{ x: gradient_box.height, y: gradient_box.height }`
-            // produces a vector perpendicular to some diagonal of the rectangle.
-            // Finally, we choose the sign of each cartesian coordinate
-            // such that our vector points to the desired quadrant.
-
-            let x = match horizontal {
-                Right => gradient_box.height,
-                Left => -gradient_box.height,
-            };
-            let y = match vertical {
-                Top => -gradient_box.width,
-                Bottom => gradient_box.width,
-            };
-
-            // `{ x, y }` is now a vector of arbitrary length
-            // with the same direction as the gradient line.
-            // This normalizes the length to 1.0:
-            Vec2::new(x, y).normalize()
-        },
-    };
-
-    // This formula is given as `abs(W * sin(A)) + abs(H * cos(A))` in a note in the spec, under
-    // https://drafts.csswg.org/css-images-3/#linear-gradient-syntax
-    //
-    // Sketch of a proof:
-    //
-    // * Take the top side of the gradient box rectangle. It is a segment of length `W`
-    // * Project onto the gradient line. You get a segment of length `abs(W * sin(A))`
-    // * Similarly, the left side of the rectangle (length `H`)
-    //   projects to a segment of length `abs(H * cos(A))`
-    // * These two segments add up to exactly the gradient line.
-    //
-    // See the illustration in the example under
-    // https://drafts.csswg.org/css-images-3/#linear-gradient-syntax
-    let gradient_line_length =
-        (gradient_box.width * direction.x).abs() + (gradient_box.height * direction.y).abs();
-
-    let half_gradient_line = direction * (gradient_line_length / 2.);
-    let center = (gradient_box / 2.).to_vector().to_point();
-    let start_point = center - half_gradient_line;
-    let end_point = center + half_gradient_line;
+    let (start_point, end_point, gradient_line_length) =
+        linear_gradient_line(line_direction, gradient_box);
 
     let extend_mode = if flags.contains(GradientFlags::REPEATING) {
         wr::ExtendMode::Repeat

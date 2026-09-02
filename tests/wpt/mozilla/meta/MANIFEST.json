@@ -782,6 +782,19 @@
       {}
      ]
     ],
+    "background-clip-text-gradient.html": [
+     "d78ec84570c028703683df0a8283ec3fe11d851b",
+     [
+      null,
+      [
+       [
+        "/_mozilla/css/background-clip-text-gradient-ref.html",
+        "=="
+       ]
+      ],
+      {}
+     ]
+    ],
     "background-clip.html": [
      "0ab0e862880337c8c1db75d5686856b500d2039e",
      [
@@ -8645,6 +8658,10 @@
     ],
     "background-clip-ref.html": [
      "96111ea7955f41bd5f508232f9828c28afd894c0",
+     []
+    ],
+    "background-clip-text-gradient-ref.html": [
+     "a1395ef15c5a8ce3cde5f803515bad7b6917a9a5",
      []
     ],
     "background-image-position-ref.html": [
