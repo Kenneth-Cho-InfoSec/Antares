@@ -14,19 +14,19 @@
   <a href="https://github.com/Kenneth-Cho-InfoSec/Solipsism"><img src="https://img.shields.io/badge/Solipsism-companion-6f42c1" alt="Solipsism companion"></a>
 </p>
 
-Antares is an in-house Android browser core designed to give Solipsism Browser an alternative to the system Android WebView. It provides an experimental native rendering path with a focus on privacy, control, and a small host interface that can be embedded in an Android application.
+Antares 0.2.0 is the experimental in-house Android browser core used by Solipsism Browser. It provides an alternative to the system Android WebView through a native rendering path, with a focus on privacy, control, and a small host interface that can be embedded in an Android application.
 
 Antares is derived from the open-source [Servo](https://github.com/servo/servo) project and is heavily customised for this use case. Servo is mentioned here as the upstream foundation; Antares development, packaging, Android integration, and release decisions are maintained in this repository.
 
 ## Current status
 
-Antares is experimental software. It is useful for testing an independent browser core, but it is not a drop-in replacement for Android WebView. Compatibility, media playback, text input, accessibility, and complex web applications can vary by Android version and device.
+Antares is experimental software and is developed alongside the Solipsism host application. It is not a drop-in replacement for Android WebView. Compatibility, media playback, text input, accessibility, and complex web applications can vary by Android version and device.
 
-The stable browsing fallback is Android WebView through [Solipsism Browser](https://github.com/Kenneth-Cho-InfoSec/Solipsism). Keep both packages installed when switching between cores.
+The stable browsing fallback is Android WebView through [Solipsism Browser](https://github.com/Kenneth-Cho-InfoSec/Solipsism). Keep both packages installed when selecting Antares from Solipsism; the host application owns the browser interface and can switch back to WebView at any time.
 
 ## Install the companion core
 
-Antares is distributed as a separate Android package because the native engine is substantially larger than the Solipsism application.
+Antares is published as a separate signed Android companion package so its native engine can be tested and updated independently, while the Solipsism source tree contains the host protocol and integration code.
 
 1. Install Solipsism Browser from its [release page](https://github.com/Kenneth-Cho-InfoSec/Solipsism/releases).
 2. Download the matching **Antares Engine** APK from the [Antares releases](https://github.com/Kenneth-Cho-InfoSec/Antares/releases).
