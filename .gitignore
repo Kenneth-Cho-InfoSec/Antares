@@ -87,3 +87,6 @@ support/macos/Brewfile.lock.json
 
 # Justfiles
 justfile
+
+# devcontainer
+devcontainer-lock.json

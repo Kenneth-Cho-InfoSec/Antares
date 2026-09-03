@@ -9,7 +9,7 @@ use itertools::izip;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::str::DOMString;
 use servo_arc::Arc;
 use style::shared_lock::{Locked, SharedRwLockReadGuard};
@@ -36,10 +36,14 @@ unsafe_no_jsmanaged_fields!(RulesSource);
 impl Convert<Error> for RulesMutateError {
     fn convert(self) -> Error {
         match self {
-            RulesMutateError::Syntax => Error::Syntax(None),
-            RulesMutateError::IndexSize => Error::IndexSize(None),
-            RulesMutateError::HierarchyRequest => Error::HierarchyRequest(None),
-            RulesMutateError::InvalidState => Error::InvalidState(None),
+            RulesMutateError::Syntax => Error::Syntax(Some("Invalid CSS syntax".into())),
+            RulesMutateError::IndexSize => Error::IndexSize(Some("Index is out of bounds".into())),
+            RulesMutateError::HierarchyRequest => Error::HierarchyRequest(Some(
+                "This request would result in an incorrect node tree".into(),
+            )),
+            RulesMutateError::InvalidState => {
+                Error::InvalidState(Some("CSS rule is invalid".into()))
+            },
         }
     }
 }
@@ -98,14 +102,14 @@ impl CSSRuleList {
         parent_stylesheet: &CSSStyleSheet,
         rules: RulesSource,
     ) -> DomRoot<CSSRuleList> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(CSSRuleList::new_inherited(
                 created_by_rule,
                 parent_stylesheet,
                 rules,
             )),
             window,
-            cx,
         )
     }
 

@@ -101,28 +101,14 @@ skip = [
     # New versions of these dependencies is pulled in by GStreamer / GLib.
     "itertools",
 
-    # Duplicated by btleplug
-    "jni",
+    # Duplicated by ndk and ndk-sys that are still on 0.3.1
     "jni-sys",
 
     # Duplicated by egui
     "foldhash",
-    "windows-collections",
-    "windows-future",
-    "windows-numerics",
-    "windows-strings",
-    "windows-threading",
-
-    # Duplicated by egui-file-dialog
-    "windows",
-    "windows-link",
-    "windows-result",
 
     # Duplicated by winit.
     "windows-sys",
-
-    # wgpu has the latest and greatest.
-    "windows-core",
 
     # Duplicated by gilrs.
     "core-foundation",
@@ -146,7 +132,6 @@ skip = [
     # duplicated by tungstenite
     "getrandom",
     "rand",
-    "rand_chacha",
     "rand_core",
     "sha1",
 
@@ -218,4 +203,25 @@ skip = [
     "wgpu-hal",
     "wgpu-naga-bridge",
     "wgpu-types",
+
+    # duplicated by mozjs which brings in new versions
+    "anstream",
+    "anstyle-parse",
+    "icu_collections",
+    "icu_properties",
+    "icu_properties_data",
+    "icu_provider",
+    "icu_segmenter",
+    "icu_segmenter_data",
+    "litemap",
+    "syn",
+    "tinystr",
+    "toml",
+    "toml_datetime",
+    "winnow",
+    "writeable",
+    "yoke",
+    "yoke-derive",
+    "zerovec",
+    "zerovec-derive",
 ]

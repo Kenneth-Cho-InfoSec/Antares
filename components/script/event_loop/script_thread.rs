@@ -2233,9 +2233,16 @@ impl ScriptThread {
                     node_id.as_deref(),
                 )
             },
-            DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, reply) => {
-                self.debugger_global
-                    .fire_eval(cx, code.into(), id, None, frame_actor_id, reply);
+            DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, eager, reply) => {
+                self.debugger_global.fire_eval(
+                    cx,
+                    code.into(),
+                    id,
+                    None,
+                    frame_actor_id,
+                    eager,
+                    reply,
+                );
             },
             DevtoolScriptControlMsg::GetPossibleBreakpoints(spidermonkey_id, result_sender) => {
                 self.debugger_global.fire_get_possible_breakpoints(
@@ -3953,7 +3960,7 @@ impl ScriptThread {
             return false;
         }
         let Ok(ConversionResult::Success(body)) =
-            DOMString::safe_from_jsval(cx, return_value.handle(), StringificationBehavior::Empty)
+            DOMString::from_jsval(cx, return_value.handle(), StringificationBehavior::Empty)
         else {
             return false;
         };

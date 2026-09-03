@@ -30,7 +30,7 @@ use crate::datablock::DataBlock;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::USVString;
 use crate::gpuconvert::WebGPUConvert;
-use crate::traits::{GPUDeviceTrait, WebGPUGlobalTrait, WebGPUPromiseTrait};
+use crate::traits::{Equivalence, GPUDeviceTrait, WebGPUGlobalTrait, WebGPUPromiseTrait};
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -110,7 +110,7 @@ pub struct GPUBuffer<D: DomTypes> {
 
 impl<D> GPUBuffer<D>
 where
-    D: DomTypes<GPUBuffer = GPUBuffer<D>>,
+    D: Equivalence,
     D::Promise: PromiseHelpers<D>,
 {
     fn new_inherited(
@@ -159,7 +159,7 @@ where
 
 impl<D> GPUBuffer<D>
 where
-    D: DomTypes<GPUBuffer = GPUBuffer<D>>,
+    D: Equivalence,
     D::GPUDevice: DomGlobalGeneric<D> + GPUDeviceTrait<D>,
     D::GlobalScope: WebGPUGlobalTrait,
     D::Promise: PromiseHelpers<D>,
@@ -221,7 +221,7 @@ where
 
 impl<D> GPUBufferMethods<D> for GPUBuffer<D>
 where
-    D: DomTypes<GPUBuffer = GPUBuffer<D>>,
+    D: Equivalence,
     D::Promise: PromiseHelpers<D> + WebGPUPromiseTrait<D> + PartialEq,
     D::GPUDevice: GPUDeviceTrait<D>,
     D::GPUDevice: DomGlobalGeneric<D> + GPUDeviceTrait<D>,
@@ -361,16 +361,43 @@ where
             .map(RootedTraceableBox::new)
             .ok_or(Error::Operation(Some("No active buffer map".into())))?;
 
-        let valid = offset.is_multiple_of(wgpu_types::MAP_ALIGNMENT) &&
-            range_size % wgpu_types::COPY_BUFFER_ALIGNMENT == 0 &&
-            offset >= mapping.range.start &&
-            offset + range_size <= mapping.range.end;
-        if !valid {
+        if !(offset.is_multiple_of(wgpu_types::MAP_ALIGNMENT)) {
             self.mapping
                 .safe_borrow_mut(cx)
                 .replace(*mapping.into_box());
+
             return Err(Error::Operation(Some(
-                "Buffer Mapping is not active".into(),
+                "`offset` is not a multiple of 8".into(),
+            )));
+        }
+
+        if !(range_size % wgpu_types::COPY_BUFFER_ALIGNMENT == 0) {
+            self.mapping
+                .safe_borrow_mut(cx)
+                .replace(*mapping.into_box());
+
+            return Err(Error::Operation(Some(
+                "`rangeSize` is not a multiple of 4".into(),
+            )));
+        }
+
+        if !(offset >= mapping.range.start) {
+            self.mapping
+                .safe_borrow_mut(cx)
+                .replace(*mapping.into_box());
+
+            return Err(Error::Operation(Some(
+                "`offset` is greater than `[[mapping]].range[0]`".into(),
+            )));
+        }
+
+        if !(offset + range_size <= mapping.range.end) {
+            self.mapping
+                .safe_borrow_mut(cx)
+                .replace(*mapping.into_box());
+
+            return Err(Error::Operation(Some(
+                "`offset` + `rangeSize` is less than or equal to `[[mapping]].range[1]`".into(),
             )));
         }
 
@@ -448,7 +475,7 @@ where
         if is_lost {
             p.reject_error(cx, Error::Abort(Some("GPUDevice is lost".into())));
         } else {
-            p.reject_error(cx, Error::Operation(Some("Mapping failure".into())));
+            p.reject_error(cx, Error::Operation(Some("Failed to map GPUBuffer".into())));
         }
     }
 

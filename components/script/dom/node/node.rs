@@ -126,7 +126,8 @@ use crate::dom::types::{CDATASection, KeyboardEvent, MouseEvent, ProcessingInstr
 use crate::dom::window::Window;
 use crate::dom::{
     ChildrenMutation, Range, live_range_insert_steps, live_range_normalization_steps,
-    live_range_pre_remove_steps_for_parent, live_range_pre_remove_steps_for_removed_subtree,
+    live_range_pre_remove_steps, live_range_pre_remove_steps_for_parent,
+    live_range_pre_remove_steps_for_removed_subtree,
 };
 use crate::drag::document_selection_drag::DocumentSelectionDragHandler;
 use crate::drag::drag_gesture::{DragGesture, DragHandler};
@@ -302,7 +303,7 @@ impl Node {
         &self.flags
     }
 
-    pub(super) fn layout_data(&self) -> &DomRefCell<Option<Box<GenericLayoutData>>> {
+    pub(crate) fn layout_data(&self) -> &DomRefCell<Option<Box<GenericLayoutData>>> {
         &self.layout_data
     }
 
@@ -1460,8 +1461,7 @@ impl Node {
             .expect("old_parent should always be initialized");
 
         // Step 9. Run the live range pre-remove steps, given node.
-        let mut cached_index = None;
-        live_range_pre_remove_steps_for_parent(node, &old_parent, &mut cached_index);
+        live_range_pre_remove_steps(node, &old_parent);
 
         // TODO Step 10. For each NodeIterator object iterator whose root’s node document is node’s
         // node document: run the NodeIterator pre-remove steps given node and iterator.
@@ -1499,9 +1499,6 @@ impl Node {
             },
         }
 
-        let mut context =
-            MoveContext::new(Some(&old_parent), prev_sibling.as_deref(), cached_index);
-
         // Step 13. Remove node from oldParent’s children.
         old_parent.move_child(cx, node);
 
@@ -1536,6 +1533,9 @@ impl Node {
         // Step 17. If child is non-null:
         if let Some(child) = child {
             // Steps 17.1-17.2: The live range move steps.
+            if let Some(selection) = new_parent.owner_document().selection() {
+                selection.insert_steps(new_parent, child, 1);
+            }
             live_range_insert_steps(new_parent, child, 1);
         }
 
@@ -1582,10 +1582,9 @@ impl Node {
             // inclusiveDescendant and oldParent.
             // Otherwise, run the moving steps with inclusiveDescendant and null.
             if descendant.deref() == node {
-                vtable_for(&descendant).moving_steps(cx, &context);
+                vtable_for(&descendant).moving_steps(cx, &MoveContext::new(Some(&old_parent)));
             } else {
-                context.old_parent = None;
-                vtable_for(&descendant).moving_steps(cx, &context);
+                vtable_for(&descendant).moving_steps(cx, &MoveContext::new(None));
             }
 
             // Step 24.2. If inclusiveDescendant is custom and newParent is connected,
@@ -2686,7 +2685,11 @@ impl Node {
         // Step 5. If child is non-null:
         if let Some(child) = child {
             // Step 5.1. The live range insert steps.
-            live_range_insert_steps(parent, child, count.try_into().unwrap());
+            let count = count.try_into().unwrap();
+            if let Some(selection) = parent.owner_document().selection() {
+                selection.insert_steps(parent, child, count);
+            }
+            live_range_insert_steps(parent, child, count);
         }
 
         // Step 6. Let previousSibling be child’s previous sibling or parent’s last child if child is null.
@@ -2984,7 +2987,13 @@ impl Node {
 
         // Step 3. Run the live range pre-remove steps.
         let mut cached_index = None;
-        live_range_pre_remove_steps_for_parent(node, parent, &mut cached_index);
+        {
+            let mut lazy_index = || *cached_index.get_or_insert_with(|| node.index());
+            if let Some(selection) = node.owner_document().selection() {
+                selection.remove_steps_for_parent(parent, &mut lazy_index);
+            }
+            live_range_pre_remove_steps_for_parent(parent, &mut lazy_index);
+        }
 
         // TODO: Step 4. Pre-removing steps for node iterators
 
@@ -4035,6 +4044,7 @@ impl NodeMethods<crate::DomTypeHolder> for Node {
     /// <https://dom.spec.whatwg.org/#dom-node-normalize>
     fn Normalize(&self, cx: &mut JSContext) {
         let mut children = self.children().peekable();
+        let selection = self.owner_document().selection();
         while let Some(node) = children.next() {
             // The normalize() method steps are to run these steps for each descendant
             // exclusive Text node node of this:
@@ -4092,14 +4102,18 @@ impl NodeMethods<crate::DomTypeHolder> for Node {
             // Note: Condition guaranteed by collection loop above.
             let first_sibling_index = LazyCell::new(|| node.index() + 1);
             for (current_node_index, current_node) in siblings_to_merge.iter().enumerate() {
+                let index = &|| *first_sibling_index + current_node_index as u32;
                 // Steps 6.1-6.4: The live range update steps.
-                live_range_normalization_steps(
-                    self,
-                    &node,
-                    current_node.upcast(),
-                    &|| *first_sibling_index + current_node_index as u32,
-                    length,
-                );
+                if let Some(selection) = &selection {
+                    selection.normalization_steps(
+                        self,
+                        &node,
+                        current_node.upcast(),
+                        &index,
+                        length,
+                    );
+                }
+                live_range_normalization_steps(self, &node, current_node.upcast(), &index, length);
                 // Step 6.5:  Add currentNode’s length to length.
                 length += current_node.Length();
                 // Step 6.6 Set currentNode to its next sibling.
@@ -4526,16 +4540,18 @@ impl VirtualMethods for Node {
     /// <https://dom.spec.whatwg.org/#concept-node-remove>
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
         self.super_type().unwrap().unbind_from_tree(cx, context);
-        live_range_pre_remove_steps_for_removed_subtree(self, context.parent, &|| context.index());
+
+        let mut cached_index = None;
+        let mut lazy_index = || *cached_index.get_or_insert_with(|| context.index());
+        if let Some(selection) = self.owner_document().selection() {
+            selection.remove_steps_for_removed_subtree(self, context.parent, &mut lazy_index);
+        }
+        live_range_pre_remove_steps_for_removed_subtree(self, context.parent, &mut lazy_index);
     }
 
     fn moving_steps(&self, cx: &mut JSContext, context: &MoveContext) {
         if let Some(super_type) = self.super_type() {
             super_type.moving_steps(cx, context);
-        }
-
-        if let Some(parent) = context.old_parent {
-            live_range_pre_remove_steps_for_removed_subtree(self, parent, &|| context.index());
         }
 
         self.owner_doc_unrooted(cx.no_gc())
