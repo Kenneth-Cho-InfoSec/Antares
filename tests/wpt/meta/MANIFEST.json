@@ -10025,6 +10025,13 @@
        {}
       ]
      ],
+     "delete-at-start-of-head.html": [
+      "c80f8f34ba2250fa758ca5eefad0a466795a831e",
+      [
+       null,
+       {}
+      ]
+     ],
      "delete-at-text-following-svg.html": [
       "cc2040a2a346fbaec41138affd05bc8451bddfe7",
       [
@@ -404818,6 +404825,19 @@
          {}
         ]
        ],
+       "placeholder-update-no-value.html": [
+        "fa7f9c7371b2082c9451c233d477914a0d2c1c35",
+        [
+         null,
+         [
+          [
+           "/html/semantics/forms/the-input-element/placeholder-update-no-value-ref.html",
+           "=="
+          ]
+         ],
+         {}
+        ]
+       ],
        "placeholder-update.html": [
         "af0c0793ee1ca73b2eff5d5054c4bf2c52e27c61",
         [
@@ -554050,6 +554070,10 @@
        ],
        "multiline-placeholder-ref.html": [
         "2812f86e1e6c8e240f60ff313e856b6733e54b5e",
+        []
+       ],
+       "placeholder-update-no-value-ref.html": [
+        "5ddf07db030d1710ac1533e732e8f794f39cac41",
         []
        ],
        "placeholder-update-ref.html": [
@@ -1324396,6 +1324420,13 @@
       {}
      ]
     ],
+    "display-contents.html": [
+     "c5eab0aae76d099f1fe51b6a7b96f98b0c3c51ad",
+     [
+      null,
+      {}
+     ]
+    ],
     "display-none.html": [
      "6ac085315b5bf24dddafc37da3305f7e950a0cae",
      [
@@ -1324873,6 +1324904,13 @@
     ],
     "shadow-content.html": [
      "ce9473cb79258fca90321ee26240612c387ac9b9",
+     [
+      null,
+      {}
+     ]
+    ],
+    "slotted-target.html": [
+     "0e0a940a79c1b3ee21131b697fbe3bd007c9ace6",
      [
       null,
       {}

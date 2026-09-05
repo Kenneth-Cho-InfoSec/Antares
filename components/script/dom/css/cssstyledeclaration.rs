@@ -126,7 +126,7 @@ impl CSSStyleOwner {
                 result
             },
             CSSStyleOwner::CSSRule(ref rule, ref pdb) => {
-                rule.parent_stylesheet().will_modify();
+                rule.parent_stylesheet().will_modify(cx.no_gc());
                 let result = {
                     let mut guard = rule.shared_lock().write();
                     f(&mut *pdb.borrow().write_with(&mut guard), &mut changed)
@@ -555,6 +555,15 @@ impl CSSStyleDeclarationMethods<crate::DomTypeHolder> for CSSStyleDeclaration {
 
         // Step 6
         Ok(DOMString::from(string))
+    }
+
+    /// <https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-parentrule>
+    fn GetParentRule(&self) -> Option<DomRoot<CSSRule>> {
+        if let CSSStyleOwner::CSSRule(rule, _) = &self.owner {
+            Some(rule.as_rooted())
+        } else {
+            None
+        }
     }
 
     /// <https://drafts.csswg.org/cssom/#dom-cssstyleproperties-cssfloat>

@@ -34,12 +34,16 @@ use js::rust::wrappers2::{
     SetAnyPromiseIsHandled, SetPromiseUserInputEventHandlingState,
 };
 use js::rust::{HandleObject, HandleValue, MutableHandleObject, Runtime};
+use script_bindings::interfaces::{
+    HeapTracedPromiseHelpers, PromiseHelpers, StackRootPromiseHelpers,
+};
 use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 use script_bindings::settings_stack::run_a_script;
 
 use crate::DomTypeHolder;
 use crate::dom::bindings::conversions::root_from_object;
 use crate::dom::bindings::error::{Error, ErrorToJsval};
+use crate::dom::bindings::refcounted::TrustedPromise;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{AsHandleValue, Dom};
 use crate::dom::globalscope::GlobalScope;
@@ -48,12 +52,26 @@ use crate::event_loop::script_thread::ScriptThread;
 use crate::realms::enter_auto_realm;
 use crate::runtime::microtask::MicrotaskRunnable;
 
+#[derive(Clone)]
 pub(crate) struct RootedPromise(Rc<Promise>);
 
+impl StackRootPromiseHelpers<crate::DomTypeHolder> for RootedPromise {
+    type HeapTraced = TracedPromise;
+    fn to_traced(&self) -> TracedPromise {
+        RootedPromise::to_traced(self)
+    }
+}
+
 impl Deref for RootedPromise {
-    type Target = Rc<Promise>;
+    type Target = Promise;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl From<Rc<Promise>> for RootedPromise {
+    fn from(promise: Rc<Promise>) -> Self {
+        RootedPromise(promise)
     }
 }
 
@@ -69,6 +87,32 @@ impl RootedPromise {
     }
 }
 
+impl From<&'_ RootedPromise> for TrustedPromise {
+    fn from(promise: &'_ RootedPromise) -> Self {
+        TrustedPromise::new(promise.0.clone())
+    }
+}
+
+impl js::conversions::FromJSValConvertible for RootedPromise {
+    type Config = ();
+
+    fn from_jsval(
+        cx: &mut JSContext,
+        value: HandleValue,
+        _option: Self::Config,
+    ) -> Result<ConversionResult<Self>, ()> {
+        if value.get().is_null() {
+            return Ok(ConversionResult::Failure(c"null not allowed".into()));
+        }
+
+        let mut realm = CurrentRealm::assert(cx);
+        let global_scope = GlobalScope::from_current_realm(&mut realm);
+
+        let promise = Promise::new_resolved_rooted(cx, &global_scope, value);
+        Ok(ConversionResult::Success(promise))
+    }
+}
+
 impl ToJSValConvertible for RootedPromise {
     fn to_jsval(&self, cx: &mut JSContext, rval: MutableHandleValue<'_>) {
         self.0.to_jsval(cx, rval)
@@ -79,6 +123,13 @@ impl ToJSValConvertible for RootedPromise {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct TracedPromise(#[conditional_malloc_size_of] Rc<Promise>);
 
+impl HeapTracedPromiseHelpers<crate::DomTypeHolder> for TracedPromise {
+    type StackRoot = RootedPromise;
+    fn root(&self) -> RootedPromise {
+        TracedPromise::root(self)
+    }
+}
+
 impl js::rust::Rootable for TracedPromise {}
 
 impl TracedPromise {
@@ -87,8 +138,8 @@ impl TracedPromise {
     }
 }
 
-impl std::ops::Deref for TracedPromise {
-    type Target = Rc<Promise>;
+impl Deref for TracedPromise {
+    type Target = Promise;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -160,7 +211,6 @@ impl Promise {
         Promise::new_with_js_promise(cx, obj.handle())
     }
 
-    #[expect(dead_code)]
     pub(crate) fn new_in_realm_rooted(current_realm: &mut CurrentRealm) -> RootedPromise {
         RootedPromise(Self::new_in_realm(current_realm))
     }
@@ -699,11 +749,18 @@ pub(crate) fn wait_for_all_promise(
     promise
 }
 
-impl script_bindings::interfaces::PromiseHelpers<crate::DomTypeHolder> for Promise {
+impl PromiseHelpers<crate::DomTypeHolder> for Promise {
+    type StackRoot = RootedPromise;
+    type HeapTraced = TracedPromise;
+
     fn new_in_realm(
         cx: &mut CurrentRealm,
     ) -> Rc<<crate::DomTypeHolder as script_bindings::DomTypes>::Promise> {
         Promise::new_in_realm(cx)
+    }
+
+    fn new_in_realm_rooted(cx: &mut CurrentRealm) -> RootedPromise {
+        Promise::new_in_realm_rooted(cx)
     }
 
     fn reject_error(&self, cx: &mut js::context::JSContext, error: script_bindings::error::Error) {
