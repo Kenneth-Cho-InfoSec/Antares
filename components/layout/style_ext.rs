@@ -708,7 +708,7 @@ impl ComputedValuesExt for ComputedValues {
             effects.opacity < 1.0 ||
             !effects.filter.0.is_empty() ||
             !effects.clip.is_auto() ||
-            self.get_svg().mask_image != style::values::computed::Image::None ||
+            !self.get_svg().mask_image.0.is_empty() ||
             self.get_svg().clip_path != ClipPath::None ||
             self.get_box().isolation == ComputedIsolation::Isolate ||
             effects.mix_blend_mode != ComputedMixBlendMode::Normal

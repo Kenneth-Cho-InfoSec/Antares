@@ -240,7 +240,6 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
                     size,
                     servoView.resources.displayMetrics.density,
                     servoLog,
-                    true,
                     servoView.experimentalMode,
                     servoView.userAgent,
                     servoView.darkTheme,

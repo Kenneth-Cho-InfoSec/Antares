@@ -135,8 +135,14 @@ unsafe extern "C" fn get_own_property_descriptor(
         return true;
     }
 
-    let window = Root::downcast::<Window>(unsafe { GlobalScope::from_object(proxy.get()) })
-        .expect("global is not a window");
+    // Cross-origin WindowProxy objects do not have a Window global. Never panic here:
+    // a crash in this trap takes down the whole engine (and host app). Leave the property
+    // undefined so cross-origin named access fails safely at the JS level instead.
+    let Some(window) =
+        Root::downcast::<Window>(unsafe { GlobalScope::from_object(proxy.get()) })
+    else {
+        return true;
+    };
     if let Some(obj) = window.NamedGetter(&mut cx, s.into()) {
         rooted!(&in(cx) let mut rval = UndefinedValue());
         obj.to_jsval(&mut cx, rval.handle_mut());
