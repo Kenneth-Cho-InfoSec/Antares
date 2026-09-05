@@ -5,17 +5,22 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::HandleObject;
+use script_bindings::codegen::GenericBindings::AnimationBinding::AnimationPlayState;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::inheritance::Castable;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::root::DomRoot;
+use std::rc::Rc;
 
 use crate::dom::animationeffect::AnimationEffect;
 use crate::dom::bindings::codegen::Bindings::AnimationBinding::AnimationMethods;
+use script_bindings::cell::DomRefCell;
+
 use crate::dom::bindings::root::MutNullableDom;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::types::AnimationTimeline;
 use crate::dom::window::Window;
 
@@ -29,6 +34,11 @@ pub(crate) struct Animation {
 
     /// <https://drafts.csswg.org/web-animations-1/#animation-associated-effect>
     associated_effect: MutNullableDom<AnimationEffect>,
+
+    /// Pre-resolved `ready` promise. Stub animations are immediately ready.
+    ready_promise: DomRefCell<Option<TracedPromise>>,
+    /// Pre-resolved `finished` promise. Stub animations are immediately finished.
+    finished_promise: DomRefCell<Option<TracedPromise>>,
 }
 
 impl Animation {
@@ -37,6 +47,8 @@ impl Animation {
             event_target: EventTarget::new_inherited(),
             timeline: Default::default(),
             associated_effect: Default::default(),
+            ready_promise: Default::default(),
+            finished_promise: Default::default(),
         }
     }
 
@@ -49,7 +61,15 @@ impl Animation {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Self> {
-        Self::new_with_proto(cx, global, None)
+        let animation = Self::new_with_proto(cx, global, None);
+        // Stub animations never tick, so resolve both promises immediately.
+        *animation.ready_promise.borrow_mut() = Some(
+            Promise::new_resolved_rooted(cx, global, animation.clone()).to_traced(),
+        );
+        *animation.finished_promise.borrow_mut() = Some(
+            Promise::new_resolved_rooted(cx, global, animation.clone()).to_traced(),
+        );
+        animation
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#animation-set-the-timeline-of-an-animation>
@@ -101,5 +121,52 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         // > Setting this attribute updates the object’s associated effect using
         //> the procedure to set the associated effect of an animation.
         self.set_the_associated_effect(effect);
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-playstate>
+    ///
+    /// Compat stub: keyframe effects are constructed but never ticked, so every
+    /// animation is immediately finished. This lets sites calling
+    /// `element.animate()` proceed instead of throwing.
+    fn PlayState(&self) -> AnimationPlayState {
+        AnimationPlayState::Finished
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-ready>
+    fn Ready(&self) -> RootedPromise {
+        self.ready_promise
+            .borrow()
+            .as_ref()
+            .expect("ready promise initialized at construction")
+            .root()
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-finished>
+    fn Finished(&self) -> RootedPromise {
+        self.finished_promise
+            .borrow()
+            .as_ref()
+            .expect("finished promise initialized at construction")
+            .root()
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-cancel>
+    fn Cancel(&self) {
+        // No-op: effects are never ticked.
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-finish>
+    fn Finish(&self) {
+        // No-op: already finished.
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-play>
+    fn Play(&self) {
+        // No-op: effects are never ticked.
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-pause>
+    fn Pause(&self) {
+        // No-op: effects are never ticked.
     }
 }

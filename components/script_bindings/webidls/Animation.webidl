@@ -4,7 +4,9 @@
 
 // https://drafts.csswg.org/web-animations-1/#animation
 
-[Exposed=Window, Pref="dom_web_animations_enabled"]
+enum AnimationPlayState { "idle", "running", "paused", "finished" };
+
+[Exposed=Window]
 interface Animation : EventTarget {
   constructor(optional AnimationEffect? effect = null/*,
               optional AnimationTimeline? timeline */);
@@ -14,18 +16,18 @@ interface Animation : EventTarget {
   //          attribute double?                  startTime;
   //          attribute double?                  currentTime;
   //          attribute double                   playbackRate;
-  // readonly attribute AnimationPlayState       playState;
+  readonly attribute AnimationPlayState       playState;
   // readonly attribute AnimationReplaceState    replaceState;
   // readonly attribute boolean                  pending;
-  // readonly attribute Promise<Animation>       ready;
-  // readonly attribute Promise<Animation>       finished;
+  readonly attribute Promise<Animation>       ready;
+  readonly attribute Promise<Animation>       finished;
   //          attribute EventHandler             onfinish;
   //          attribute EventHandler             oncancel;
   //          attribute EventHandler             onremove;
-  // undefined cancel();
-  // undefined finish();
-  // undefined play();
-  // undefined pause();
+  undefined cancel();
+  undefined finish();
+  undefined play();
+  undefined pause();
   // undefined updatePlaybackRate(double playbackRate);
   // undefined reverse();
   // undefined persist();
