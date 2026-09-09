@@ -14,7 +14,7 @@
   <a href="https://github.com/Kenneth-Cho-InfoSec/Solipsism"><img src="https://img.shields.io/badge/Solipsism-companion-6f42c1" alt="Solipsism companion"></a>
 </p>
 
-Antares 0.2.0 is the experimental in-house Android browser core used by Solipsism Browser. It provides an alternative to the system Android WebView through a native rendering path, with a focus on privacy, control, and a small host interface that can be embedded in an Android application.
+Antares 0.2.3 is the experimental in-house Android browser core used by Solipsism Browser. It provides an alternative to the system Android WebView through a native rendering path, with a focus on privacy, control, and a small host interface that can be embedded in an Android application.
 
 Antares is derived from the open-source [Servo](https://github.com/servo/servo) project and is heavily customised for this use case. Servo is mentioned here as the upstream foundation; Antares development, packaging, Android integration, and release decisions are maintained in this repository.
 

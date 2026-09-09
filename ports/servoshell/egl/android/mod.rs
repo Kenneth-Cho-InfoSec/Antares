@@ -713,6 +713,9 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_click(
     env.with_env(|env| -> jni::errors::Result<_> {
         debug!("click");
         call(env, |s| {
+            // Position the cursor first: without a preceding move, down/up hit-tests
+            // against a stale cursor location and taps miss their targets.
+            s.mouse_move(x, y);
             s.mouse_down(x, y, MouseButton::Primary);
             s.mouse_up(x, y, MouseButton::Primary);
         });
