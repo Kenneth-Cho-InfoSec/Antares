@@ -50,7 +50,7 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 
 #[derive(Clone)]
 pub(crate) struct RootedPromise(Rc<Promise>);
@@ -123,6 +123,12 @@ impl ToJSValConvertible for RootedPromise {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct TracedPromise(#[conditional_malloc_size_of] Rc<Promise>);
 
+impl std::cmp::PartialEq for TracedPromise {
+    fn eq(&self, other: &Self) -> bool {
+        *self.0 == **other
+    }
+}
+
 impl HeapTracedPromiseHelpers<crate::DomTypeHolder> for TracedPromise {
     type StackRoot = RootedPromise;
     fn root(&self) -> RootedPromise {
@@ -159,12 +165,12 @@ pub(crate) struct Promise {
 
 /// Private helper to enable adding new methods to `Rc<Promise>`.
 trait PromiseHelper {
-    fn initialize(&self, cx: &mut JSContext);
+    fn initialize(&self, cx: &JSContext);
 }
 
 impl PromiseHelper for Rc<Promise> {
     #[expect(unsafe_code)]
-    fn initialize(&self, cx: &mut JSContext) {
+    fn initialize(&self, cx: &JSContext) {
         let obj = self.reflector().get_jsobject();
         self.permanent_js_root.set(ObjectValue(*obj));
         unsafe {
@@ -215,13 +221,13 @@ impl Promise {
         RootedPromise(Self::new_in_realm(current_realm))
     }
 
-    pub(crate) fn duplicate(&self, cx: &mut JSContext) -> RootedPromise {
+    pub(crate) fn duplicate(&self, cx: &JSContext) -> RootedPromise {
         Promise::new_with_js_promise_rooted(cx, self.reflector().get_jsobject())
     }
 
     #[expect(unsafe_code)]
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-    pub(crate) fn new_with_js_promise(cx: &mut JSContext, obj: HandleObject) -> Rc<Promise> {
+    pub(crate) fn new_with_js_promise(cx: &JSContext, obj: HandleObject) -> Rc<Promise> {
         unsafe {
             assert!(IsPromiseObject(obj));
         }
@@ -237,10 +243,7 @@ impl Promise {
         promise
     }
 
-    pub(crate) fn new_with_js_promise_rooted(
-        cx: &mut JSContext,
-        obj: HandleObject,
-    ) -> RootedPromise {
+    pub(crate) fn new_with_js_promise_rooted(cx: &JSContext, obj: HandleObject) -> RootedPromise {
         RootedPromise(Self::new_with_js_promise(cx, obj))
     }
 
@@ -306,7 +309,6 @@ impl Promise {
         Promise::new_with_js_promise(cx, p.handle())
     }
 
-    #[expect(dead_code)]
     pub(crate) fn new_rejected_rooted(
         cx: &mut JSContext,
         global: &GlobalScope,

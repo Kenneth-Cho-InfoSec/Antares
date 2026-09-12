@@ -65,9 +65,6 @@ pub(crate) struct CSSStyleSheet {
     #[no_trace]
     style_shared_lock: SharedRwLock,
 
-    /// <https://drafts.csswg.org/cssom/#concept-css-style-sheet-origin-clean-flag>
-    origin_clean: Cell<bool>,
-
     /// In which [Document] that this stylesheet was constructed.
     ///
     /// <https://drafts.csswg.org/cssom/#concept-css-style-sheet-constructor-document>
@@ -75,6 +72,9 @@ pub(crate) struct CSSStyleSheet {
 
     /// <https://drafts.csswg.org/cssom/#concept-css-style-sheet-disallow-modification-flag>
     disallow_modification: Cell<bool>,
+
+    /// <https://drafts.csswg.org/cssom/#concept-css-style-sheet-origin-clean-flag>
+    origin_clean: Cell<bool>,
 
     /// <https://drafts.csswg.org/cssom/#concept-css-style-sheet-stylesheet-base-url>
     #[no_trace]
@@ -390,7 +390,7 @@ impl CSSStyleSheetMethods<crate::DomTypeHolder> for CSSStyleSheet {
             window,
             proto,
             None, // owner
-            "text/css".into(),
+            DOMString::from_static("text/css"),
             None, // href
             None, // title
             stylesheet,
@@ -537,7 +537,7 @@ impl CSSStyleSheetMethods<crate::DomTypeHolder> for CSSStyleSheet {
                 sheet.disallow_modification.set(false);
 
                 // Step 4.5. Resolve promise with sheet.
-                trusted_promise.root().resolve_native(cx, &sheet);
+                trusted_promise.root(cx).resolve_native(cx, &sheet);
             }));
 
         Ok(promise)

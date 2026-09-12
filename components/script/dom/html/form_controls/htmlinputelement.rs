@@ -109,21 +109,21 @@ pub(crate) struct HTMLInputElement {
     /// textual input. This is cached so that it can be read during layout.
     is_textual_or_password: Cell<bool>,
 
-    /// <https://html.spec.whatwg.org/multipage/#concept-input-checked-dirty-flag>
-    checked_changed: Cell<bool>,
     placeholder: DomRefCell<DOMString>,
     size: Cell<u32>,
     maxlength: Cell<i32>,
     minlength: Cell<i32>,
+    /// <https://html.spec.whatwg.org/multipage/#concept-input-checked-dirty-flag>
+    checked_changed: Cell<bool>,
     #[no_trace]
     textinput: DomRefCell<TextInput<EmbedderClipboardProvider>>,
-    /// <https://html.spec.whatwg.org/multipage/#concept-input-value-dirty-flag>
-    value_dirty: Cell<bool>,
     form_owner: MutNullableDom<HTMLFormElement>,
     labels_node_list: MutNullableDom<NodeList>,
     validity_state: MutNullableDom<ValidityState>,
     #[no_trace]
     pending_webdriver_response: RefCell<Option<PendingWebDriverResponse>>,
+    /// <https://html.spec.whatwg.org/multipage/#concept-input-value-dirty-flag>
+    value_dirty: Cell<bool>,
 
     /// <https://w3c.github.io/selection-api/#dfn-has-scheduled-selectionchange-event>
     has_scheduled_selectionchange_event: Cell<bool>,
@@ -1153,7 +1153,7 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
                 .upcast::<Element>()
                 .get_attribute_string_value(&local_name!("value"))
                 .map(|value| value.into())
-                .unwrap_or(DOMString::from("on")),
+                .unwrap_or(DOMString::from_static("on")),
             ValueMode::Filename => {
                 let mut path = DOMString::new();
                 match self.input_type().as_specific().get_files() {
@@ -1654,7 +1654,7 @@ impl HTMLInputElement {
                             // but this is _type_ of element rather than content right?
                             ty,
                             name,
-                            value: FormDatumValue::String(DOMString::from("")),
+                            value: FormDatumValue::String(DOMString::new()),
                         })
                     },
                     // Step 5.8.2: Otherwise, for each file in selected files, create an entry with name and a File object representing the file, and append it to entry list.
@@ -2340,11 +2340,8 @@ impl VirtualMethods for HTMLInputElement {
                 .handle_clipboard_event(clipboard_event);
             let flags = reaction.flags;
             if flags.contains(ClipboardEventFlags::FireClipboardChangedEvent) {
-                self.owner_document().event_handler().fire_clipboard_event(
-                    cx,
-                    None,
-                    ClipboardEventType::Change,
-                );
+                self.owner_document()
+                    .fire_clipboard_event(cx, None, ClipboardEventType::Change);
             }
             if flags.contains(ClipboardEventFlags::QueueInputEvent) {
                 self.textinput.borrow().queue_input_event(
@@ -2356,6 +2353,7 @@ impl VirtualMethods for HTMLInputElement {
             }
             if !flags.is_empty() {
                 event.mark_as_handled();
+                self.update_placeholder_shown_state();
                 self.upcast::<Node>()
                     .dirty(cx.no_gc(), NodeDamage::ContentOrHeritage);
             }

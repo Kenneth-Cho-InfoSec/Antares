@@ -9,7 +9,37 @@ import android.content.Context
 import android.util.Size
 import android.view.KeyEvent
 import android.view.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import java.util.concurrent.atomic.AtomicBoolean
+
+@Composable
+fun Servo(
+    servoView: ServoView,
+    modifier: Modifier = Modifier,
+) {
+    LifecycleResumeEffect(servoView) {
+        servoView.onResume()
+        onPauseOrDispose { servoView.onPause() }
+    }
+    AndroidView(
+        factory = { _ -> servoView },
+        modifier = modifier,
+    )
+}
+
+@Stable
+class ServoNavigator {
+    var canGoBackState = mutableStateOf(false)
+        internal set
+
+    var canGoForwardState = mutableStateOf(false)
+        internal set
+}
 
 class Servo(
     args: String?,
@@ -27,9 +57,10 @@ class Servo(
     client: Client,
     context: Context,
     surface: Surface,
+    navigator: ServoNavigator,
 ) {
     private val jni = JNIServo()
-    private val servoCallbacks = Callbacks(client, jni, runCallback)
+    private val servoCallbacks = Callbacks(client, jni, runCallback, navigator)
     private val frameQueued = AtomicBoolean(false)
 
     private fun runOnEngine(action: () -> Unit) {
@@ -172,7 +203,7 @@ class Servo(
 
     fun suspend(suspended: Boolean) {
         servoCallbacks.suspended = suspended
-        if (!suspended) runOnEngine { }
+        if (!suspended) runOnEngine {}
     }
 
     fun mediaSessionAction(action: Int) {
@@ -212,8 +243,6 @@ class Servo(
 
         fun onUrlChanged(url: String)
 
-        fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean)
-
         fun onImeShow()
 
         fun onImeHide()
@@ -237,6 +266,7 @@ class Servo(
         private var client: Client,
         private val jni: JNIServo,
         private val runCallback: RunCallback,
+        private val navigator: ServoNavigator,
     ) : JNIServo.Callbacks, Client {
         var suspended: Boolean = false
         // Servo can wake the embedder repeatedly while a busy page is loading. Coalesce
@@ -287,7 +317,8 @@ class Servo(
         }
 
         override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
-            runCallback.inUIThread { client.onHistoryChanged(canGoBack, canGoForward) }
+            navigator.canGoBackState.value = canGoBack
+            navigator.canGoForwardState.value = canGoForward
         }
 
         override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
@@ -298,8 +329,14 @@ class Servo(
             runCallback.inUIThread { client.onMediaSessionPlaybackStateChange(state) }
         }
 
-        override fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float) {
-            runCallback.inUIThread { client.onMediaSessionSetPositionState(duration, position, playbackRate) }
+        override fun onMediaSessionSetPositionState(
+            duration: Float,
+            position: Float,
+            playbackRate: Float,
+        ) {
+            runCallback.inUIThread {
+                client.onMediaSessionSetPositionState(duration, position, playbackRate)
+            }
         }
     }
 }

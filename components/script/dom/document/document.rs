@@ -34,7 +34,7 @@ use js::jsapi::JSObject;
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject, HandleValue, MutableHandleValue};
 use layout_api::{
-    PendingRestyle, ReflowGoal, ReflowPhasesRun, ReflowStatistics, RestyleReason,
+    LCPCandidate, PendingRestyle, ReflowGoal, ReflowPhasesRun, ReflowStatistics, RestyleReason,
     ScrollContainerQueryFlags, TrustedNodeAddress,
 };
 use malloc_size_of::MallocSizeOfOps;
@@ -48,14 +48,13 @@ use net_traits::request::{
     InsecureRequestsPolicy, PreloadId, PreloadKey, PreloadedResources, RequestBuilder,
 };
 use net_traits::{ReferrerPolicy, ResourceFetchTiming};
-use paint_api::largest_contentful_paint_candidate::LCPCandidateID;
 use percent_encoding::percent_decode;
 use profile_traits::mem::{Report, ReportKind};
 use profile_traits::time::TimerMetadataFrameType;
 use profile_traits::{generic_channel as profile_generic_channel, path};
 use regex::bytes::Regex;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
-use script_bindings::callback::ThisReflector;
+use script_bindings::callback::{RootedCallback, ThisReflector};
 use script_bindings::cell::{DomRefCell, Ref, RefMut};
 use script_bindings::interfaces::DocumentHelpers;
 use script_bindings::reflector::reflect_dom_object_with_proto;
@@ -64,7 +63,7 @@ use script_traits::{DocumentActivity, ProgressiveWebMetricType};
 use servo_arc::Arc;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSend;
-use servo_base::id::{PipelineId, WebViewId};
+use servo_base::id::{LCPCandidateID, PipelineId, WebViewId};
 use servo_base::{Epoch, generic_channel};
 use servo_config::pref;
 use servo_constellation_traits::{NavigationHistoryBehavior, ScriptToConstellationMessage};
@@ -86,7 +85,6 @@ use url::{Host, Position};
 
 use crate::css::stylesheet_loader::StylesheetContextId;
 use crate::css::stylesheet_set::StylesheetSetRef;
-use crate::dom::FlatTreeParent;
 use crate::dom::animationtimeline::AnimationTimeline;
 use crate::dom::attr::Attr;
 use crate::dom::beforeunloadevent::BeforeUnloadEvent;
@@ -139,10 +137,9 @@ use crate::dom::css::stylesheetlist::{StyleSheetList, StyleSheetListOwner};
 use crate::dom::customelementregistry::{CustomElementReactionStack, CustomElementRegistry};
 use crate::dom::customevent::CustomEvent;
 use crate::dom::document::accessibility_data::AccessibilityData;
-use crate::dom::document::animations::Animations;
+use crate::dom::document::animation_manager::AnimationManager;
 use crate::dom::document::focus::{DocumentFocusHandler, FocusableArea};
 use crate::dom::document::iframe_collection::IFrameCollection;
-use crate::dom::document::image_animation::ImageAnimationManager;
 use crate::dom::document::tree_ordered_index_map::TreeOrderedIndexMap;
 use crate::dom::document::websocket::WebSocket;
 use crate::dom::document_embedder_controls::DocumentEmbedderControls;
@@ -216,6 +213,7 @@ use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollingBox};
 use crate::dom::windowproxy::WindowProxy;
 use crate::dom::xpathevaluator::XPathEvaluator;
 use crate::dom::xpathexpression::XPathExpression;
+use crate::dom::{FlatTreeParent, WeakRangeVec};
 use crate::event_loop::document_loader::{DocumentLoader, LoadType};
 use crate::event_loop::script_thread::{ScriptThread, SharedRwLocks};
 use crate::event_loop::timers::{OneshotTimerCallback, OneshotTimers};
@@ -257,6 +255,18 @@ pub(crate) struct RefreshRedirectDue {
     /// Whether the refresh originated from a `<meta>` element.
     pub(crate) from_meta_element: bool,
 }
+
+/// An LCP candidate paired with its resolved element.
+///
+/// <https://www.w3.org/TR/largest-contentful-paint/#largest-contentful-paint-candidate>
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct LCPCandidateAndElement {
+    element: Dom<Element>,
+    #[no_trace]
+    candidate: LCPCandidate,
+}
+
 impl RefreshRedirectDue {
     /// Step 13 of <https://html.spec.whatwg.org/multipage/#shared-declarative-refresh-steps>
     pub(crate) fn invoke(self, cx: &mut JSContext, global: &GlobalScope) {
@@ -572,9 +582,7 @@ pub(crate) struct Document {
     /// <https://drafts.csswg.org/web-animations/#timeline>
     timeline: Dom<DocumentTimeline>,
     /// Animations for this Document
-    animations: Animations,
-    /// Image Animation Manager for this Document
-    image_animation_manager: DomRefCell<ImageAnimationManager>,
+    animation_manager: AnimationManager,
     /// The nearest inclusive ancestors to all the nodes that require a restyle.
     dirty_root: MutNullableDom<Element>,
     /// <https://html.spec.whatwg.org/multipage/#will-declaratively-refresh>
@@ -621,7 +629,7 @@ pub(crate) struct Document {
     /// The node that is currently highlighted by the devtools
     highlighted_dom_node: MutNullableDom<Node>,
     /// Resolved LCP candidate elements, keyed by their [LCPCandidateID].
-    lcp_candidates: DomRefCell<HashMapTracedValues<LCPCandidateID, Dom<Element>>>,
+    lcp_candidates: DomRefCell<HashMapTracedValues<LCPCandidateID, LCPCandidateAndElement>>,
     /// The constructed stylesheet that is adopted by this [Document].
     /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
     adopted_stylesheets: DomRefCell<Vec<Dom<CSSStyleSheet>>>,
@@ -725,6 +733,9 @@ pub(crate) struct Document {
     #[no_trace]
     theme: Cell<Option<Theme>>,
 
+    /// Language specific for this document, set by a meta element
+    default_language: DomRefCell<Option<String>>,
+
     /// True if this document is no longer the active document of its associated
     /// window.
     window_detached: Cell<bool>,
@@ -735,6 +746,10 @@ pub(crate) struct Document {
     /// <https://html.spec.whatwg.org/multipage/#concept-document-internal-ancestor-origin-objects-list>
     #[no_trace]
     internal_ancestor_origin_objects_list: RefCell<Option<Vec<ImmutableOrigin>>>,
+
+    /// A vector of weak references to Range instances that are live on
+    /// this document.
+    live_ranges: WeakRangeVec,
 }
 
 impl Document {
@@ -3197,9 +3212,10 @@ impl Document {
 
         let mut phases = ReflowPhasesRun::empty();
         if self.has_pending_animated_image_update.get() {
-            self.image_animation_manager
-                .borrow()
-                .update_active_frames(&self.window, self.current_animation_timeline_value());
+            self.animation_manager.update_active_image_animation_frames(
+                &self.window,
+                self.current_animation_timeline_value(),
+            );
             self.has_pending_animated_image_update.set(false);
             phases.insert(ReflowPhasesRun::UpdatedImageData);
         }
@@ -3514,12 +3530,17 @@ impl Document {
             }));
     }
 
-    pub(crate) fn store_lcp_candidate(&self, id: LCPCandidateID, element: &Element) {
-        self.lcp_candidates
-            .borrow_mut()
-            .insert(id, Dom::from_ref(element));
+    pub(crate) fn store_lcp_candidate(&self, candidate: LCPCandidate, element: &Element) {
+        self.lcp_candidates.borrow_mut().insert(
+            candidate.id,
+            LCPCandidateAndElement {
+                element: Dom::from_ref(element),
+                candidate,
+            },
+        );
     }
 
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn handle_paint_metric(
         &self,
         cx: &mut JSContext,
@@ -3541,16 +3562,25 @@ impl Document {
                 let entry = binding.upcast::<PerformanceEntry>();
                 self.window.Performance(cx).queue_entry(entry);
             },
-            ProgressiveWebMetricType::LargestContentfulPaint { area, url, id } => {
+            ProgressiveWebMetricType::LargestContentfulPaint { id } => {
+                let candidate = self.lcp_candidates.borrow_mut().remove(&id);
+                let (element, area, url) = match candidate {
+                    Some(stored_candidate) => (
+                        Some(stored_candidate.element),
+                        stored_candidate.candidate.area,
+                        stored_candidate.candidate.url,
+                    ),
+                    None => (None, 0, None),
+                };
                 let binding = LargestContentfulPaint::new(
                     cx,
                     self.window.as_global_scope(),
                     metric_value,
                     area,
                     url,
-                    self.lcp_candidates.borrow_mut().remove(&id).as_deref(),
+                    element.as_deref(),
                 );
-                metrics.set_largest_contentful_paint(id, metric_value, area);
+                metrics.set_largest_contentful_paint(id, metric_value);
                 let entry = binding.upcast::<PerformanceEntry>();
                 self.window.Performance(cx).queue_entry(entry);
             },
@@ -3750,6 +3780,11 @@ impl Document {
 
         computed_objects
     }
+
+    /// Get a reference to this [`Document`]'s vector of weak live ranges.
+    pub(crate) fn live_ranges(&self) -> &WeakRangeVec {
+        &self.live_ranges
+    }
 }
 
 /// Holds DOM object memory sizes for fine-grained memory reports.
@@ -3796,8 +3831,13 @@ impl<'dom> LayoutDom<'dom, Document> {
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn selection_for_layout(&self) -> Option<LayoutDom<'dom, Selection>> {
+    pub(crate) fn visible_selection_for_layout(&self) -> Option<LayoutDom<'dom, Selection>> {
         unsafe { self.unsafe_get().selection.to_layout() }
+    }
+
+    #[expect(unsafe_code)]
+    pub(crate) fn default_language_for_layout(&self) -> Option<&'dom str> {
+        unsafe { self.unsafe_get().default_language.borrow_for_layout() }.as_deref()
     }
 }
 
@@ -4018,13 +4058,15 @@ impl Document {
             has_pending_animated_image_update: Cell::new(false),
             selection: MutNullableDom::new(None),
             timeline: Dom::from_ref(timeline),
-            animations: Animations::new(),
-            image_animation_manager: DomRefCell::new(ImageAnimationManager::default()),
+            animation_manager: AnimationManager::new(),
             dirty_root: Default::default(),
             declarative_refresh: Default::default(),
             resize_observers: Default::default(),
             fonts: Default::default(),
-            visibility_state: Cell::new(DocumentVisibilityState::Hidden),
+            // TODO: This is intended to workaround the issue where `visibilityState`
+            // is always hidden. This should really be hooked with system visibility
+            // which involves more work.
+            visibility_state: Cell::new(DocumentVisibilityState::Visible),
             status_code,
             is_initial_about_blank: Cell::new(is_initial_about_blank),
             allow_declarative_shadow_roots: Cell::new(allow_declarative_shadow_roots),
@@ -4066,7 +4108,9 @@ impl Document {
             image_cache,
             history: Default::default(),
             theme: Default::default(),
+            default_language: Default::default(),
             window_detached: Default::default(),
+            live_ranges: Default::default(),
         }
     }
 
@@ -4816,13 +4860,13 @@ impl Document {
     pub(crate) fn advance_animation_timeline_for_testing(&self, delta: TimeDuration) {
         self.timeline.advance_specific(delta);
         let current_timeline_value = self.current_animation_timeline_value();
-        self.animations
+        self.animation_manager
             .update_for_new_timeline_value(&self.window, current_timeline_value);
     }
 
     pub(crate) fn maybe_mark_animating_nodes_as_dirty(&self, no_gc: &NoGC) {
         let current_timeline_value = self.current_animation_timeline_value();
-        self.animations
+        self.animation_manager
             .mark_animating_nodes_as_dirty(no_gc, current_timeline_value);
     }
 
@@ -4832,24 +4876,18 @@ impl Document {
             .current_time_in_seconds()
     }
 
-    pub(crate) fn animations(&self) -> &Animations {
-        &self.animations
+    pub(crate) fn animation_manager(&self) -> &AnimationManager {
+        &self.animation_manager
     }
 
     pub(crate) fn update_animations_post_reflow(&self) {
         let current_timeline_value = self.current_animation_timeline_value();
-        self.animations
-            .do_post_reflow_update(&self.window, current_timeline_value);
-        self.image_animation_manager
-            .borrow_mut()
+        self.animation_manager
             .do_post_reflow_update(&self.window, current_timeline_value);
     }
 
     pub(crate) fn cancel_animations_for_node(&self, node: &Node) {
-        self.animations.cancel_animations_for_node(node);
-        self.image_animation_manager
-            .borrow_mut()
-            .cancel_animations_for_node(node);
+        self.animation_manager.cancel_animations_for_node(node);
     }
 
     /// Clear style and layout data on this [`Node`] and all descendants. This is used to clean
@@ -4897,7 +4935,7 @@ impl Document {
         // We still want to update the animations, because our timeline
         // value might have been advanced previously via the TestBinding.
         let current_timeline_value = self.current_animation_timeline_value();
-        self.animations
+        self.animation_manager
             .update_for_new_timeline_value(&self.window, current_timeline_value);
         self.maybe_mark_animating_nodes_as_dirty(cx.no_gc());
 
@@ -4905,11 +4943,8 @@ impl Document {
         self.window().perform_a_microtask_checkpoint(cx);
 
         // Steps 4 through 7 occur inside `send_pending_events().`
-        self.animations().send_pending_events(self.window(), cx);
-    }
-
-    pub(crate) fn image_animation_manager(&self) -> Ref<'_, ImageAnimationManager> {
-        self.image_animation_manager.borrow()
+        self.animation_manager()
+            .send_pending_events(self.window(), cx);
     }
 
     pub(crate) fn set_has_pending_animated_image_update(&self) {
@@ -5220,6 +5255,14 @@ impl Document {
     pub(crate) fn set_theme(&self, new_theme: Option<Theme>) {
         self.theme.set(new_theme);
         self.window.refresh_theme();
+    }
+
+    pub(crate) fn default_language(&self) -> Option<String> {
+        self.default_language.borrow().clone()
+    }
+
+    pub(crate) fn set_default_language(&self, new_language: Option<String>) {
+        *self.default_language.borrow_mut() = new_language;
     }
 }
 
@@ -5926,7 +5969,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             "storageevent" => Ok(DomRoot::upcast(StorageEvent::new_uninitialized(
                 cx,
                 &self.window,
-                "".into(),
+                DOMString::new(),
             ))),
             "textevent" => Ok(DomRoot::upcast(TextEvent::new_uninitialized(
                 cx,
@@ -6904,7 +6947,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         &self,
         cx: &mut JSContext,
         expression: DOMString,
-        resolver: Option<Rc<XPathNSResolver>>,
+        resolver: Option<RootedCallback<XPathNSResolver>>,
     ) -> Fallible<DomRoot<crate::dom::types::XPathExpression>> {
         let parsed_expression =
             parse_expression(cx, &expression.str(), resolver, self.is_html_document())?;
@@ -6928,7 +6971,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         cx: &mut JSContext,
         expression: DOMString,
         context_node: &Node,
-        resolver: Option<Rc<XPathNSResolver>>,
+        resolver: Option<RootedCallback<XPathNSResolver>>,
         result_type: u16,
         result: Option<&crate::dom::types::XPathResult>,
     ) -> Fallible<DomRoot<crate::dom::types::XPathResult>> {

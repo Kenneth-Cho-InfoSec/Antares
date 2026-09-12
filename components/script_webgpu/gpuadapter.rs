@@ -157,11 +157,12 @@ where
         // subgroup size. Otherwise, set this value to 4.
         // Step 7. If "subgroups" is supported, set subgroupMaxSize to the largest supported
         // subgroup size. Otherwise, set this value to 128.
-        let (subgroup_min_size, subgroup_max_size) = if features.has(cx, "subgroups".into()) {
-            (info.subgroup_min_size, info.subgroup_max_size)
-        } else {
-            (4, 128)
-        };
+        let (subgroup_min_size, subgroup_max_size) =
+            if features.has(cx, DOMString::from_static("subgroups")) {
+                (info.subgroup_min_size, info.subgroup_max_size)
+            } else {
+                (4, 128)
+            };
 
         // Step 8. Set adapterInfo.isFallbackAdapter to adapter.[[fallback]].
         let is_fallback_adapter = info.device_type == wgpu_types::DeviceType::Cpu;
@@ -188,9 +189,7 @@ where
 impl<D> GPUAdapterMethods<D> for GPUAdapter<D>
 where
     D: Equivalence,
-    D::Promise: PromiseHelpers<D>,
     <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromiseTrait<D>,
-    D::GlobalScope: WebGPUGlobalTrait,
     Self: DomGlobalGeneric<D>,
 {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuadapter-requestdevice>

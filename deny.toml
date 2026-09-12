@@ -208,4 +208,10 @@ skip = [
     "toml",
     "toml_datetime",
     "winnow",
+
+    # Duplicated by cssparser which brings in new versions
+    "phf",
+    "phf_generator",
+    "phf_macros",
+    "phf_shared",
 ]

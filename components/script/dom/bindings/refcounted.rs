@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::rc::Rc;
 
+use js::context::JSContext;
 use js::conversions::ToJSValConvertible;
 use js::jsapi::JSTracer;
 use rustc_hash::FxHashMap;
@@ -18,15 +19,14 @@ pub(crate) use script_bindings::refcounted::Trusted;
 use script_bindings::reflector::DomObject;
 use script_bindings::trace::trace_reflector;
 
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::tasks::task::TaskOnce;
 
-thread_local!(pub(super) static LIVE_REFERENCES: Rc<RefCell<LivePromiseReferences>> =
-    Rc::new(RefCell::new(
+thread_local!(pub(super) static LIVE_PROMISE_REFERENCES: LivePromiseReferences =
     LivePromiseReferences {
         promise_table: RefCell::new(FxHashMap::default()),
     }
-)));
+);
 
 /// The set of live, pinned DOM objects that are currently prevented
 /// from being garbage collected due to outstanding references.
@@ -37,8 +37,7 @@ pub(crate) struct LivePromiseReferences {
 
 impl LivePromiseReferences {
     pub(crate) fn destruct() {
-        LIVE_REFERENCES.with(|r| {
-            let live_references = r.borrow_mut();
+        LIVE_PROMISE_REFERENCES.with(|live_references| {
             let _ = live_references.promise_table.take();
         });
     }
@@ -65,8 +64,7 @@ impl TrustedPromise {
     /// be prevented from being GCed for the duration of the resulting `TrustedPromise` object's
     /// lifetime.
     pub(crate) fn new(promise: Rc<Promise>) -> TrustedPromise {
-        LIVE_REFERENCES.with(|r| {
-            let live_references = &*r.borrow();
+        LIVE_PROMISE_REFERENCES.with(|live_references| {
             let ptr = &raw const *promise;
             live_references.addref_promise(promise);
             TrustedPromise {
@@ -79,9 +77,8 @@ impl TrustedPromise {
     /// Obtain a usable DOM Promise from a pinned `TrustedPromise` value. Fails if used on
     /// a different thread than the original value from which this `TrustedPromise` was
     /// obtained.
-    pub(crate) fn root(self) -> Rc<Promise> {
-        LIVE_REFERENCES.with(|r| {
-            let live_references = &*r.borrow();
+    pub(crate) fn root(self, cx: &JSContext) -> RootedPromise {
+        LIVE_PROMISE_REFERENCES.with(|live_references| {
             assert_eq!(
                 self.owner_thread,
                 live_references as *const _ as *const libc::c_void
@@ -97,6 +94,7 @@ impl TrustedPromise {
                         promises
                             .pop()
                             .expect("rooted promise list unexpectedly empty")
+                            .duplicate(cx)
                     };
                     if entry.get().is_empty() {
                         entry.remove();
@@ -113,7 +111,7 @@ impl TrustedPromise {
         let this = self;
         task!(reject_promise: move |cx| {
             debug!("Rejecting promise.");
-            this.root().reject_error(cx, error);
+            this.root(cx).reject_error(cx, error);
         })
     }
 
@@ -125,25 +123,23 @@ impl TrustedPromise {
         let this = self;
         task!(resolve_promise: move |cx| {
             debug!("Resolving promise.");
-            this.root().resolve_native(cx, &value);
+            this.root(cx).resolve_native(cx, &value);
         })
     }
 }
 
 /// A JSTraceDataOp for tracing reflectors held in LIVE_REFERENCES
 pub(crate) unsafe fn trace_refcounted_objects(tracer: *mut JSTracer) {
-    trace!("tracing live refcounted references");
-    LIVE_REFERENCES.with(|r| {
-        let live_references = &*r.borrow();
-        {
-            let table = live_references.promise_table.borrow_mut();
-            for promise in table.keys() {
-                unsafe {
-                    trace_reflector(tracer, "refcounted", (**promise).reflector());
-                }
+    trace!("tracing live refcounted promise references");
+    LIVE_PROMISE_REFERENCES.with(|live_references| {
+        let table = live_references.promise_table.borrow_mut();
+        for promise in table.keys() {
+            unsafe {
+                trace_reflector(tracer, "refcounted", (**promise).reflector());
             }
         }
     });
+    trace!("tracing live refcounted references");
     unsafe {
         script_bindings::refcounted::trace_live_domreferences(tracer);
     }

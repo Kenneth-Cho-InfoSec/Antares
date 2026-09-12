@@ -19,6 +19,7 @@ import android.view.SurfaceView
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
+
     private val glThread: GLThread
     private val surfaceHolderCallback: SurfaceHolderCallback
     private var servo: Servo? = null
@@ -43,6 +44,7 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
         addTouchables(arrayListOf(this))
         glThread = GLThread()
         surfaceHolderCallback = SurfaceHolderCallback(this)
+
         holder.addCallback(surfaceHolderCallback)
         glThread.start()
     }
@@ -123,9 +125,11 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
         val y = motionEvent.getY(pointerIndex)
 
         when (action) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> servo!!.touchDown(x, y, pointerId)
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_POINTER_DOWN -> servo!!.touchDown(x, y, pointerId)
             MotionEvent.ACTION_MOVE -> servo!!.touchMove(x, y, pointerId)
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> servo!!.touchUp(x, y, pointerId)
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_POINTER_UP -> servo!!.touchUp(x, y, pointerId)
             MotionEvent.ACTION_CANCEL -> servo!!.touchCancel(x, y, pointerId)
         }
 
@@ -172,12 +176,7 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
     }
 
     fun loadUri(uri: String) {
-        val servo = servo
-        if (servo != null) {
-            servo.loadUri(uri)
-        } else {
-            initialUri = uri
-        }
+        servo!!.loadUri(uri)
     }
 
     fun evaluateJavascript(script: String) {
@@ -224,6 +223,7 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
     private class SurfaceHolderCallback(private val servoView: ServoView) : SurfaceHolder.Callback {
         var client: Servo.Client? = null
         var servoLog: String? = null
+
         private var paused = false
 
         override fun surfaceCreated(holder: SurfaceHolder) {
@@ -234,23 +234,24 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
             val surface = holder.surface
 
             if (servoView.servo == null && !paused) {
-                servoView.servo = Servo(
-                    servoView.servoArgs,
-                    servoView.initialUri,
-                    size,
-                    servoView.resources.displayMetrics.density,
-                    servoLog,
-                    servoView.experimentalMode,
-                    servoView.userAgent,
-                    servoView.darkTheme,
-                    servoView.blockAds,
-                    servoView.blockGifs,
-                    servoView.contentBlockingPolicy,
-                    servoView,
-                    client!!,
-                    servoView.context,
-                    surface,
-                )
+                servoView.servo =
+                    Servo(
+                        servoView.servoArgs,
+                        servoView.initialUri,
+                        size,
+                        servoView.resources.displayMetrics.density,
+                        servoLog,
+                        servoView.experimentalMode,
+                        servoView.userAgent,
+                        servoView.darkTheme,
+                        servoView.blockAds,
+                        servoView.blockGifs,
+                        servoView.contentBlockingPolicy,
+                        servoView,
+                        client!!,
+                        servoView.context,
+                        surface,
+                    )
             } else {
                 paused = false
                 servoView.servo!!.resumePainting(surface, size)

@@ -30,6 +30,7 @@ use js::rust::wrappers2::{
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::request::{Destination, Referrer, RequestClient};
 use script_bindings::cell::DomRefCell;
+use script_bindings::inheritance::Castable;
 use script_bindings::settings_stack::run_a_callback;
 
 use crate::DomTypeHolder;
@@ -39,6 +40,7 @@ use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::dom::promise::promisenativehandler::{Callback, PromiseNativeHandler};
+use crate::dom::window::Window;
 use crate::modules::script_module::{
     ModuleHandler, ModuleObject, ModuleTree, RethrowError, ScriptFetchOptions,
     fetch_a_single_module_script, gen_type_error, module_script_from_reference_private,
@@ -199,29 +201,29 @@ pub(crate) fn load_requested_modules(
     rooted!(&in(cx) let host_defined = PrivateValue(Box::into_raw(load_state) as *const _ as *const c_void));
 
     unsafe {
-        let on_resolved = NewFunctionWithReserved(
+        rooted!(&in(cx) let on_resolved = NewFunctionWithReserved(
             cx,
             Some(on_load_requested_modules_resolved),
             0,
             0,
             ptr::null(),
-        );
-        let on_rejected = NewFunctionWithReserved(
+        ));
+        rooted!(&in(cx) let on_rejected = NewFunctionWithReserved(
             cx,
             Some(on_load_requested_modules_rejected),
             1,
             0,
             ptr::null(),
-        );
+        ));
 
-        rooted!(&in(cx) let resolved_function_object = JS_GetFunctionObject(on_resolved));
+        rooted!(&in(cx) let resolved_function_object = JS_GetFunctionObject(on_resolved.get()));
         SetFunctionNativeReserved(
             resolved_function_object.get(),
             LOAD_REACTION_HOST_DEFINED_SLOT,
             host_defined.handle().as_ref(cx),
         );
 
-        rooted!(&in(cx) let rejected_function_object = JS_GetFunctionObject(on_rejected));
+        rooted!(&in(cx) let rejected_function_object = JS_GetFunctionObject(on_rejected.get()));
         SetFunctionNativeReserved(
             rejected_function_object.get(),
             LOAD_REACTION_HOST_DEFINED_SLOT,
@@ -469,7 +471,7 @@ pub(crate) fn host_load_imported_module(
     let module_type = unsafe { GetModuleRequestType(cx, module_request) };
 
     // Step 7.1.5. If the result of running the module type allowed steps given moduleType and settingsObject is false:
-    if let ModuleType::Unknown = module_type {
+    if !module_type_allowed(&global_scope, module_type) {
         // Step 7.1.5.1. Let error be a new TypeError exception.
         let error = gen_type_error(
             cx,
@@ -614,6 +616,20 @@ pub(crate) fn host_load_imported_module(
     );
 }
 
+/// <https://html.spec.whatwg.org/multipage/#module-type-allowed>
+fn module_type_allowed(global: &GlobalScope, module_type: ModuleType) -> bool {
+    match module_type {
+        // Step 1. If moduleType is not "javascript-or-wasm", "css", "json", or "text", then return
+        // false.
+        ModuleType::Unknown | ModuleType::Bytes => false,
+        // Step 2. If moduleType is "css" and the CSSStyleSheet interface is not exposed in
+        // settings's realm, then return false.
+        ModuleType::CSS => global.is::<Window>(),
+        // Step 3. Return true.
+        ModuleType::JavaScript | ModuleType::JSON | ModuleType::Text => true,
+    }
+}
+
 /// <https://html.spec.whatwg.org/multipage/#fetch-a-single-imported-module-script>
 #[expect(clippy::too_many_arguments)]
 fn fetch_a_single_imported_module_script(
@@ -635,10 +651,10 @@ fn fetch_a_single_imported_module_script(
     // Step 3. If the result of running the module type allowed steps given moduleType and settingsObject is false,
     // then run onComplete given null, and return.
     match module_type {
-        ModuleType::Unknown | ModuleType::Bytes | ModuleType::Text | ModuleType::CSS => {
+        ModuleType::Unknown | ModuleType::Bytes => {
             return on_complete(cx, None);
         },
-        ModuleType::JavaScript | ModuleType::JSON => (),
+        ModuleType::JavaScript | ModuleType::JSON | ModuleType::CSS | ModuleType::Text => (),
     }
 
     // Step 4. Fetch a single module script given url, fetchClient, destination, options, settingsObject, referrer,

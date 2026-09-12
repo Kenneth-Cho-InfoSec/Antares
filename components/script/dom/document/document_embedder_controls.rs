@@ -21,6 +21,7 @@ use script_bindings::codegen::GenericBindings::HistoryBinding::HistoryMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::inheritance::Castable;
 use script_bindings::root::{Dom, DomRoot};
+use script_bindings::str::DOMString;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSend;
 use servo_constellation_traits::{LoadData, NavigationHistoryBehavior};
@@ -438,8 +439,11 @@ impl ContextMenuNodes {
             let Some(browsing_context) = document.browsing_context() else {
                 return;
             };
-            let (browsing_context, new) =
-                browsing_context.choose_a_navigable(cx, "_blank".into(), true /* noopener */);
+            let (browsing_context, new) = browsing_context.choose_a_navigable(
+                cx,
+                DOMString::from_static("_blank"),
+                true, /* noopener */
+            );
             let Some(browsing_context) = browsing_context else {
                 return;
             };
@@ -511,21 +515,21 @@ impl ContextMenuNodes {
                 }
             },
             ContextMenuAction::Cut => {
-                window.Document().event_handler().handle_editing_action(
+                window.Document().handle_editing_action(
                     cx,
                     self.text_input_element.as_deref().map(DomRoot::from_ref),
                     EditingActionEvent::Cut,
                 );
             },
             ContextMenuAction::Copy => {
-                window.Document().event_handler().handle_editing_action(
+                window.Document().handle_editing_action(
                     cx,
                     self.text_input_element.as_deref().map(DomRoot::from_ref),
                     EditingActionEvent::Copy,
                 );
             },
             ContextMenuAction::Paste => {
-                window.Document().event_handler().handle_editing_action(
+                window.Document().handle_editing_action(
                     cx,
                     self.text_input_element.as_deref().map(DomRoot::from_ref),
                     EditingActionEvent::Paste,

@@ -112,7 +112,7 @@ use crate::fetch::fetch::{
 };
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
-use crate::runtime::microtask::MicrotaskRunnable;
+use crate::runtime::job_queue::MicrotaskRunnable;
 use crate::tasks::task_source::SendableTaskSource;
 
 /// A CSS file to style the media controls.
@@ -133,10 +133,7 @@ enum FrameStatus {
 }
 
 #[derive(MallocSizeOf)]
-struct FrameHolder(
-    FrameStatus,
-    #[ignore_malloc_size_of = "defined in servo-media"] VideoFrame,
-);
+struct FrameHolder(FrameStatus, VideoFrame);
 
 impl FrameHolder {
     fn new(frame: VideoFrame) -> FrameHolder {
@@ -622,11 +619,6 @@ pub(crate) struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/multipage/#time-marches-on>
     /// was last invoked (if any)
     position_when_time_marches_on_ran: Cell<Option<f64>>,
-    /// Used to track whether the only reason
-    /// <https://html.spec.whatwg.org/multipage/#time-marches-on>
-    /// was called, because it was called as a normal monotic increase.
-    #[no_trace]
-    playback_was_moved: Cell<PlaybackPositionWasMoved>,
     /// <https://html.spec.whatwg.org/multipage/#list-of-newly-introduced-cues>
     newly_introduced_cues: DomRefCell<Vec<Dom<TextTrackCue>>>,
 }
@@ -724,7 +716,6 @@ impl HTMLMediaElement {
             media_controls_id: DomRefCell::new(None),
             did_perform_automatic_track_selection: Default::default(),
             position_when_time_marches_on_ran: Default::default(),
-            playback_was_moved: Default::default(),
             newly_introduced_cues: Default::default(),
         }
     }
@@ -797,8 +788,7 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/multipage/#time-marches-on>
     fn time_marches_on(&self, cx: &mut JSContext, playback_was_moved: PlaybackPositionWasMoved) {
         let playback_was_moved_monotonic_increase =
-            self.playback_was_moved.get() == PlaybackPositionWasMoved::NormalPlayback;
-        self.playback_was_moved.set(playback_was_moved);
+            playback_was_moved == PlaybackPositionWasMoved::NormalPlayback;
         // Step 1. Let current cues be a list of cues,
         // initialized to contain all the cues of all the hidden or
         // showing text tracks of the media element (not the disabled ones)
@@ -813,13 +803,9 @@ impl HTMLMediaElement {
         };
         type CueVec = Vec<DomRoot<TextTrackCue>>;
         let (current_cues, other_cues): (CueVec, CueVec) = text_tracks_list
-            .iter()
-            .filter_map(|text_track| {
-                // Implicitly `GetCues` already filters for Disabled and returns
-                // None in that case
-                text_track.GetCues(cx)
-            })
-            .flat_map(|text_track| text_track.cues())
+            .iter(cx.no_gc())
+            .filter(|text_track| text_track.Mode() != TextTrackMode::Disabled)
+            .flat_map(|text_track| text_track.get_cues())
             .partition(|cue| {
                 cue.start_time() <= current_playback_position &&
                     cue.end_time() > current_playback_position
@@ -916,9 +902,7 @@ impl HTMLMediaElement {
         let mut prepare_an_event =
             |time: f64, event: Atom, text_track_cue: DomRoot<TextTrackCue>| {
                 // Step 1. Let track be the text track with which the text track cue target is associated.
-                let track = text_track_cue
-                    .get_track()
-                    .expect("Must always have a corresponding track element");
+                let track = text_track_cue.get_track();
                 // Step 2. Create a task to fire an event named event at target.
                 //
                 // We create the task in the for-loops below
@@ -927,7 +911,9 @@ impl HTMLMediaElement {
                 // the text track track, and the text track cue target.
                 events.push((time, (event, text_track_cue)));
                 // Step 4. Add track to affected tracks.
-                affected_tracks.push(track);
+                if let Some(track) = track {
+                    affected_tracks.push(track);
+                }
             };
 
         // Step 10. For each text track cue in missed cues,
@@ -1059,7 +1045,7 @@ impl HTMLMediaElement {
             // false and run the time marches on steps.
             if self.show_poster.get() {
                 self.show_poster.set(false);
-                self.time_marches_on(cx, PlaybackPositionWasMoved::ExplicitMove);
+                self.time_marches_on(cx, PlaybackPositionWasMoved::NormalPlayback);
             }
 
             // Step 3.3. Queue a media element task given the media element to fire an event named
@@ -1196,12 +1182,14 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/multipage/#ready-states>
     fn change_ready_state(&self, cx: &mut JSContext, ready_state: ReadyState) {
         let old_ready_state = self.ready_state.get();
+        let was_potentially_playing = self.is_potentially_playing();
         self.ready_state.set(ready_state);
 
+        // > When the ready state of a media element whose networkState is not NETWORK_EMPTY changes,
+        // > the user agent must follow the steps given below:
         if self.network_state.get() == NetworkState::Empty {
             return;
         }
-
         if old_ready_state == ready_state {
             return;
         }
@@ -1211,18 +1199,17 @@ impl HTMLMediaElement {
             // => "If the previous ready state was HAVE_NOTHING, and the new ready state is
             // HAVE_METADATA"
             (ReadyState::HaveNothing, ReadyState::HaveMetadata) => {
-                // Queue a media element task given the media element to fire an event named
-                // loadedmetadata at the element.
+                // > Queue a media element task given the media element to fire an event named
+                // > loadedmetadata at the element.
                 self.queue_media_element_task_to_fire_event(atom!("loadedmetadata"));
-                // No other steps are applicable in this case.
                 return;
             },
             // => "If the previous ready state was HAVE_METADATA and the new ready state is
             // HAVE_CURRENT_DATA or greater"
             (ReadyState::HaveMetadata, new) if new >= ReadyState::HaveCurrentData => {
-                // If this is the first time this occurs for this media element since the load()
-                // algorithm was last invoked, the user agent must queue a media element task given
-                // the media element to fire an event named loadeddata at the element.
+                // > If this is the first time this occurs for this media element since the load()
+                // > algorithm was last invoked, the user agent must queue a media element task given
+                // > the media element to fire an event named loadeddata at the element.
                 if !self.fired_loadeddata_event.get() {
                     self.fired_loadeddata_event.set(true);
 
@@ -1246,63 +1233,109 @@ impl HTMLMediaElement {
                         }));
                 }
 
-                // Steps for the transition from HaveMetadata to HaveCurrentData
-                // or HaveFutureData also apply here, as per the next match
-                // expression.
+                // > If the new ready state is HAVE_FUTURE_DATA or HAVE_ENOUGH_DATA,
+                // > then the relevant steps below must then be run also.
+                if new != ReadyState::HaveFutureData && new != ReadyState::HaveEnoughData {
+                    return;
+                }
             },
-            (ReadyState::HaveFutureData, new) if new <= ReadyState::HaveCurrentData => {
-                // FIXME(nox): Queue a task to fire timeupdate and waiting
-                // events if the conditions call from the spec are met.
+            _ => {},
+        }
+        match (old_ready_state, ready_state) {
+            // => "If the previous ready state was HAVE_FUTURE_DATA or more,
+            // and the new ready state is HAVE_CURRENT_DATA or less"
+            (old, new)
+                if old >= ReadyState::HaveFutureData && new <= ReadyState::HaveCurrentData =>
+            {
+                // > If the media element was potentially playing before its readyState
+                // > attribute changed to a value lower than HAVE_FUTURE_DATA,
+                // > and the element has not ended playback,
+                // > and playback has not stopped due to errors,
+                // > paused for user interaction, or paused for in-band content,
+                // > the user agent must queue a media element task given the media element
+                // > to fire an event named timeupdate at the element,
+                // > and queue a media element task given the media element
+                // > to fire an event named waiting at the element.
+                if was_potentially_playing &&
+                    !self.ended_playback(LoopCondition::Included) &&
+                    !self.error.get().is_none() &&
+                    !self.is_paused_for_user_interaction() &&
+                    !self.is_paused_for_in_band_content()
+                {
+                    self.queue_media_element_task_to_fire_event(atom!("timeupdate"));
+                    self.queue_media_element_task_to_fire_event(atom!("waiting"));
+                }
+            },
 
-                // No other steps are applicable in this case.
-                return;
+            // => "If the previous ready state was HAVE_CURRENT_DATA or less,
+            // and the new ready state is HAVE_FUTURE_DATA"
+            (old, ReadyState::HaveFutureData) if old <= ReadyState::HaveCurrentData => {
+                // > The user agent must queue a media element task given the media element to fire an
+                // > event named canplay at the element.
+                self.queue_media_element_task_to_fire_event(atom!("canplay"));
+
+                // > If the element's paused attribute is false, the user agent must notify about playing
+                // > for the element.
+                if !self.Paused() {
+                    self.notify_about_playing();
+                }
+            },
+
+            // >= "If the new ready state is HAVE_ENOUGH_DATA"
+            (_, ReadyState::HaveEnoughData) => {
+                // > If the previous ready state was HAVE_CURRENT_DATA or less,
+                // > the user agent must queue a media element task given the media element
+                // > to fire an event named canplay at the element, and,
+                // > if the element's paused attribute is false, notify about playing for the element.
+                if old_ready_state <= ReadyState::HaveCurrentData {
+                    self.queue_media_element_task_to_fire_event(atom!("canplay"));
+                    if !self.Paused() {
+                        self.notify_about_playing();
+                    }
+                }
+
+                // > The user agent must queue a media element task given the media element to fire an
+                // > event named canplaythrough at the element.
+                self.queue_media_element_task_to_fire_event(atom!("canplaythrough"));
+
+                // > If the element is not eligible for autoplay,
+                // > then the user agent must abort these substeps.
+                if !self.eligible_for_autoplay() {
+                    self.update_media_state();
+                    return;
+                }
+
+                // > The user agent may run the following substeps:
+                if self.eligible_for_autoplay() {
+                    // Step 1. Set the paused attribute to false.
+                    self.paused.set(false);
+
+                    // Step 2. If the element's show poster flag is true, set it to false and run the
+                    // time marches on steps.
+                    if self.show_poster.get() {
+                        self.show_poster.set(false);
+                        self.time_marches_on(cx, PlaybackPositionWasMoved::NormalPlayback);
+                    }
+
+                    // Step 3. Queue a media element task given the element to fire an event named play
+                    // at the element.
+                    self.queue_media_element_task_to_fire_event(atom!("play"));
+
+                    // Step 4. Notify about playing for the element.
+                    self.notify_about_playing();
+                }
+
+                // > Alternatively, if the element is a video element,
+                // > the user agent may start observing whether the element intersects the viewport.
+                // > When the element starts intersecting the viewport,
+                // > if the element is still eligible for autoplay, run the substeps above.
+                // > Optionally, when the element stops intersecting the viewport,
+                // > if the can autoplay flag is still true and the autoplay attribute
+                // > is still specified, run the following substeps:
+                // TODO
             },
 
             _ => (),
-        }
-
-        // => "If the previous ready state was HAVE_CURRENT_DATA or less, and the new ready state is
-        // HAVE_FUTURE_DATA or more"
-        if old_ready_state <= ReadyState::HaveCurrentData &&
-            ready_state >= ReadyState::HaveFutureData
-        {
-            // The user agent must queue a media element task given the media element to fire an
-            // event named canplay at the element.
-            self.queue_media_element_task_to_fire_event(atom!("canplay"));
-
-            // If the element's paused attribute is false, the user agent must notify about playing
-            // for the element.
-            if !self.Paused() {
-                self.notify_about_playing();
-            }
-        }
-
-        // => "If the new ready state is HAVE_ENOUGH_DATA"
-        if ready_state == ReadyState::HaveEnoughData {
-            // The user agent must queue a media element task given the media element to fire an
-            // event named canplaythrough at the element.
-            self.queue_media_element_task_to_fire_event(atom!("canplaythrough"));
-
-            // If the element is eligible for autoplay, then the user agent may run the following
-            // substeps:
-            if self.eligible_for_autoplay() {
-                // Step 1. Set the paused attribute to false.
-                self.paused.set(false);
-
-                // Step 2. If the element's show poster flag is true, set it to false and run the
-                // time marches on steps.
-                if self.show_poster.get() {
-                    self.show_poster.set(false);
-                    self.time_marches_on(cx, PlaybackPositionWasMoved::ExplicitMove);
-                }
-
-                // Step 3. Queue a media element task given the element to fire an event named play
-                // at the element.
-                self.queue_media_element_task_to_fire_event(atom!("play"));
-
-                // Step 4. Notify about playing for the element.
-                self.notify_about_playing();
-            }
         }
 
         self.update_media_state();
@@ -1920,6 +1953,10 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/multipage/#potentially-playing>
     fn is_potentially_playing(&self) -> bool {
+        // > A media element is said to be potentially playing when
+        // > its paused attribute is false, the element has not ended playback,
+        // > playback has not stopped due to errors,
+        // > and the element is not a blocked media element.
         !self.paused.get() &&
             !self.ended_playback(LoopCondition::Included) &&
             self.error.get().is_none() &&
@@ -2441,6 +2478,20 @@ impl HTMLMediaElement {
 
         let player_id = {
             let player_guard = player.lock().unwrap();
+
+            // We flag the media to enable download buffering when it's supposed to be big and
+            // that happens heuristically for videos with preload="auto" and audio that loops.
+            let is_video = matches!(
+                self.media_type_id(),
+                HTMLMediaElementTypeId::HTMLVideoElement
+            );
+            let should_enable_download_buffering =
+                (is_video || self.Loop()) && self.Preload() == "auto";
+            if let Err(error) =
+                player_guard.set_download_buffering_enabled(should_enable_download_buffering)
+            {
+                warn!("Could not set download buffering: {error:?}");
+            }
 
             if let Err(error) = player_guard.set_mute(self.muted.get()) {
                 warn!("Could not set mute state: {error:?}");
@@ -3340,7 +3391,11 @@ impl HTMLMediaElement {
         let Some(text_tracks_list) = self.text_tracks_list.get() else {
             return;
         };
-        let candidates = text_tracks_list.tracks_for_kinds(text_track_kinds);
+        let candidates: Vec<DomRoot<TextTrack>> = text_tracks_list
+            .iter(cx.no_gc())
+            .filter(|track| text_track_kinds.contains(&track.Kind()))
+            .map(|track| track.as_rooted())
+            .collect();
         // Step 2. If candidates is empty, then return.
         if candidates.is_empty() {
             return;
@@ -3733,7 +3788,7 @@ impl HTMLMediaElementMethods<crate::DomTypeHolder> for HTMLMediaElement {
         let track = TextTrack::new(
             cx,
             &window,
-            "".into(),
+            DOMString::new(),
             kind,
             label,
             language,
