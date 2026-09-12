@@ -39,7 +39,7 @@ macro_rules! margin_rule_types {
         impl MarginRuleType {
             /// Matches the rule type for this name. This does not expect a
             /// leading '@'.
-            pub fn match_name(name: &str) -> Option<Self> {
+            pub fn from_name(name: &str) -> Option<Self> {
                 Some(match_ignore_ascii_case! { name,
                     $( $val => MarginRuleType::$id, )+
                     _ => return None,
@@ -119,7 +119,7 @@ margin_rule_types! {
 impl MarginRuleType {
     #[inline]
     fn to_str(&self) -> &'static str {
-        &MARGIN_RULE_AT_NAMES[*self as usize]
+        MARGIN_RULE_AT_NAMES[*self as usize]
     }
     #[inline]
     fn name(&self) -> &'static str {
@@ -183,8 +183,8 @@ impl DeepCloneWithLock for MarginRule {
     fn deep_clone_with_lock(&self, lock: &SharedRwLock, guard: &SharedRwLockReadGuard) -> Self {
         MarginRule {
             rule_type: self.rule_type,
-            block: Arc::new(lock.wrap(self.block.read_with(&guard).clone())),
-            source_location: self.source_location.clone(),
+            block: Arc::new(lock.wrap(self.block.read_with(guard).clone())),
+            source_location: self.source_location,
         }
     }
 }

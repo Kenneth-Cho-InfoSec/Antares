@@ -165,7 +165,7 @@ trait PrivateMatchMethods: TElement {
                     context.shared,
                     CascadeLevel::new(CascadeOrigin::Transitions),
                     LayerOrder::root(),
-                    self.transition_rule(&context.shared)
+                    self.transition_rule(context.shared)
                         .as_ref()
                         .map(|a| a.borrow_arc()),
                     primary_rules,
@@ -177,7 +177,7 @@ trait PrivateMatchMethods: TElement {
                     context.shared,
                     CascadeLevel::new(CascadeOrigin::Animations),
                     LayerOrder::root(),
-                    self.animation_rule(&context.shared)
+                    self.animation_rule(context.shared)
                         .as_ref()
                         .map(|a| a.borrow_arc()),
                     primary_rules,
@@ -243,7 +243,7 @@ trait PrivateMatchMethods: TElement {
         let new_ui_style = new_style.get_ui();
         let new_style_specifies_animations = new_ui_style.specifies_animations();
 
-        let has_animations = self.has_css_animations(&context.shared, pseudo_element);
+        let has_animations = self.has_css_animations(context.shared, pseudo_element);
         if !new_style_specifies_animations && !has_animations {
             return false;
         }
@@ -341,7 +341,7 @@ trait PrivateMatchMethods: TElement {
             return false;
         }
 
-        return true;
+        true
     }
 
     #[cfg(feature = "gecko")]
@@ -419,7 +419,7 @@ trait PrivateMatchMethods: TElement {
         // side will really update transition.
         if !self.needs_transitions_update(
             before_change_or_starting.unwrap(),
-            after_change_style.as_ref().unwrap_or(&new_values),
+            after_change_style.as_ref().unwrap_or(new_values),
         ) {
             return None;
         }
@@ -516,7 +516,7 @@ trait PrivateMatchMethods: TElement {
             tasks.insert(UpdateAnimationsTasks::CSS_TRANSITIONS);
         }
 
-        if self.has_animations(&context.shared) {
+        if self.has_animations(context.shared) {
             tasks.insert(UpdateAnimationsTasks::EFFECT_PROPERTIES);
             if important_rules_changed {
                 tasks.insert(UpdateAnimationsTasks::CASCADE_RESULTS);
@@ -942,7 +942,7 @@ pub trait MatchMethods: TElement {
     /// happen if we decide to not blockify for roots of disconnected subtrees,
     /// which is a kind of dubious behavior.
     fn layout_parent(&self) -> Self {
-        let mut current = self.clone();
+        let mut current = *self;
         loop {
             current = match current.traversal_parent() {
                 Some(el) => el,
@@ -966,7 +966,7 @@ pub trait MatchMethods: TElement {
     /// as it involves locking and font metrics access, we consider that line-height may have
     /// changed if the font-size or line-height property itself has changed, or if the value
     /// is 'normal' and one of the properties that affects font selection (family, style,
-    /// weight, stretch) has changed.
+    /// weight, width) has changed.
     fn line_height_likely_changed(
         old_style: Option<&Arc<ComputedValues>>,
         new_style: &Arc<ComputedValues>,
@@ -993,7 +993,7 @@ pub trait MatchMethods: TElement {
         font_property_changed!(clone_font_family)
             || font_property_changed!(clone_font_style)
             || font_property_changed!(clone_font_weight)
-            || font_property_changed!(clone_font_stretch)
+            || font_property_changed!(clone_font_width)
     }
 
     /// Updates the styles with the new ones, diffs them, and stores the restyle
@@ -1049,7 +1049,7 @@ pub trait MatchMethods: TElement {
             if line_height_likely_changed {
                 let new_line_height = device
                     .calc_line_height(
-                        &new_primary_style.get_font(),
+                        new_primary_style.get_font(),
                         new_primary_style.writing_mode,
                         None,
                     )
@@ -1065,26 +1065,26 @@ pub trait MatchMethods: TElement {
             // font metrics can be an expensive call, they are only updated if these
             // units are used in the document.
             if device.used_root_font_metrics() && device.update_root_font_metrics() {
-                child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_ANCESTOR_FONT;
+                child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_WM_OR_ANCESTOR_FONT;
             }
         }
 
         if font_size_changed || line_height_likely_changed {
-            child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_ANCESTOR_FONT;
+            child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_WM_OR_ANCESTOR_FONT;
         }
 
-        if context.shared.stylist.quirks_mode() == QuirksMode::Quirks {
-            if self.is_html_document_body_element() {
-                // NOTE(emilio): We _could_ handle dynamic changes to it if it
-                // changes and before we reach our children the cascade stops,
-                // but we don't track right now whether we use the document body
-                // color, and nobody else handles that properly anyway.
-                let device = context.shared.stylist.device();
+        if context.shared.stylist.quirks_mode() == QuirksMode::Quirks
+            && self.is_html_document_body_element()
+        {
+            // NOTE(emilio): We _could_ handle dynamic changes to it if it
+            // changes and before we reach our children the cascade stops,
+            // but we don't track right now whether we use the document body
+            // color, and nobody else handles that properly anyway.
+            let device = context.shared.stylist.device();
 
-                // Needed for the "inherit from body" quirk.
-                let text_color = new_primary_style.get_inherited_text().clone_color();
-                device.set_body_text_color(text_color);
-            }
+            // Needed for the "inherit from body" quirk.
+            let text_color = new_primary_style.get_inherited_text().clone_color();
+            device.set_body_text_color(text_color);
         }
 
         // Don't accumulate damage if we're in the final animation traversal.
@@ -1101,6 +1101,13 @@ pub trait MatchMethods: TElement {
             Some(s) => s,
             None => return RestyleHint::RECASCADE_SELF,
         };
+
+        // Check for changes in writing mode here because we don't care
+        // if the old style didn't exist because that should be resolved
+        // when computing the style from scratch.
+        if !old_primary_style.writing_mode_equals(new_primary_style) {
+            child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_WM_OR_ANCESTOR_FONT;
+        }
 
         let old_container_type = old_primary_style.clone_container_type();
         if old_container_type != new_container_type && !new_container_type.is_size_container_type()
@@ -1138,7 +1145,7 @@ pub trait MatchMethods: TElement {
 
         for (i, (old, new)) in pseudo_styles.enumerate() {
             match (old, new) {
-                (&Some(ref old), &Some(ref new)) => {
+                (Some(old), Some(new)) => {
                     self.accumulate_damage_for(
                         context.shared,
                         &mut data.damage,
@@ -1155,9 +1162,9 @@ pub trait MatchMethods: TElement {
                     // case.
                     let pseudo = PseudoElement::from_eager_index(i);
                     let new_pseudo_should_exist =
-                        new.as_ref().map_or(false, |s| pseudo.should_exist(s));
+                        new.as_ref().is_some_and(|s| pseudo.should_exist(s));
                     let old_pseudo_should_exist =
-                        old.as_ref().map_or(false, |s| pseudo.should_exist(s));
+                        old.as_ref().is_some_and(|s| pseudo.should_exist(s));
                     if new_pseudo_should_exist != old_pseudo_should_exist {
                         data.damage |= RestyleDamage::reconstruct();
                         return child_restyle_hint;
@@ -1204,7 +1211,7 @@ pub trait MatchMethods: TElement {
         new_values: &ComputedValues,
         pseudo: Option<&PseudoElement>,
     ) -> StyleDifference {
-        debug_assert!(pseudo.map_or(true, |p| p.is_eager()));
+        debug_assert!(pseudo.is_none_or(|p| p.is_eager()));
         #[cfg(feature = "gecko")]
         {
             RestyleDamage::compute_style_difference(old_values, new_values)

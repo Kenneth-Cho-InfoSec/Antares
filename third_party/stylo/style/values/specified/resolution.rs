@@ -10,7 +10,7 @@ use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::values::computed::resolution::Resolution as ComputedResolution;
 use crate::values::computed::{Context, ToComputedValue};
-use crate::values::specified::calc::{CalcNode, CalcNumeric, Leaf};
+use crate::values::specified::calc::{CalcNode, CalcNumeric, Leaf, PercentageContext};
 use crate::values::tagged_numeric::{NumericUnion, Unpacked};
 use crate::values::CSSFloat;
 use cssparser::{match_ignore_ascii_case, Parser, Token};
@@ -214,23 +214,24 @@ impl ToComputedValue for Resolution {
 }
 
 impl Parse for Resolution {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         match *input.next()? {
             Token::Dimension {
                 value, ref unit, ..
             } if value >= 0. => Self::parse_dimension(value, unit)
-                .map_err(|()| location.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
+                .map_err(|()| ParseError::custom(StyleParseErrorKind::UnspecifiedError)),
             Token::Function(ref name) => {
-                let function = CalcNode::math_function(context, name, location)?;
-                CalcNode::parse_resolution(context, input, function)
-                    .map(Box::new)
-                    .map(Self::new_calc)
+                let function = CalcNode::math_function(context, name)?;
+                CalcNode::parse_resolution(
+                    context,
+                    input,
+                    function,
+                    PercentageContext::not_allowed(),
+                )
+                .map(Box::new)
+                .map(Self::new_calc)
             },
-            ref t => return Err(location.new_unexpected_token_error(t.clone())),
+            _ => Err(ParseError::unexpected_token()),
         }
     }
 }

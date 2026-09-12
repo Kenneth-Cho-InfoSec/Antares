@@ -53,7 +53,7 @@ impl ToAnimatedValue for TextDecorationInset {
                     .computed_size()
                     .px();
                 #[cfg(feature = "gecko")]
-                let auto_length = bindings::Gecko_CalcAutoDecorationInset(font_size_px);
+                let auto_length = unsafe { bindings::Gecko_CalcAutoDecorationInset(font_size_px) };
                 #[cfg(feature = "servo")]
                 let auto_length = {
                     // Use an inset factor of 1/12.5, so we get 2px of inset (resulting in 4px

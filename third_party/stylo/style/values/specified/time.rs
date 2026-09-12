@@ -9,7 +9,7 @@ use crate::parser::{Parse, ParserContext};
 use crate::typed_om::{NumericType, NumericValue, ToTyped, TypedValue, UnitValue};
 use crate::values::computed::time::Time as ComputedTime;
 use crate::values::computed::{Context, ToComputedValue};
-use crate::values::specified::calc::{CalcNode, CalcNumeric, Leaf};
+use crate::values::specified::calc::{CalcNode, CalcNumeric, Leaf, PercentageContext};
 use crate::values::tagged_numeric::{NumericUnion, Unpacked};
 use crate::values::CSSFloat;
 use crate::Zero;
@@ -217,14 +217,13 @@ impl Time {
         self.0.is_boxed()
     }
 
-    fn parse_with_clamping_mode<'i, 't>(
+    fn parse_with_clamping_mode(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         clamping_mode: AllowedNumericType,
-    ) -> Result<Self, ParseError<'i>> {
+    ) -> Result<Self, ParseError> {
         use style_traits::ParsingMode;
 
-        let location = input.current_source_location();
         match *input.next()? {
             // Note that we generally pass ParserContext to is_ok() to check
             // that the ParserMode of the ParserContext allows all numeric
@@ -235,24 +234,30 @@ impl Time {
                 value, ref unit, ..
             } if clamping_mode.is_ok(ParsingMode::DEFAULT, value) => {
                 NoCalcTime::parse_dimension(value, unit)
-                    .map_err(|()| location.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+                    .map_err(|()| ParseError::custom(StyleParseErrorKind::UnspecifiedError))
                     .map(Self::new)
             },
             Token::Function(ref name) => {
-                let function = CalcNode::math_function(context, name, location)?;
-                CalcNode::parse_time(context, input, clamping_mode, function)
-                    .map(Box::new)
-                    .map(Self::new_calc)
+                let function = CalcNode::math_function(context, name)?;
+                CalcNode::parse_time(
+                    context,
+                    input,
+                    clamping_mode,
+                    function,
+                    PercentageContext::not_allowed(),
+                )
+                .map(Box::new)
+                .map(Self::new_calc)
             },
-            ref t => return Err(location.new_unexpected_token_error(t.clone())),
+            _ => Err(ParseError::unexpected_token()),
         }
     }
 
     /// Parses a non-negative time value.
-    pub fn parse_non_negative<'i, 't>(
+    pub fn parse_non_negative(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         Self::parse_with_clamping_mode(context, input, AllowedNumericType::NonNegative)
     }
 }
@@ -302,10 +307,7 @@ impl ToComputedValue for Time {
 }
 
 impl Parse for Time {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Self::parse_with_clamping_mode(context, input, AllowedNumericType::All)
     }
 }

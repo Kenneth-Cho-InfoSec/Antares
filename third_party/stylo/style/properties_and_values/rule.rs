@@ -19,9 +19,7 @@ use crate::error_reporting::ContextualParseError;
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{SharedRwLockReadGuard, ToCssWithGuard};
 use crate::values::{computed, serialize_atom_name};
-use cssparser::{
-    BasicParseErrorKind, ParseErrorKind, Parser, ParserInput, RuleBodyParser, SourceLocation,
-};
+use cssparser::{BasicParseErrorKind, ParseErrorKind, Parser, RuleBodyParser, SourceLocation};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use servo_arc::Arc;
 use std::fmt::{self, Write};
@@ -38,26 +36,25 @@ pub use crate::properties::property::{DescriptorId, DescriptorParser, Descriptor
 ///
 /// Valid `@property` rules result in a registered custom property, as if `registerProperty()` had
 /// been called with equivalent parameters.
-pub fn parse_property_block<'i, 't>(
+pub fn parse_property_block(
     context: &ParserContext,
-    input: &mut Parser<'i, 't>,
+    input: &mut Parser,
     name: PropertyRuleName,
     source_location: SourceLocation,
-) -> Result<PropertyRegistration, ParseError<'i>> {
+) -> Result<PropertyRegistration, ParseError> {
     let mut descriptors = Descriptors::default();
     let mut parser = DescriptorParser {
         context,
         descriptors: &mut descriptors,
     };
-    let mut iter = RuleBodyParser::new(input, &mut parser);
+    let iter = RuleBodyParser::new(input, &mut parser);
     let mut syntax_err = None;
     let mut inherits_err = None;
-    while let Some(declaration) = iter.next() {
+    for declaration in iter {
         if !context.error_reporting_enabled() {
             continue;
         }
-        if let Err((error, slice)) = declaration {
-            let location = error.location;
+        if let Err((error, slice, location)) = declaration {
             let error = match error.kind {
                 // If the provided string is not a valid syntax string (if it
                 // returns failure when consume a syntax definition is called on
@@ -90,7 +87,7 @@ pub fn parse_property_block<'i, 't>(
         return Err(if let Some(err) = syntax_err {
             err
         } else {
-            let err = input.new_custom_error(StyleParseErrorKind::PropertySyntaxField(
+            let err = ParseError::custom(StyleParseErrorKind::PropertySyntaxField(
                 PropertySyntaxParseError::NoSyntax,
             ));
             context.log_css_error(
@@ -109,7 +106,7 @@ pub fn parse_property_block<'i, 't>(
         return Err(if let Some(err) = inherits_err {
             err
         } else {
-            let err = input.new_custom_error(StyleParseErrorKind::PropertyInheritsField(
+            let err = ParseError::custom(StyleParseErrorKind::PropertyInheritsField(
                 PropertyInheritsParseError::NoInherits,
             ));
             context.log_css_error(
@@ -123,7 +120,9 @@ pub fn parse_property_block<'i, 't>(
     if PropertyRegistration::validate_initial_value(syntax, descriptors.initial_value.as_deref())
         .is_err()
     {
-        return Err(input.new_error(BasicParseErrorKind::AtRuleBodyInvalid));
+        return Err(ParseError::from_basic_kind(
+            BasicParseErrorKind::AtRuleBodyInvalid,
+        ));
     }
 
     Ok(PropertyRegistration {
@@ -161,8 +160,7 @@ impl PropertyRegistration {
             return Ok(ComputedRegisteredValue::universal(Arc::clone(initial)));
         }
 
-        let mut input = ParserInput::new(initial.css_text());
-        let mut input = Parser::new(&mut input);
+        let mut input = Parser::new(initial.css_text());
         input.skip_whitespace();
 
         match SpecifiedRegisteredValue::compute(
@@ -207,8 +205,7 @@ impl PropertyRegistration {
             return Err(PropertyRegistrationError::InitialValueNotComputationallyIndependent);
         }
 
-        let mut input = ParserInput::new(initial.css_text());
-        let mut input = Parser::new(&mut input);
+        let mut input = Parser::new(initial.css_text());
         input.skip_whitespace();
 
         // The initial-value cannot include CSS-wide keywords.
@@ -272,10 +269,7 @@ pub enum Inherits {
 }
 
 impl Parse for Inherits {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         // FIXME(bug 1927012): Remove `return` from try_match_ident_ignore_ascii_case so the closure
         // can be removed.
         let result: Result<Inherits, ParseError> = (|| {
@@ -284,13 +278,12 @@ impl Parse for Inherits {
                 "false" => Ok(Inherits::False),
             }
         })();
-        if let Err(err) = result {
-            Err(ParseError {
-                kind: ParseErrorKind::Custom(StyleParseErrorKind::PropertyInheritsField(
+        if result.is_err() {
+            Err(ParseError::custom(
+                StyleParseErrorKind::PropertyInheritsField(
                     PropertyInheritsParseError::InvalidInherits,
-                )),
-                location: err.location,
-            })
+                ),
+            ))
         } else {
             result
         }
@@ -304,15 +297,12 @@ impl Parse for Inherits {
 pub type InitialValue = Arc<SpecifiedValue>;
 
 impl Parse for InitialValue {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         input.skip_whitespace();
         Ok(Arc::new(SpecifiedValue::parse(
             input,
             Some(&context.namespaces.prefixes),
-            &context.url_data,
+            context.url_data,
         )?))
     }
 }
@@ -336,6 +326,6 @@ impl Descriptors {
 
     /// Whether this property uses universal syntax.
     pub fn is_universal(&self) -> bool {
-        self.syntax.as_ref().map_or(true, |s| s.is_universal())
+        self.syntax.as_ref().is_none_or(|s| s.is_universal())
     }
 }

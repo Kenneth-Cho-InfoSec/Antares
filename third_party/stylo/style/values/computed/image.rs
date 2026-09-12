@@ -25,7 +25,7 @@ use std::fmt::{self, Write};
 use style_traits::{CssString, CssWriter, ToCss};
 use thin_vec::ThinVec;
 
-pub use specified::{ImageRendering, ImageDecoding};
+pub use specified::{ImageDecoding, ImageRendering};
 
 /// Computed values for an image according to CSS-IMAGES.
 /// <https://drafts.csswg.org/css-images/#image-values>
@@ -97,7 +97,7 @@ impl ToComputedValue for specified::ImageSet {
         let dpr = context.device().device_pixel_ratio().get();
 
         let mut supported_image = false;
-        let mut selected_index = std::usize::MAX;
+        let mut selected_index = usize::MAX;
         let mut selected_resolution = 0.0;
 
         for (i, item) in items.iter().enumerate() {
@@ -149,7 +149,7 @@ impl ToComputedValue for specified::ImageSet {
 
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
         Self {
-            selected_index: std::usize::MAX,
+            selected_index: usize::MAX,
             items: ToComputedValue::from_computed_value(&computed.items),
         }
     }

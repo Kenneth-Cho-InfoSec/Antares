@@ -352,7 +352,7 @@ where
     stringify(f, n)?;
     if let Some(e) = n.as_element() {
         for kid in e.traversal_children() {
-            writeln!(f, "")?;
+            writeln!(f)?;
             fmt_subtree(f, stringify, kid, indent + 1)?;
         }
     }
@@ -702,7 +702,9 @@ pub trait TElement:
     /// animation-only dirty descendants bit, and the lazy frame construction
     /// descendants bit.
     unsafe fn clear_descendant_bits(&self) {
-        self.unset_dirty_descendants();
+        unsafe {
+            self.unset_dirty_descendants();
+        }
     }
 
     /// Returns true if this element is a visited link.
@@ -799,7 +801,7 @@ pub trait TElement:
             Some(d) => d,
             None => return false,
         };
-        return data.hint.has_animation_hint();
+        data.hint.has_animation_hint()
     }
 
     /// Called when a highlight pseudo-element (::selection, ::highlight,

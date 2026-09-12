@@ -177,8 +177,8 @@ impl ImportRule {
     ///
     /// We do this here so that the import preloader can look at this without having to parse the
     /// whole import rule or parse the media query list or what not.
-    pub fn parse_layer_and_supports<'i, 't>(
-        input: &mut Parser<'i, 't>,
+    pub fn parse_layer_and_supports(
+        input: &mut Parser,
         context: &mut ParserContext,
     ) -> (ImportLayer, Option<ImportSupportsCondition>) {
         let layer = if input
@@ -192,7 +192,7 @@ impl ImportRule {
                     input.expect_function_matching("layer")?;
                     input
                         .parse_nested_block(|input| LayerName::parse(context, input))
-                        .map(|name| ImportLayer::Named(name))
+                        .map(ImportLayer::Named)
                 })
                 .ok()
                 .unwrap_or(ImportLayer::None)
@@ -226,7 +226,7 @@ impl DeepCloneWithLock for ImportRule {
             stylesheet: self.stylesheet.deep_clone_with_lock(lock, guard),
             supports: self.supports.clone(),
             layer: self.layer.clone(),
-            source_location: self.source_location.clone(),
+            source_location: self.source_location,
         }
     }
 }

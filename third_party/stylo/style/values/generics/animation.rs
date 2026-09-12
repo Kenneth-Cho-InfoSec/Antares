@@ -64,7 +64,7 @@ impl<T: ToCss + Zero> ToCss for AnimationDuration<T> {
     {
         match *self {
             Self::Auto => {
-                if static_prefs::pref!("layout.css.scroll-driven-animations.enabled") {
+                if crate::pref!("layout.css.scroll-driven-animations.enabled") {
                     dest.write_str("auto")
                 } else {
                     Self::Time(T::zero()).to_css(dest)
@@ -80,7 +80,7 @@ impl<T: ToTyped + Zero> ToTyped for AnimationDuration<T> {
     fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
         match *self {
             Self::Auto => {
-                if static_prefs::pref!("layout.css.scroll-driven-animations.enabled") {
+                if crate::pref!("layout.css.scroll-driven-animations.enabled") {
                     dest.push(TypedValue::Keyword(KeywordValue(CssString::from("auto"))));
                     Ok(())
                 } else {
@@ -193,7 +193,7 @@ pub use self::GenericViewTimelineInset as ViewTimelineInset;
 impl<LengthPercent> ViewTimelineInset<LengthPercent> {
     /// Returns true if it is auto.
     #[inline]
-    fn is_auto(&self) -> bool {
+    pub fn is_auto(&self) -> bool {
         self.start.is_auto() && self.end.is_auto()
     }
 }

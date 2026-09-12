@@ -58,18 +58,16 @@ where
     }
 
     /// Parses a new `Rect<T>` value with the given parse function.
-    pub fn parse_with<'i, 't, Parse>(
+    pub fn parse_with<Parse>(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         parse: Parse,
-    ) -> Result<Self, ParseError<'i>>
+    ) -> Result<Self, ParseError>
     where
-        Parse: Fn(&ParserContext, &mut Parser<'i, 't>) -> Result<T, ParseError<'i>>,
+        Parse: Fn(&ParserContext, &mut Parser) -> Result<T, ParseError>,
     {
         let first = parse(context, input)?;
-        let second = if let Ok(second) = input.try_parse(|i| parse(context, i)) {
-            second
-        } else {
+        let Ok(second) = input.try_parse(|i| parse(context, i)) else {
             // <first>
             return Ok(Self::new(
                 first.clone(),
@@ -78,15 +76,11 @@ where
                 first,
             ));
         };
-        let third = if let Ok(third) = input.try_parse(|i| parse(context, i)) {
-            third
-        } else {
+        let Ok(third) = input.try_parse(|i| parse(context, i)) else {
             // <first> <second>
             return Ok(Self::new(first.clone(), second.clone(), first, second));
         };
-        let fourth = if let Ok(fourth) = input.try_parse(|i| parse(context, i)) {
-            fourth
-        } else {
+        let Ok(fourth) = input.try_parse(|i| parse(context, i)) else {
             // <first> <second> <third>
             return Ok(Self::new(first, second.clone(), third, second));
         };
@@ -96,13 +90,13 @@ where
 
     /// Parses a new `Rect<T>` value which all components must be specified, with the given parse
     /// function.
-    pub fn parse_all_components_with<'i, 't, Parse>(
+    pub fn parse_all_components_with<Parse>(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         parse: Parse,
-    ) -> Result<Self, ParseError<'i>>
+    ) -> Result<Self, ParseError>
     where
-        Parse: Fn(&ParserContext, &mut Parser<'i, 't>) -> Result<T, ParseError<'i>>,
+        Parse: Fn(&ParserContext, &mut Parser) -> Result<T, ParseError>,
     {
         let first = parse(context, input)?;
         let second = parse(context, input)?;
@@ -118,10 +112,7 @@ where
     T: Clone + Parse,
 {
     #[inline]
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Self::parse_with(context, input, T::parse)
     }
 }

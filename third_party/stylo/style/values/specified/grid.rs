@@ -15,24 +15,22 @@ use crate::values::generics::grid::{TrackList, TrackListValue, TrackRepeat, Trac
 use crate::values::specified::{Integer, LengthPercentage};
 use crate::values::CustomIdent;
 use cssparser::{Parser, Token};
-use std::mem;
 use style_traits::{ParseError, StyleParseErrorKind};
 
 impl Flex {
     /// Parse a single flexible length.
-    fn parse<'i, 't>(input: &mut Parser<'i, 't>) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    fn parse(input: &mut Parser) -> Result<Self, ParseError> {
         match *input.next()? {
             Token::Dimension {
                 value, ref unit, ..
             } if FlexUnit::matches(unit) && value.is_sign_positive() => Ok(Self(value)),
-            ref t => Err(location.new_unexpected_token_error(t.clone())),
+            _ => Err(ParseError::unexpected_token()),
         }
     }
 }
 
 impl<L> TrackBreadth<L> {
-    fn parse_keyword<'i, 't>(input: &mut Parser<'i, 't>) -> Result<Self, ParseError<'i>> {
+    fn parse_keyword(input: &mut Parser) -> Result<Self, ParseError> {
         #[derive(Parse)]
         enum TrackKeyword {
             Auto,
@@ -49,10 +47,7 @@ impl<L> TrackBreadth<L> {
 }
 
 impl Parse for TrackBreadth<LengthPercentage> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         // FIXME: This and other callers in this file should use
         // NonNegativeLengthPercentage instead.
         //
@@ -70,10 +65,7 @@ impl Parse for TrackBreadth<LengthPercentage> {
 }
 
 impl Parse for TrackSize<LengthPercentage> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if let Ok(b) = input.try_parse(|i| TrackBreadth::parse(context, i)) {
             return Ok(TrackSize::Breadth(b));
         }
@@ -104,26 +96,21 @@ impl Parse for TrackSize<LengthPercentage> {
 }
 
 impl Parse for ImplicitGridTracks<TrackSize<LengthPercentage>> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         use style_traits::{Separator, Space};
         let track_sizes = Space::parse(input, |i| TrackSize::parse(context, i))?;
         if track_sizes.len() == 1 && track_sizes[0].is_initial() {
             // A single track with the initial value is always represented by an empty slice.
             return Ok(Default::default());
         }
-        return Ok(ImplicitGridTracks(track_sizes.into()));
+        Ok(ImplicitGridTracks(track_sizes.into()))
     }
 }
 
 /// Parse the grid line names into a vector of owned strings.
 ///
 /// <https://drafts.csswg.org/css-grid/#typedef-line-names>
-pub fn parse_line_names<'i, 't>(
-    input: &mut Parser<'i, 't>,
-) -> Result<crate::OwnedSlice<CustomIdent>, ParseError<'i>> {
+pub fn parse_line_names(input: &mut Parser) -> Result<crate::OwnedSlice<CustomIdent>, ParseError> {
     input.expect_square_bracket_block()?;
     input.parse_nested_block(|input| {
         let mut values = vec![];
@@ -149,10 +136,10 @@ enum RepeatType {
 }
 
 impl TrackRepeat<LengthPercentage, Integer> {
-    fn parse_with_repeat_type<'i, 't>(
+    fn parse_with_repeat_type(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<(Self, RepeatType), ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<(Self, RepeatType), ParseError> {
         input
             .try_parse(|i| i.expect_function_matching("repeat").map_err(|e| e.into()))
             .and_then(|_| {
@@ -178,8 +165,9 @@ impl TrackRepeat<LengthPercentage, Integer> {
                             if !track_size.is_fixed() {
                                 if is_auto {
                                     // should be <fixed-size> for <auto-repeat>
-                                    return Err(input
-                                        .new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                                    return Err(ParseError::custom(
+                                        StyleParseErrorKind::UnspecifiedError,
+                                    ));
                                 }
 
                                 if repeat_type == RepeatType::Fixed {
@@ -189,17 +177,14 @@ impl TrackRepeat<LengthPercentage, Integer> {
 
                             values.push(track_size);
                             names.push(current_names);
-                        } else {
-                            if values.is_empty() {
-                                // expecting at least one <track-size>
-                                return Err(
-                                    input.new_custom_error(StyleParseErrorKind::UnspecifiedError)
-                                );
-                            }
-
-                            names.push(current_names); // final `<line-names>`
-                            break; // no more <track-size>, breaking
+                            continue;
                         }
+                        if values.is_empty() {
+                            // expecting at least one <track-size>
+                            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                        }
+                        names.push(current_names); // final `<line-names>`
+                        break; // no more <track-size>, breaking
                     }
 
                     let repeat = TrackRepeat {
@@ -215,10 +200,7 @@ impl TrackRepeat<LengthPercentage, Integer> {
 }
 
 impl Parse for TrackList<LengthPercentage, Integer> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let mut current_names = vec![];
         let mut names = vec![];
         let mut values = vec![];
@@ -235,14 +217,16 @@ impl Parse for TrackList<LengthPercentage, Integer> {
                     at_least_one_not_fixed = true;
                     if auto_repeat_index.is_some() {
                         // <auto-track-list> only accepts <fixed-size> and <fixed-repeat>
-                        return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                        return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
                     }
                 }
 
-                let vec = mem::replace(&mut current_names, vec![]);
+                let vec = std::mem::take(&mut current_names);
                 names.push(vec.into());
                 values.push(TrackListValue::TrackSize(track_size));
-            } else if let Ok((repeat, type_)) =
+                continue;
+            }
+            if let Ok((repeat, type_)) =
                 input.try_parse(|i| TrackRepeat::parse_with_repeat_type(context, i))
             {
                 match type_ {
@@ -250,73 +234,51 @@ impl Parse for TrackList<LengthPercentage, Integer> {
                         at_least_one_not_fixed = true;
                         if auto_repeat_index.is_some() {
                             // only <fixed-repeat>
-                            return Err(
-                                input.new_custom_error(StyleParseErrorKind::UnspecifiedError)
-                            );
+                            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
                         }
                     },
                     RepeatType::Auto => {
                         if auto_repeat_index.is_some() || at_least_one_not_fixed {
                             // We've either seen <auto-repeat> earlier, or there's at least one non-fixed value
-                            return Err(
-                                input.new_custom_error(StyleParseErrorKind::UnspecifiedError)
-                            );
+                            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
                         }
                         auto_repeat_index = Some(values.len());
                     },
                     RepeatType::Fixed => {},
                 }
 
-                let vec = mem::replace(&mut current_names, vec![]);
+                let vec = std::mem::take(&mut current_names);
                 names.push(vec.into());
                 values.push(TrackListValue::TrackRepeat(repeat));
-            } else {
-                if values.is_empty() && auto_repeat_index.is_none() {
-                    return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
-                }
-
-                names.push(current_names.into());
-                break;
+                continue;
             }
+            if values.is_empty() && auto_repeat_index.is_none() {
+                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+            }
+            names.push(current_names.into());
+            break;
         }
 
         Ok(TrackList {
-            auto_repeat_index: auto_repeat_index.unwrap_or(std::usize::MAX),
+            auto_repeat_index: auto_repeat_index.unwrap_or(usize::MAX),
             values: values.into(),
             line_names: names.into(),
         })
     }
 }
 
-#[cfg(feature = "gecko")]
 #[inline]
 fn allow_grid_template_subgrids() -> bool {
-    true
+    crate::pref!("layout.css.grid-template-subgrid-value.enabled", gecko = true)
 }
 
-#[cfg(feature = "servo")]
-#[inline]
-fn allow_grid_template_subgrids() -> bool {
-    false
-}
-
-#[cfg(feature = "gecko")]
 #[inline]
 fn allow_grid_template_masonry() -> bool {
-    static_prefs::pref!("layout.css.grid-template-masonry-value.enabled")
-}
-
-#[cfg(feature = "servo")]
-#[inline]
-fn allow_grid_template_masonry() -> bool {
-    false
+    crate::pref!("layout.css.grid-template-masonry-value.enabled")
 }
 
 impl Parse for GridTemplateComponent<LengthPercentage, Integer> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(GridTemplateComponent::None);
         }
@@ -327,22 +289,21 @@ impl Parse for GridTemplateComponent<LengthPercentage, Integer> {
 
 impl GridTemplateComponent<LengthPercentage, Integer> {
     /// Parses a `GridTemplateComponent<LengthPercentage>` except `none` keyword.
-    pub fn parse_without_none<'i, 't>(
+    pub fn parse_without_none(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         if allow_grid_template_subgrids() {
             if let Ok(t) = input.try_parse(|i| LineNameList::parse(context, i)) {
                 return Ok(GridTemplateComponent::Subgrid(Box::new(t)));
             }
         }
-        if allow_grid_template_masonry() {
-            if input
+        if allow_grid_template_masonry()
+            && input
                 .try_parse(|i| i.expect_ident_matching("masonry"))
                 .is_ok()
-            {
-                return Ok(GridTemplateComponent::Masonry);
-            }
+        {
+            return Ok(GridTemplateComponent::Masonry);
         }
         let track_list = TrackList::parse(context, input)?;
         Ok(GridTemplateComponent::TrackList(Box::new(track_list)))
@@ -350,10 +311,7 @@ impl GridTemplateComponent<LengthPercentage, Integer> {
 }
 
 impl Parse for NameRepeat<Integer> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         input.expect_function_matching("repeat")?;
         input.parse_nested_block(|i| {
             let count = RepeatCount::parse(context, i)?;
@@ -361,13 +319,13 @@ impl Parse for NameRepeat<Integer> {
             // TODO(Bug 2037744) - Enable calc()-expressions that can only be resolved at
             // computed value time (due to relative lengths, sibling-index(), etc.).
             if matches!(count, RepeatCount::Number(ref n) if n.resolve().is_none()) {
-                return Err(i.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
             }
 
             // NameRepeat doesn't accept `auto-fit`
             // https://drafts.csswg.org/css-grid/#typedef-name-repeat
             if matches!(count, RepeatCount::AutoFit) {
-                return Err(i.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
             }
 
             i.expect_comma()?;
@@ -386,10 +344,7 @@ impl Parse for NameRepeat<Integer> {
 }
 
 impl Parse for LineNameListValue<Integer> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if let Ok(repeat) = input.try_parse(|i| NameRepeat::parse(context, i)) {
             return Ok(LineNameListValue::Repeat(repeat));
         }
@@ -420,10 +375,7 @@ impl LineNameListValue<Integer> {
 }
 
 impl Parse for LineNameList<Integer> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         input.expect_ident_matching("subgrid")?;
 
         let mut auto_repeat = false;
@@ -436,7 +388,7 @@ impl Parse for LineNameList<Integer> {
                         // On a subgridded axis, the auto-fill keyword is only valid once per
                         // <line-name-list>.
                         // https://drafts.csswg.org/css-grid/#auto-repeat
-                        return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                        return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
                     }
                     auto_repeat = true;
                 },

@@ -3,7 +3,7 @@
 This directory vendors the Stylo source used by Antares so that engine builds are reproducible and the CSS compatibility changes remain reviewable.
 
 - Upstream: <https://github.com/servo/stylo>
-- Base revision: `b3e6425100df710c7f30125e27a8fb897a709c5e`
+- Base revision: `9ee9ec60de0193b704f9a5831ef16ff00ac06e49`
 - Licence: Mozilla Public License 2.0, as recorded in the upstream source files and `LICENSE`
 
 Antares changes from the base revision:

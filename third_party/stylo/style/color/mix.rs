@@ -109,10 +109,7 @@ impl Default for ColorInterpolationMethod {
 }
 
 impl Parse for ColorInterpolationMethod {
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(_: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         input.expect_ident_matching("in")?;
         let space = ColorSpace::parse(input)?;
         // https://drafts.csswg.org/css-color-4/#hue-interpolation
@@ -120,7 +117,7 @@ impl Parse for ColorInterpolationMethod {
         //     algorithm is selected by the host syntax, the default is shorter.
         let hue = if space.is_polar() {
             input
-                .try_parse(|input| -> Result<_, ParseError<'i>> {
+                .try_parse(|input| -> Result<_, ParseError> {
                     let hue = HueInterpolationMethod::parse(input)?;
                     input.expect_ident_matching("hue")?;
                     Ok(hue)
@@ -173,9 +170,30 @@ pub fn mix_many(
 ) -> AbsoluteColor {
     let items = items.into_iter().collect::<ColorMixItemList<_>>();
 
+    // Convert a mix result into the syntax required by the flags:
+    // - modern syntax when requested (converting legacy spaces like hsl/hwb to srgb), otherwise;
+    // - legacy srgb when every mixed color used legacy syntax.
+    let finalize = |result: AbsoluteColor| -> AbsoluteColor {
+        if flags.contains(ColorMixFlags::RESULT_IN_MODERN_SYNTAX) {
+            if result.is_legacy_syntax() {
+                // If the result *MUST* be in modern syntax, then make sure it is in a color space
+                // that allows the modern syntax. So hsl and hwb will be converted to srgb.
+                let mut srgb = result.to_color_space(ColorSpace::Srgb);
+                srgb.flags.remove(ColorFlags::IS_LEGACY_SRGB);
+                srgb
+            } else {
+                result
+            }
+        } else if items.iter().all(|item| item.color.is_legacy_syntax()) {
+            result.into_srgb_legacy()
+        } else {
+            result
+        }
+    };
+
     // Match the behavior when the sum of weights equal 0.
     if items.is_empty() {
-        return AbsoluteColor::TRANSPARENT_BLACK.to_color_space(interpolation.space);
+        return finalize(AbsoluteColor::TRANSPARENT_BLACK.to_color_space(interpolation.space));
     }
 
     let normalize = flags.contains(ColorMixFlags::NORMALIZE_WEIGHTS);
@@ -185,7 +203,7 @@ pub fn mix_many(
         // https://drafts.csswg.org/css-color-5/#color-mix-percent-norm
         let sum: f32 = items.iter().map(|item| item.weight).sum();
         if sum == 0.0 {
-            return AbsoluteColor::TRANSPARENT_BLACK.to_color_space(interpolation.space);
+            return finalize(AbsoluteColor::TRANSPARENT_BLACK.to_color_space(interpolation.space));
         }
         if (sum - 1.0).abs() > f32::EPSILON {
             weight_scale = 1.0 / sum;
@@ -244,22 +262,7 @@ pub fn mix_many(
     );
     result.flags = accumulated_color.flags;
 
-    if flags.contains(ColorMixFlags::RESULT_IN_MODERN_SYNTAX) {
-        // If the result *MUST* be in modern syntax, then make sure it is in a
-        // color space that allows the modern syntax. So hsl and hwb will be
-        // converted to srgb.
-        if result.is_legacy_syntax() {
-            result.to_color_space(ColorSpace::Srgb)
-        } else {
-            result
-        }
-    } else if items.iter().all(|item| item.color.is_legacy_syntax()) {
-        // If both sides of the mix is legacy then convert the result back into
-        // legacy.
-        result.into_srgb_legacy()
-    } else {
-        result
-    }
+    finalize(result)
 }
 
 /// What the outcome of each component should be in a mix result.
@@ -317,17 +320,14 @@ impl AbsoluteColor {
         if matches!(source.color_space, S::Lab | S::Lch | S::Oklab | S::Oklch) {
             if matches!(self.color_space, S::Lab | S::Lch | S::Oklab | S::Oklch) {
                 self.flags |= source.flags & F::C0_IS_NONE;
-            } else if matches!(self.color_space, S::Hsl) {
-                if source.flags.contains(F::C0_IS_NONE) {
-                    self.flags.insert(F::C2_IS_NONE)
-                }
+            } else if matches!(self.color_space, S::Hsl) && source.flags.contains(F::C0_IS_NONE) {
+                self.flags.insert(F::C2_IS_NONE)
             }
         } else if matches!(source.color_space, S::Hsl)
             && matches!(self.color_space, S::Lab | S::Lch | S::Oklab | S::Oklch)
+            && source.flags.contains(F::C2_IS_NONE)
         {
-            if source.flags.contains(F::C2_IS_NONE) {
-                self.flags.insert(F::C0_IS_NONE)
-            }
+            self.flags.insert(F::C0_IS_NONE)
         }
 
         // Colorfulness     C, S
@@ -341,10 +341,10 @@ impl AbsoluteColor {
         if matches!(source.color_space, S::Hsl | S::Hwb) {
             if matches!(self.color_space, S::Hsl | S::Hwb) {
                 self.flags |= source.flags & F::C0_IS_NONE;
-            } else if matches!(self.color_space, S::Lch | S::Oklch) {
-                if source.flags.contains(F::C0_IS_NONE) {
-                    self.flags.insert(F::C2_IS_NONE)
-                }
+            } else if matches!(self.color_space, S::Lch | S::Oklch)
+                && source.flags.contains(F::C0_IS_NONE)
+            {
+                self.flags.insert(F::C2_IS_NONE)
             }
         } else if matches!(source.color_space, S::Lch | S::Oklch) {
             if matches!(self.color_space, S::Hsl | S::Hwb) {
@@ -379,10 +379,10 @@ fn mix_with_weights(
     let color_space = left.color_space;
 
     let outcomes = [
-        ComponentMixOutcome::from_colors(&left, &right, ColorFlags::C0_IS_NONE),
-        ComponentMixOutcome::from_colors(&left, &right, ColorFlags::C1_IS_NONE),
-        ComponentMixOutcome::from_colors(&left, &right, ColorFlags::C2_IS_NONE),
-        ComponentMixOutcome::from_colors(&left, &right, ColorFlags::ALPHA_IS_NONE),
+        ComponentMixOutcome::from_colors(left, right, ColorFlags::C0_IS_NONE),
+        ComponentMixOutcome::from_colors(left, right, ColorFlags::C1_IS_NONE),
+        ComponentMixOutcome::from_colors(left, right, ColorFlags::C2_IS_NONE),
+        ComponentMixOutcome::from_colors(left, right, ColorFlags::ALPHA_IS_NONE),
     ];
 
     // Convert both sides into just components.
@@ -390,9 +390,9 @@ fn mix_with_weights(
     let right = right.raw_components();
 
     let (result, result_flags) = interpolate_premultiplied(
-        &left,
+        left,
         left_weight,
-        &right,
+        right,
         right_weight,
         color_space.hue_index(),
         hue_interpolation,

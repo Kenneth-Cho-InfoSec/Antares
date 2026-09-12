@@ -45,6 +45,8 @@ class Pseudo(object):
             flags.append("ENABLED_IN_CHROME")
         if self.pref:
             flags.append("ENABLED_BY_PREF")
+        if self.argument:
+            flags.append("HAS_ARGUMENT")
         if isinstance(self, PseudoElement):
             flags.append("IS_PSEUDO_ELEMENT")
             if self.is_css2:
@@ -93,7 +95,7 @@ class PseudoElement(Pseudo):
         is_tree_abiding=False,
         parses_as_element_backed=None,
         supports_user_action_state=False,
-        disabled_domains_pref=None,
+        enabled_domains_pref=None,
         pref=None,
         argument=None,
     ):
@@ -110,7 +112,7 @@ class PseudoElement(Pseudo):
             else is_element_backed
         )
         self.supports_user_action_state = supports_user_action_state
-        self.disabled_domains_pref = disabled_domains_pref
+        self.enabled_domains_pref = enabled_domains_pref
 
 
 class PseudoElementData:

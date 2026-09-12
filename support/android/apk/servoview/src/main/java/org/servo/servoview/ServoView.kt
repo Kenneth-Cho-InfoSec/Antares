@@ -34,8 +34,24 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
     private val frameCallbackScheduled = AtomicBoolean(false)
 
     private var experimentalMode = false
+    private var navigator: ServoNavigator? = null
 
     constructor(context: Context) : this(context, null)
+
+    constructor(
+        context: Context,
+        client: Servo.Client,
+        servoArgs: String?,
+        servoLog: String?,
+        experimentalMode: Boolean,
+        initialUri: String?,
+        navigator: ServoNavigator,
+    ) : this(context) {
+        setClient(client)
+        setServoArgs(servoArgs, servoLog, experimentalMode)
+        this.initialUri = initialUri
+        this.navigator = navigator
+    }
 
     constructor(context: Context, attrs: AttributeSet?) : super(context, attrs) {
         isFocusable = true
@@ -251,6 +267,7 @@ class ServoView : SurfaceView, Servo.RunCallback, Choreographer.FrameCallback {
                         client!!,
                         servoView.context,
                         surface,
+                        servoView.navigator ?: ServoNavigator(),
                     )
             } else {
                 paused = false

@@ -226,7 +226,7 @@ where
     #[inline]
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
         match (self.as_ref(), other.as_ref()) {
-            (Some(ref this), Some(ref other)) => Ok(Some(this.animate(other, procedure)?)),
+            (Some(this), Some(other)) => Ok(Some(this.animate(other, procedure)?)),
             (None, None) => Ok(None),
             _ => Err(()),
         }
@@ -264,7 +264,7 @@ impl ToAnimatedValue for Au {
 impl<T: Animate> Animate for Box<T> {
     #[inline]
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
-        Ok(Box::new((**self).animate(&other, procedure)?))
+        Ok(Box::new((**self).animate(other, procedure)?))
     }
 }
 
@@ -425,6 +425,7 @@ trivial_to_animated_value!(bool);
 trivial_to_animated_value!(f32);
 trivial_to_animated_value!(i32);
 trivial_to_animated_value!(u8);
+trivial_to_animated_value!(u16);
 trivial_to_animated_value!(u32);
 trivial_to_animated_value!(usize);
 trivial_to_animated_value!(AbsoluteColor);

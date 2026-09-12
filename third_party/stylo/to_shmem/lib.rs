@@ -15,7 +15,6 @@
 use std::alloc::Layout;
 use std::collections::HashSet;
 use std::ffi::CString;
-use std::isize;
 use std::marker::PhantomData;
 use std::mem::{self, ManuallyDrop};
 use std::num::Wrapping;
@@ -142,7 +141,7 @@ impl SharedMemoryBuilder {
 
         // Reserve space for the padding.
         let start = self.index.checked_add(padding).unwrap();
-        assert!(start <= std::isize::MAX as usize); // for the cast below
+        assert!(start <= isize::MAX as usize); // for the cast below
 
         // Reserve space for the value.
         let end = start.checked_add(layout.size()).unwrap();
@@ -265,15 +264,17 @@ where
     T: 'a + ToShmem,
     I: ExactSizeIterator<Item = &'a T>,
 {
-    let dest = slice::from_raw_parts_mut(dest, src.len());
+    unsafe {
+        let dest = slice::from_raw_parts_mut(dest, src.len());
 
-    // Make a clone of each element from the iterator with its own heap
-    // allocations placed in the buffer, and copy that clone into the buffer.
-    for (src, dest) in src.zip(dest.iter_mut()) {
-        ptr::write(dest, ManuallyDrop::into_inner(src.to_shmem(builder)?));
+        // Make a clone of each element from the iterator with its own heap
+        // allocations placed in the buffer, and copy that clone into the buffer.
+        for (src, dest) in src.zip(dest.iter_mut()) {
+            ptr::write(dest, ManuallyDrop::into_inner(src.to_shmem(builder)?));
+        }
+
+        Ok(dest)
     }
-
-    Ok(dest)
 }
 
 /// Writes all the items in `src` into a slice in the shared memory buffer and
@@ -287,7 +288,7 @@ where
     I: ExactSizeIterator<Item = &'a T>,
 {
     let dest = builder.alloc_array(src.len());
-    to_shmem_slice_ptr(src, dest, builder)
+    unsafe { to_shmem_slice_ptr(src, dest, builder) }
 }
 
 impl<T: ToShmem> ToShmem for Box<[T]> {

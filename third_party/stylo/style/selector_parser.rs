@@ -10,7 +10,7 @@ use crate::derives::*;
 use crate::stylesheets::{Namespaces, Origin, UrlExtraData};
 use crate::values::serialize_atom_identifier;
 use crate::Atom;
-use cssparser::{match_ignore_ascii_case, Parser as CssParser, ParserInput};
+use cssparser::{match_ignore_ascii_case, Parser as CssParser};
 use dom::ElementState;
 use selectors::parser::{ParseRelative, SelectorList};
 use std::fmt::{self, Debug, Write};
@@ -57,10 +57,10 @@ impl<'a> SelectorParser<'a> {
     /// account namespaces.
     ///
     /// This is used for some DOM APIs like `querySelector`.
-    pub fn parse_author_origin_no_namespace<'i>(
-        input: &'i str,
+    pub fn parse_author_origin_no_namespace(
+        input: &str,
         url_data: &UrlExtraData,
-    ) -> Result<SelectorList<SelectorImpl>, ParseError<'i>> {
+    ) -> Result<SelectorList<SelectorImpl>, ParseError> {
         let namespaces = Namespaces::default();
         let parser = SelectorParser {
             stylesheet_origin: Origin::Author,
@@ -68,8 +68,7 @@ impl<'a> SelectorParser<'a> {
             url_data,
             for_supports_rule: false,
         };
-        let mut input = ParserInput::new(input);
-        SelectorList::parse(&parser, &mut CssParser::new(&mut input), ParseRelative::No)
+        SelectorList::parse(&parser, &mut CssParser::new(input), ParseRelative::No)
     }
 
     /// Whether we're parsing selectors in a user-agent stylesheet.
@@ -228,7 +227,7 @@ pub enum HorizontalDirection {
 
 impl Direction {
     /// Parse a direction value.
-    pub fn parse<'i, 't>(parser: &mut CssParser<'i, 't>) -> Result<Self, ParseError<'i>> {
+    pub fn parse(parser: &mut CssParser) -> Result<Self, ParseError> {
         let ident = parser.expect_ident()?;
         Ok(Direction(match_ignore_ascii_case! { &ident,
             "rtl" => atom!("rtl"),

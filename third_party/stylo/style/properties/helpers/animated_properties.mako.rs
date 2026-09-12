@@ -12,7 +12,8 @@
 #[cfg(feature = "gecko")] use crate::gecko_bindings::structs::NonCustomCSSPropertyId;
 use crate::properties::{
     longhands::{
-        self, visibility::computed_value::T as Visibility,
+        self, display::computed_value::T as Display,
+        visibility::computed_value::T as Visibility,
     },
     CSSWideKeyword, LonghandId,
     PropertyDeclaration, PropertyDeclarationId,
@@ -223,8 +224,10 @@ impl AnimationValue {
             ${" |\n".join("{}(ref value)".format(prop.camel_case) for prop in props)} => {
                 % if to_animated:
                 let value = ToAnimatedValue::from_animated_value(value.clone());
-                % endif
                 let value = ${ty}::from_computed_value(&value);
+                % else:
+                let value = ${ty}::from_computed_value(value);
+                % endif
                 % if boxed:
                 let value = Box::new(value);
                 % endif
@@ -416,14 +419,14 @@ impl AnimationValue {
     ) -> bool {
         let longhand = match property {
             PropertyDeclarationId::Longhand(id) => id,
-            PropertyDeclarationId::Custom(ref name) => {
+            PropertyDeclarationId::Custom(name) => {
                 // FIXME(bug 1869476): This should use a stylist to determine whether the name
                 // corresponds to an inherited custom property and then choose the
                 // inherited/non_inherited map accordingly.
                 let before = before.custom_properties();
-                let before_value = before.inherited.get(*name).or_else(|| before.non_inherited.get(*name));
+                let before_value = before.inherited.get(name).or_else(|| before.non_inherited.get(name));
                 let after = after.custom_properties();
-                let after_value = after.inherited.get(*name).or_else(|| after.non_inherited.get(*name));
+                let after_value = after.inherited.get(name).or_else(|| after.non_inherited.get(name));
                 return before_value != after_value
             }
         };
@@ -445,12 +448,12 @@ impl AnimationValue {
     ) -> Option<Self> {
         let property = match property {
             PropertyDeclarationId::Longhand(id) => id,
-            PropertyDeclarationId::Custom(ref name) => {
+            PropertyDeclarationId::Custom(name) => {
                 // FIXME(bug 1869476): This should use a stylist to determine whether the name
                 // corresponds to an inherited custom property and then choose the
                 // inherited/non_inherited map accordingly.
                 let p = &style.custom_properties();
-                let value = p.inherited.get(*name).or_else(|| p.non_inherited.get(*name));
+                let value = p.inherited.get(name).or_else(|| p.non_inherited.get(name));
                 return Some(AnimationValue::Custom(CustomAnimatedValue::from_computed(name, value)))
             }
         };
@@ -483,7 +486,7 @@ impl AnimationValue {
         match self {
             % for prop in data.longhands:
             % if prop.animatable and not prop.logical:
-            AnimationValue::${prop.camel_case}(ref value) => {
+            AnimationValue::${prop.camel_case}(value) => {
                 let value: longhands::${prop.ident}::computed_value::T =
                 % if prop.animation_type != "discrete":
                     ToAnimatedValue::from_animated_value(value.clone());
@@ -527,12 +530,18 @@ impl Animate for AnimationValue {
             }
 
             match *self {
-                <% keyfunc = lambda x: (x.animated_type(), x.animation_type == "discrete") %>
-                % for (ty, discrete), props in groupby(animated, key=keyfunc):
+                <% keyfunc = lambda x: (x.animated_type(), x.animation_type == "discrete", x.ident == "display") %>
+                % for (ty, discrete, is_display), props in groupby(animated, key=keyfunc):
                 ${" |\n".join("{}(ref this)".format(prop.camel_case) for prop in props)} => {
                     let other_repr =
                         &*(other as *const _ as *const AnimationValueVariantRepr<${ty}>);
-                    % if discrete:
+                    % if is_display:
+                    let value = if crate::pref!("layout.css.display-animations.enabled") {
+                        this.animate(&other_repr.value, procedure)
+                    } else {
+                        animate_discrete(this, &other_repr.value, procedure)
+                    }?;
+                    % elif discrete:
                     let value = animate_discrete(this, &other_repr.value, procedure)?;
                     % else:
                     let value = this.animate(&other_repr.value, procedure)?;
@@ -650,6 +659,42 @@ impl ToAnimatedZero for Visibility {
     }
 }
 
+/// https://drafts.csswg.org/css-display-4/#display-animation
+impl Animate for Display {
+    #[inline]
+    fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
+        match procedure {
+            Procedure::Interpolate { progress } => {
+                debug_assert!(
+                    crate::pref!("layout.css.display-animations.enabled"),
+                    "animating display with the pref disabled",
+                );
+                let (this_weight, other_weight) = procedure.weights();
+                match (*self, *other) {
+                    (_, Display::None) => Ok(if this_weight > 0.0 { *self } else { *other }),
+                    (Display::None, _) => Ok(if other_weight > 0.0 { *other } else { *self }),
+                    _ => Ok(if progress >= 0.5 { *other } else { *self }),
+                }
+            },
+            _ => Err(()),
+        }
+    }
+}
+
+impl ComputeSquaredDistance for Display {
+    #[inline]
+    fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
+        Ok(SquaredDistance::from_sqrt(if *self == *other { 0. } else { 1. }))
+    }
+}
+
+impl ToAnimatedZero for Display {
+    #[inline]
+    fn to_animated_zero(&self) -> Result<Self, ()> {
+        Err(())
+    }
+}
+
 /// <https://drafts.csswg.org/css-contain-3/#content-visibility-animation>
 #[cfg(feature = "gecko")]
 impl Animate for ContentVisibility {
@@ -732,7 +777,7 @@ impl Animate for AnimatedFilter {
         use crate::values::animated::animate_multiplicative_factor;
         match (self, other) {
             % for func in ['Blur', 'DropShadow', 'Grayscale', 'HueRotate', 'Invert', 'Sepia']:
-            (&Filter::${func}(ref this), &Filter::${func}(ref other)) => {
+            (Filter::${func}(this), Filter::${func}(other)) => {
                 Ok(Filter::${func}(this.animate(other, procedure)?))
             },
             % endfor

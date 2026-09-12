@@ -42,7 +42,7 @@ use crate::parser::{NestingContext, ParserContext};
 use crate::properties::{parse_property_declaration_list, PropertyDeclarationBlock};
 use crate::shared_lock::{DeepCloneWithLock, Locked};
 use crate::shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
-use cssparser::{parse_one_rule, Parser, ParserInput};
+use cssparser::{parse_one_rule, Parser};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use servo_arc::Arc;
@@ -223,7 +223,7 @@ impl UrlExtraData {
     /// This method doesn't touch refcount.
     #[inline]
     pub unsafe fn from_ptr_ref(ptr: &*mut structs::URLExtraData) -> &Self {
-        mem::transmute(ptr)
+        unsafe { mem::transmute(ptr) }
     }
 
     /// Returns a pointer to the Gecko URLExtraData object.
@@ -306,7 +306,7 @@ fn style_or_page_rule_to_css(
     let has_declarations = !declaration_block.declarations().is_empty();
 
     // Step 3
-    if let Some(ref rules) = rules {
+    if let Some(rules) = rules {
         let rules = rules.read_with(guard);
         // Step 6 (here because it's more convenient)
         if !rules.is_empty() {
@@ -737,11 +737,11 @@ impl CssRule {
         let namespaces = &parent_stylesheet_contents.namespaces;
         let mut context = ParserContext::new(
             parent_stylesheet_contents.origin,
-            &url_data,
+            url_data,
             None,
             ParsingMode::DEFAULT,
             parent_stylesheet_contents.quirks_mode,
-            Cow::Borrowed(&*namespaces),
+            Cow::Borrowed(namespaces),
             None,
             None,
             /* attr_taint */ Default::default(),
@@ -761,13 +761,12 @@ impl CssRule {
             insert_rule_context.max_rule_state_at_index(index - 1)
         };
 
-        let mut input = ParserInput::new(css);
-        let mut input = Parser::new(&mut input);
+        let mut input = Parser::new(css);
 
         // nested rules are in the body state
         let mut parser = TopLevelRuleParser {
             context,
-            shared_lock: &shared_lock,
+            shared_lock,
             loader,
             state,
             dom_error: None,

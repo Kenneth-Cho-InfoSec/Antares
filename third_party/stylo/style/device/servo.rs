@@ -111,7 +111,7 @@ impl Device {
             used_dynamic_viewport_size: AtomicBool::new(false),
             environment: CssEnvironment,
             default_values,
-            body_text_color: AtomicU32::new(AbsoluteColor::BLACK.to_nscolor()),
+            body_text_color: RwLock::new(AbsoluteColor::BLACK),
             extra: ExtraDeviceData {
                 media_type,
                 viewport_size,
@@ -336,7 +336,6 @@ impl Device {
     pub(crate) fn is_dark_color_scheme(&self, color_scheme_flags: ColorSchemeFlags) -> bool {
         // Inspired by
         // https://searchfox.org/firefox-main/rev/0a7f146ccac85b8f413264042dcd764028d419ec/widget/nsXPLookAndFeel.cpp#1296
-        let prefers_color_scheme = self.color_scheme();
         let supports_dark_mode = color_scheme_flags.contains(ColorSchemeFlags::DARK);
         let supports_light_mode = color_scheme_flags.contains(ColorSchemeFlags::LIGHT);
 
@@ -347,7 +346,7 @@ impl Device {
 
         // If either both or none are supported, then use the preferred color scheme
         // to determine whether the user wants dark mode.
-        return prefers_color_scheme == PrefersColorScheme::Dark;
+        return self.color_scheme() == PrefersColorScheme::Dark;
     }
 
     pub(crate) fn system_color(

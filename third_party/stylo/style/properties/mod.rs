@@ -35,7 +35,7 @@ use crate::stylist::Stylist;
 use crate::typed_om::{ToTyped, TypedValue};
 use crate::values::{computed, serialize_atom_name};
 use arrayvec::{ArrayVec, Drain as ArrayVecDrain};
-use cssparser::{match_ignore_ascii_case, Parser, ParserInput};
+use cssparser::{match_ignore_ascii_case, Parser};
 use rustc_hash::FxHashMap;
 use servo_arc::Arc;
 use std::{
@@ -66,6 +66,8 @@ bitflags! {
         ///
         /// https://drafts.csswg.org/css-cascade/#legacy-shorthand
         const IS_LEGACY_SHORTHAND = 1 << 6;
+       /// This shorthand remains enabled even if some subproperties are pref-disabled.
+        const ALLOWS_DISABLED_SUBPROPERTIES = 1 << 7;
 
         /* The following flags are currently not used in Rust code, they
          * only need to be listed in corresponding properties so that
@@ -73,6 +75,8 @@ bitflags! {
 
         /// This property can be animated on the compositor.
         const CAN_ANIMATE_ON_COMPOSITOR = 0;
+        /// This property can produce a scroll-linked effect.
+        const SCROLL_LINKED_EFFECTIVE = 0;
         /// See data.py's documentation about the affects_flags.
         const AFFECTS_LAYOUT = 0;
         #[allow(missing_docs)]
@@ -122,7 +126,7 @@ impl CSSWideKeyword {
             "unset" => Self::Unset,
             "revert" => Self::Revert,
             "revert-layer" => Self::RevertLayer,
-            "revert-rule" if static_prefs::pref!("layout.css.revert-rule.enabled") => Self::RevertRule,
+            "revert-rule" if crate::pref!("layout.css.revert-rule.enabled") => Self::RevertRule,
             _ => return Err(()),
         })
     }
@@ -178,7 +182,7 @@ pub struct VariableDeclaration {
 
 /// A custom property declaration value is either an unparsed value or a CSS
 /// wide-keyword.
-#[derive(Clone, PartialEq, ToCss, ToShmem)]
+#[derive(Clone, PartialEq, ToCss, ToShmem, ToTyped)]
 pub enum CustomDeclarationValue {
     /// An unparsed value.
     Unparsed(Arc<custom_properties::SpecifiedValue>),
@@ -190,7 +194,6 @@ pub enum CustomDeclarationValue {
 
 /// A custom property declaration with the property name and the declared value.
 #[derive(Clone, PartialEq, ToCss, ToShmem, MallocSizeOf, ToTyped)]
-#[typed(todo_derive_fields)]
 pub struct CustomDeclaration {
     /// The name of the custom property.
     #[css(skip)]
@@ -275,7 +278,7 @@ impl NonCustomPropertyId {
     #[inline]
     pub fn as_longhand(self) -> Option<LonghandId> {
         if self.0 < property_counts::LONGHANDS as u16 {
-            return Some(unsafe { mem::transmute(self.0 as u16) });
+            return Some(unsafe { mem::transmute(self.0) });
         }
         None
     }
@@ -331,9 +334,8 @@ impl NonCustomPropertyId {
         Self((id as u16) + (property_counts::LONGHANDS_AND_SHORTHANDS as u16))
     }
 
-    #[cfg(feature = "servo")]
     /// Iterate over all non-custom properties in arbitrary order.
-    pub fn iter() -> impl Iterator<Item=Self> {
+    pub fn iter() -> impl Iterator<Item = Self> {
         (0..property_counts::NON_CUSTOM as u16).map(|index| Self(index))
     }
 }
@@ -631,7 +633,8 @@ impl LonghandId {
     /// Returns whether this property is animatable in a discrete way.
     #[inline]
     pub fn is_discrete_animatable(self) -> bool {
-        LonghandIdSet::discrete_animatable().contains(self)
+        // `display` is discrete but has a custom Animate impl, so it's not in the set.
+        LonghandIdSet::discrete_animatable().contains(self) || self == LonghandId::Display
     }
 
     /// Converts from a LonghandId to an adequate NonCustomCSSPropertyId.
@@ -696,7 +699,7 @@ impl ShorthandId {
         self,
         declarations: &'a [&'b PropertyDeclaration],
     ) -> Option<AppendableValue<'a, 'b>> {
-        let first_declaration = declarations.get(0)?;
+        let first_declaration = declarations.first()?;
         let rest = || declarations.iter().skip(1);
 
         // https://drafts.csswg.org/css-variables/#variables-in-shorthands
@@ -739,39 +742,42 @@ impl ShorthandId {
     pub fn is_legacy_shorthand(self) -> bool {
         self.flags().contains(PropertyFlags::IS_LEGACY_SHORTHAND)
     }
-}
 
-/// Return the names of arbitrary substitution functions that are enabled.
-pub fn enabled_arbitrary_substitution_functions() -> &'static [&'static str] {
-    if static_prefs::pref!("layout.css.attr.enabled") {
-        &["var", "env", "attr"]
-    } else {
-        &["var", "env"]
+    /// Returns whether this shorthand remains enabled even if some subproperties are pref-disabled.
+    #[inline]
+    pub fn allows_disabled_subproperties(self) -> bool {
+        self.flags()
+            .contains(PropertyFlags::ALLOWS_DISABLED_SUBPROPERTIES)
     }
 }
 
-fn parse_non_custom_property_declaration_value_into<'i>(
+/// The arbitrary substitution functions we support.
+pub const ARBITRARY_SUBSTITUTION_FUNCTIONS: &[&str] = &["var", "env", "attr"];
+
+fn parse_non_custom_property_declaration_value_into(
     declarations: &mut SourcePropertyDeclaration,
     context: &ParserContext,
-    input: &mut Parser<'i, '_>,
+    input: &mut Parser,
     start: &cssparser::ParserState,
     parse_entirely_into: impl FnOnce(
         &mut SourcePropertyDeclaration,
-        &mut Parser<'i, '_>,
-    ) -> Result<(), ParseError<'i>>,
+        &mut Parser,
+    ) -> Result<(), ParseError>,
     parsed_wide_keyword: impl FnOnce(&mut SourcePropertyDeclaration, CSSWideKeyword),
     parsed_custom: impl FnOnce(&mut SourcePropertyDeclaration, custom_properties::VariableValue),
-) -> Result<(), ParseError<'i>> {
+) -> Result<(), ParseError> {
     let mut starts_with_curly_block = false;
     if let Ok(token) = input.next() {
         match token {
-            cssparser::Token::Ident(ref ident) => match CSSWideKeyword::from_ident(ident) {
-                Ok(wk) => {
+            cssparser::Token::Ident(ident) => {
+                if let Ok(wk) = CSSWideKeyword::from_ident(ident) {
                     if input.expect_exhausted().is_ok() {
-                        return Ok(parsed_wide_keyword(declarations, wk));
+                        return {
+                            parsed_wide_keyword(declarations, wk);
+                            Ok(())
+                        };
                     }
-                },
-                Err(()) => {},
+                }
             },
             cssparser::Token::CurlyBracketBlock => {
                 starts_with_curly_block = true;
@@ -780,13 +786,17 @@ fn parse_non_custom_property_declaration_value_into<'i>(
         }
     };
 
-    input.reset(&start);
-    input.look_for_arbitrary_substitution_functions(enabled_arbitrary_substitution_functions());
+    input.reset(start);
+    input.look_for_arbitrary_substitution_functions(ARBITRARY_SUBSTITUTION_FUNCTIONS);
 
+    let mut saw_arbitrary_substitution_functions = false;
     let err = match parse_entirely_into(declarations, input) {
         Ok(()) => {
-            input.seen_arbitrary_substitution_functions();
-            return Ok(());
+            saw_arbitrary_substitution_functions = input.seen_arbitrary_substitution_functions();
+            if !saw_arbitrary_substitution_functions {
+                return Ok(());
+            }
+            ParseError::custom(style_traits::StyleParseErrorKind::UnspecifiedError)
         },
         Err(e) => e,
     };
@@ -807,14 +817,16 @@ fn parse_non_custom_property_declaration_value_into<'i>(
         }
         at_start = false;
     }
-    if !input.seen_arbitrary_substitution_functions() || invalid {
+    saw_arbitrary_substitution_functions =
+        saw_arbitrary_substitution_functions || input.seen_arbitrary_substitution_functions();
+    if !saw_arbitrary_substitution_functions || invalid {
         return Err(err);
     }
     input.reset(start);
     let value = custom_properties::VariableValue::parse(
         input,
         Some(&context.namespaces.prefixes),
-        &context.url_data,
+        context.url_data,
     )?;
     parsed_custom(declarations, value);
     Ok(())
@@ -894,12 +906,12 @@ impl PropertyDeclaration {
     /// This will not actually parse Importance values, and will always set things
     /// to Importance::Normal. Parsing Importance values is the job of PropertyDeclarationParser,
     /// we only set them here so that we don't have to reallocate
-    pub fn parse_into<'i, 't>(
+    pub fn parse_into(
         declarations: &mut SourcePropertyDeclaration,
         id: PropertyId,
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<(), ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<(), ParseError> {
         assert!(declarations.is_empty());
         debug_assert!(id.allowed_in(context), "{:?}", id);
         input.skip_whitespace();
@@ -913,7 +925,7 @@ impl PropertyDeclaration {
                         custom_properties::VariableValue::parse(
                             input,
                             Some(&context.namespaces.prefixes),
-                            &context.url_data,
+                            context.url_data,
                         )?,
                     )),
                 };
@@ -1141,7 +1153,7 @@ impl<'a> PropertyDeclarationId<'a> {
     pub fn to_physical(&self, wm: WritingMode) -> Self {
         match self {
             Self::Longhand(id) => Self::Longhand(id.to_physical(wm)),
-            Self::Custom(_) => self.clone(),
+            Self::Custom(_) => *self,
         }
     }
 
@@ -1231,8 +1243,10 @@ impl IndexedId for PrioritaryPropertyId {
 
     #[inline(always)]
     unsafe fn from_index_release_unchecked(index: usize) -> Self {
-        debug_assert!(index < Self::COUNT);
-        std::mem::transmute(index as u8)
+        unsafe {
+            debug_assert!(index < Self::COUNT);
+            std::mem::transmute(index as u8)
+        }
     }
 
     #[inline(always)]
@@ -1246,8 +1260,10 @@ impl IndexedId for LonghandId {
 
     #[inline(always)]
     unsafe fn from_index_release_unchecked(index: usize) -> Self {
-        debug_assert!(index < Self::COUNT);
-        std::mem::transmute(index as u16)
+        unsafe {
+            debug_assert!(index < Self::COUNT);
+            std::mem::transmute(index as u16)
+        }
     }
 
     #[inline(always)]
@@ -1634,8 +1650,7 @@ impl UnparsedValue {
             attr_taint,
         );
 
-        let mut input = ParserInput::new(&css);
-        let mut input = Parser::new(&mut input);
+        let mut input = Parser::new(&css);
         input.skip_whitespace();
 
         if let Ok(keyword) = input.try_parse(CSSWideKeyword::parse) {

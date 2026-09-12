@@ -9,8 +9,8 @@ use crate::parser::{Parse, ParserContext};
 use crate::typed_om::{ToTyped, TypedValue};
 use crate::values::computed::percentage::Percentage as ComputedPercentage;
 use crate::values::computed::{Context, ToComputedValue};
-use crate::values::generics::NonNegative;
-use crate::values::specified::calc::{CalcNode, CalcNumeric, Leaf};
+use crate::values::generics::{NonNegative, Optional};
+use crate::values::specified::calc::{CalcNode, CalcNumeric, CalcPercentageLeaf, Leaf};
 use crate::values::specified::{CalcLengthPercentage, LengthPercentage, NoCalcNumber, Number};
 use crate::values::tagged_numeric::{Extracted, NumericUnion, Unpacked, UnpackedMut};
 use crate::values::{normalize, reify_percentage, serialize_percentage, CSSFloat};
@@ -82,7 +82,7 @@ impl NoCalcPercentage {
         if !unit.eq_ignore_ascii_case("percent") {
             return Err(());
         }
-        Ok(self.clone())
+        Ok(*self)
     }
 }
 
@@ -95,6 +95,18 @@ impl ToComputedValue for NoCalcPercentage {
 
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
         Self::new(computed.0)
+    }
+}
+
+impl From<f32> for NoCalcPercentage {
+    fn from(value: f32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<NoCalcPercentage> for f32 {
+    fn from(percentage: NoCalcPercentage) -> f32 {
+        percentage.0
     }
 }
 
@@ -147,6 +159,12 @@ impl Percentage {
         Self::new(1.)
     }
 
+    /// Returns true if it is a calc percentage.
+    #[inline]
+    pub fn is_calc(&self) -> bool {
+        self.0.is_boxed()
+    }
+
     /// Returns the value if this is a plain (non-calc) percentage, or None otherwise.
     /// Use `resolve()` to also handle resolvable calc expressions, or `to_computed_value()`
     /// when computed context is available.
@@ -173,7 +191,7 @@ impl Percentage {
     pub fn to_number(&self) -> Option<Number> {
         Some(match self.0.unpack() {
             Unpacked::Inline((), p) => Number::new(p),
-            Unpacked::Boxed(ref calc) => {
+            Unpacked::Boxed(calc) => {
                 let p = calc.as_percentage()?.get();
                 Number::new_calc(Box::new(
                     calc.with_leaf_node(Leaf::Number(NoCalcNumber::new(p))),
@@ -200,9 +218,10 @@ impl Percentage {
             },
             UnpackedMut::Boxed(calc) => {
                 let mut sum = smallvec::SmallVec::<[CalcNode; 2]>::new();
-                sum.push(CalcNode::Leaf(
-                    Leaf::Percentage(NoCalcPercentage::hundred()),
-                ));
+                sum.push(CalcNode::Leaf(Leaf::Percentage(CalcPercentageLeaf::new(
+                    1.,
+                    Optional::None,
+                ))));
                 let mut node = calc.node.clone();
                 node.negate();
                 sum.push(node);
@@ -214,12 +233,11 @@ impl Percentage {
     }
 
     /// Parses a specific kind of percentage.
-    pub fn parse_with_clamping_mode<'i, 't>(
+    pub fn parse_with_clamping_mode(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         num_context: AllowedNumericType,
-    ) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    ) -> Result<Self, ParseError> {
         Ok(Self(match *input.next()? {
             Token::Percentage { unit_value, .. }
                 if num_context.is_ok(context.parsing_mode, unit_value) =>
@@ -227,28 +245,28 @@ impl Percentage {
                 NumericUnion::inline((), unit_value)
             },
             Token::Function(ref name) => {
-                let function = CalcNode::math_function(context, name, location)?;
+                let function = CalcNode::math_function(context, name)?;
                 let calc = CalcNode::parse_percentage(context, input, num_context, function)?;
                 NumericUnion::boxed(Box::new(calc))
             },
-            ref t => return Err(location.new_unexpected_token_error(t.clone())),
+            _ => return Err(ParseError::unexpected_token()),
         }))
     }
 
     /// Parses a percentage token, but rejects it if it's negative.
-    pub fn parse_non_negative<'i, 't>(
+    pub fn parse_non_negative(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         Self::parse_with_clamping_mode(context, input, AllowedNumericType::NonNegative)
     }
 
     /// Parses a percentage token, but rejects it if it's negative or more than
     /// 100%.
-    pub fn parse_zero_to_a_hundred<'i, 't>(
+    pub fn parse_zero_to_a_hundred(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         Self::parse_with_clamping_mode(context, input, AllowedNumericType::ZeroToOne)
     }
 
@@ -266,10 +284,7 @@ impl Percentage {
 
 impl Parse for Percentage {
     #[inline]
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Self::parse_with_clamping_mode(context, input, AllowedNumericType::All)
     }
 }
@@ -281,7 +296,7 @@ impl ToComputedValue for Percentage {
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
         match self.0.unpack() {
             Unpacked::Inline((), p) => NoCalcPercentage(p).to_computed_value(context),
-            Unpacked::Boxed(ref calc) => {
+            Unpacked::Boxed(calc) => {
                 let value = calc.resolve(context, |result| match result {
                     Ok(Leaf::Percentage(p)) => p.get(),
                     _ => {
@@ -331,10 +346,7 @@ pub type NonNegativePercentage = NonNegative<Percentage>;
 
 impl Parse for NonNegativePercentage {
     #[inline]
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Ok(NonNegative(Percentage::parse_non_negative(context, input)?))
     }
 }

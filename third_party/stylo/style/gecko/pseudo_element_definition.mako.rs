@@ -49,14 +49,10 @@ impl PseudoElement {
     /// Whether this pseudo-element is tree pseudo-element.
     #[inline]
     pub fn is_tree_pseudo_element(&self) -> bool {
-        match *self {
-            % for pseudo in PSEUDOS:
-            % if pseudo.name.startswith("-moz-tree-"):
-            ${pseudo_element_variant(pseudo)} => true,
-            % endif
-            % endfor
-            _ => false,
-        }
+        matches!(
+            *self,
+            ${" | ".join(capture(pseudo_element_variant, pseudo) for pseudo in PSEUDOS if pseudo.name.startswith("-moz-tree-"))}
+        )
     }
 
     #[inline]
@@ -101,15 +97,15 @@ impl PseudoElement {
         }
     }
 
-    /// Returns the current value of the `disabled_domains_pref` pref for
-    /// this pseudo, if it has one. The value is a list of domains for which
-    /// this pseudo should be treated as disabled (see
+    /// Returns the current value of the `enabled_domains_pref` pref for this
+    /// pseudo, if it has one. The value is a list of the only domains for
+    /// which this pseudo should be enabled, or "*" for "every domain" (see
     /// `nsContentUtils::IsURIInList` for the format).
-    pub fn disabled_domains(&self) -> Option<nsstring::nsCString> {
+    pub fn enabled_domains(&self) -> Option<nsstring::nsCString> {
         match *self {
         % for pseudo in PSEUDOS:
-        % if pseudo.is_pseudo_element() and pseudo.disabled_domains_pref:
-            ${pseudo_element_variant(pseudo)} => Some(pref!("${pseudo.disabled_domains_pref}")),
+        % if pseudo.is_pseudo_element() and pseudo.enabled_domains_pref:
+            ${pseudo_element_variant(pseudo)} => Some(pref!("${pseudo.enabled_domains_pref}")),
         % endif
         % endfor
             _ => None,
@@ -178,7 +174,7 @@ impl PseudoElement {
         match *self {
             % for pseudo in PSEUDOS:
             % if pseudo.name.startswith("-moz-tree-"):
-            PseudoElement::${pseudo.capitalized}(ref args) => &args,
+            PseudoElement::${pseudo.capitalized}(ref args) => args,
             % endif
             % endfor
             _ => &[],
@@ -274,7 +270,7 @@ impl ToCss for PseudoElement {
                 let mut iter = args.iter();
                 if let Some(first) = iter.next() {
                     dest.write_char('(')?;
-                    serialize_atom_identifier(&first, dest)?;
+                    serialize_atom_identifier(first, dest)?;
                     for item in iter {
                         dest.write_str(", ")?;
                         serialize_atom_identifier(item, dest)?;

@@ -12,7 +12,7 @@ use std::{borrow::Cow, fmt::Write};
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::values::CustomIdent;
-use cssparser::{Parser as CSSParser, ParserInput as CSSParserInput, Token};
+use cssparser::{Parser as CSSParser, Token};
 use style_traits::{
     CssWriter, ParseError as StyleParseError, PropertySyntaxParseError as ParseError,
     StyleParseErrorKind, ToCss,
@@ -57,7 +57,7 @@ impl Descriptor {
     /// Parse a syntax descriptor from a stream of tokens
     /// https://drafts.csswg.org/css-values-5/#typedef-syntax
     #[inline]
-    pub fn from_css_parser<'i>(input: &mut CSSParser<'i, '_>) -> Result<Self, StyleParseError<'i>> {
+    pub fn from_css_parser(input: &mut CSSParser) -> Result<Self, StyleParseError> {
         let mut components = vec![];
 
         if input.try_parse(|i| i.expect_delim('*')).is_ok() {
@@ -66,14 +66,14 @@ impl Descriptor {
 
         // Parse <syntax-string> if given.
         if let Ok(syntax_string) = input.try_parse(|i| i.expect_string_cloned()) {
-            return Self::from_str(syntax_string.as_ref(), /* save_specified = */ true).or_else(
-                |err| Err(input.new_custom_error(StyleParseErrorKind::PropertySyntaxField(err))),
+            return Self::from_str(syntax_string.as_ref(), /* save_specified = */ true).map_err(
+                |err| StyleParseError::custom(StyleParseErrorKind::PropertySyntaxField(err)),
             );
         }
 
         loop {
             let name = Self::try_parse_component_name(input).map_err(|err| {
-                input.new_custom_error(StyleParseErrorKind::PropertySyntaxField(err))
+                StyleParseError::custom(StyleParseErrorKind::PropertySyntaxField(err))
             })?;
 
             let multiplier = if name.is_pre_multiplied() {
@@ -87,11 +87,11 @@ impl Descriptor {
             let Ok(delim) = input.next() else { break };
 
             if delim != &Token::Delim('|') {
-                return Err(
-                    input.new_custom_error(StyleParseErrorKind::PropertySyntaxField(
+                return Err(StyleParseError::custom(
+                    StyleParseErrorKind::PropertySyntaxField(
                         ParseError::ExpectedPipeBetweenComponents,
-                    )),
-                );
+                    ),
+                ));
             }
         }
 
@@ -101,7 +101,7 @@ impl Descriptor {
         })
     }
 
-    fn try_parse_multiplier<'i>(input: &mut CSSParser<'i, '_>) -> Option<Multiplier> {
+    fn try_parse_multiplier(input: &mut CSSParser) -> Option<Multiplier> {
         input
             .try_parse(|input| {
                 let next = input.next_including_whitespace().map_err(|_| ())?;
@@ -114,9 +114,7 @@ impl Descriptor {
             .ok()
     }
 
-    fn try_parse_component_name<'i>(
-        input: &mut CSSParser<'i, '_>,
-    ) -> Result<ComponentName, ParseError> {
+    fn try_parse_component_name(input: &mut CSSParser) -> Result<ComponentName, ParseError> {
         if input.try_parse(|input| input.expect_delim('<')).is_ok() {
             let name = Self::parse_component_data_type_name(input)?;
             match input.next_including_whitespace() {
@@ -131,9 +129,7 @@ impl Descriptor {
         }
     }
 
-    fn parse_component_data_type_name<'i>(
-        input: &mut CSSParser<'i, '_>,
-    ) -> Result<DataType, ParseError> {
+    fn parse_component_data_type_name(input: &mut CSSParser) -> Result<DataType, ParseError> {
         let ty = match input.next_including_whitespace() {
             Ok(Token::Ident(name)) => DataType::from_str(name),
             _ => None,
@@ -190,7 +186,7 @@ impl Descriptor {
         let mut types = DependentDataTypes::empty();
         for component in self.components.iter() {
             let t = match &component.name {
-                ComponentName::DataType(ref t) => t,
+                ComponentName::DataType(t) => t,
                 ComponentName::Ident(_) => continue,
             };
             types.insert(t.dependent_types());
@@ -227,13 +223,10 @@ impl ToCss for Descriptor {
 
 impl Parse for Descriptor {
     /// Parse a syntax descriptor.
-    fn parse<'i>(
-        _: &ParserContext,
-        parser: &mut CSSParser<'i, '_>,
-    ) -> Result<Self, StyleParseError<'i>> {
+    fn parse(_: &ParserContext, parser: &mut CSSParser) -> Result<Self, StyleParseError> {
         let input = parser.expect_string()?;
         Descriptor::from_str(input.as_ref(), /* save_specified = */ true)
-            .map_err(|err| parser.new_custom_error(StyleParseErrorKind::PropertySyntaxField(err)))
+            .map_err(|err| StyleParseError::custom(StyleParseErrorKind::PropertySyntaxField(err)))
     }
 }
 
@@ -410,14 +403,13 @@ impl<'a> Parser<'a> {
         }
 
         let input = &self.input[self.position..];
-        let mut input = CSSParserInput::new(input);
-        let mut input = CSSParser::new(&mut input);
+        let mut input = CSSParser::new(input);
         let name = match CustomIdent::parse(&mut input, &[]) {
             Ok(name) => name,
             Err(_) => return Err(ParseError::InvalidName),
         };
         self.position += input.position().byte_index();
-        return Ok(ComponentName::Ident(name));
+        Ok(ComponentName::Ident(name))
     }
 
     fn parse_multiplier(&mut self) -> Option<Multiplier> {

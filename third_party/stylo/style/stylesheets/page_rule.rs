@@ -33,23 +33,22 @@ macro_rules! page_pseudo_classes {
             $($(#[$($meta)+])* $id,)+
         }
         impl PagePseudoClass {
-            fn parse<'i, 't>(
-                input: &mut Parser<'i, 't>,
-            ) -> Result<Self, ParseError<'i>> {
-                let loc = input.current_source_location();
+            fn parse(
+                input: &mut Parser,
+            ) -> Result<Self, ParseError> {
                 let colon = input.next_including_whitespace()?;
                 if *colon != Token::Colon {
-                    return Err(loc.new_unexpected_token_error(colon.clone()));
+                    return Err(ParseError::unexpected_token());
                 }
 
                 let ident = input.next_including_whitespace()?;
                 if let Token::Ident(s) = ident {
                     return match_ignore_ascii_case! { &**s,
                         $($val => Ok(PagePseudoClass::$id),)+
-                        _ => Err(loc.new_unexpected_token_error(Token::Ident(s.clone()))),
+                        _ => Err(ParseError::unexpected_token()),
                     };
                 }
-                Err(loc.new_unexpected_token_error(ident.clone()))
+                Err(ParseError::unexpected_token())
             }
             #[inline]
             fn to_str(&self) -> &'static str {
@@ -221,16 +220,13 @@ impl ToCss for PageSelector {
     }
 }
 
-fn parse_page_name<'i, 't>(input: &mut Parser<'i, 't>) -> Result<AtomIdent, ParseError<'i>> {
+fn parse_page_name(input: &mut Parser) -> Result<AtomIdent, ParseError> {
     let s = input.expect_ident()?;
     Ok(AtomIdent::from(&**s))
 }
 
 impl Parse for PageSelector {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let name = input.try_parse(parse_page_name);
         let mut pseudos = PagePseudoClasses::default();
         while let Ok(pc) = input.try_parse(PagePseudoClass::parse) {
@@ -267,15 +263,12 @@ impl PageSelectors {
     /// Get the underlying PageSelector data as a slice
     #[inline]
     pub fn as_slice(&self) -> &[PageSelector] {
-        &*self.0
+        &self.0
     }
 }
 
 impl Parse for PageSelectors {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Ok(PageSelectors::new(input.parse_comma_separated(|i| {
             PageSelector::parse(context, i)
         })?))
@@ -350,12 +343,12 @@ impl ToCssWithGuard for PageRule {
 
 impl DeepCloneWithLock for PageRule {
     fn deep_clone_with_lock(&self, lock: &SharedRwLock, guard: &SharedRwLockReadGuard) -> Self {
-        let rules = self.rules.read_with(&guard);
+        let rules = self.rules.read_with(guard);
         PageRule {
             selectors: self.selectors.clone(),
-            block: Arc::new(lock.wrap(self.block.read_with(&guard).clone())),
+            block: Arc::new(lock.wrap(self.block.read_with(guard).clone())),
             rules: Arc::new(lock.wrap(rules.deep_clone_with_lock(lock, guard))),
-            source_location: self.source_location.clone(),
+            source_location: self.source_location,
         }
     }
 }

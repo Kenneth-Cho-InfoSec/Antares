@@ -19,7 +19,7 @@ use crate::stylesheets::{
 };
 use crate::use_counters::UseCounters;
 use crate::{Namespace, Prefix};
-use cssparser::{Parser, ParserInput, StyleSheetParser};
+use cssparser::{Parser, StyleSheetParser};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use rustc_hash::FxHashMap;
@@ -86,7 +86,7 @@ impl StylesheetContents {
             css,
             &url_data,
             origin,
-            &shared_lock,
+            shared_lock,
             stylesheet_loader,
             error_reporter,
             quirks_mode,
@@ -96,7 +96,7 @@ impl StylesheetContents {
         );
 
         Arc::new(Self {
-            rules: CssRules::new(rules, &shared_lock),
+            rules: CssRules::new(rules, shared_lock),
             origin,
             url_data,
             namespaces,
@@ -429,8 +429,7 @@ impl Stylesheet {
         allow_import_rules: AllowImportRules,
         mut sanitization_data: Option<&mut SanitizationData>,
     ) -> (Namespaces, Vec<CssRule>, Option<String>, Option<String>) {
-        let mut input = ParserInput::new(css);
-        let mut input = Parser::new(&mut input);
+        let mut input = Parser::new(css);
 
         let context = ParserContext::new(
             origin,
@@ -466,7 +465,7 @@ impl Stylesheet {
                     Ok(rule_start) => {
                         // TODO(emilio, nesting): sanitize nested CSS rules, probably?
                         if let Some(ref mut data) = sanitization_data {
-                            if let Some(ref rule) = iter.parser.rules.last() {
+                            if let Some(rule) = iter.parser.rules.last() {
                                 if !data.kind.allows(rule, &shared_lock.read()) {
                                     iter.parser.rules.pop();
                                     continue;
@@ -476,8 +475,7 @@ impl Stylesheet {
                             data.output.push_str(&css[rule_start.byte_index()..end]);
                         }
                     },
-                    Err((error, slice)) => {
-                        let location = error.location;
+                    Err((error, slice, location)) => {
                         let error = ContextualParseError::InvalidRule(slice, error);
                         iter.parser.context.log_css_error(location, error);
                     },

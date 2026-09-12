@@ -59,10 +59,10 @@ pub use self::border::{
 pub use self::box_::{
     AlignmentBaseline, Appearance, BaselineShift, BaselineSource, BreakBetween, BreakWithin, Clear,
     Contain, ContainIntrinsicSize, ContainerName, ContainerType, ContentVisibility, Display,
-    DominantBaseline, Float, LineClamp, Overflow, OverflowAnchor, OverflowClipMargin,
+    DominantBaseline, Float, LineClamp, MarginTrim, Overflow, OverflowAnchor, OverflowClipMargin,
     OverscrollBehavior, Perspective, PositionProperty, Resize, ScrollSnapAlign, ScrollSnapAxis,
-    ScrollSnapStop, ScrollSnapStrictness, ScrollSnapType, ScrollbarGutter, TouchAction, WillChange,
-    WritingModeProperty, Zoom,
+    ScrollSnapStop, ScrollSnapStrictness, ScrollSnapType, ScrollbarGutter, ScrollbarInset,
+    TouchAction, WillChange, WritingModeProperty, Zoom,
 };
 pub use self::color::{
     Color, ColorOrAuto, ColorPropertyValue, ColorScheme, ForcedColorAdjust, PrintColorAdjust,
@@ -76,7 +76,7 @@ pub use self::flex::FlexBasis;
 pub use self::font::{FontFamily, FontLanguageOverride, FontPalette, FontStyle};
 pub use self::font::{FontFeatureSettings, FontVariantLigatures, FontVariantNumeric};
 pub use self::font::{
-    FontSize, FontSizeAdjust, FontStretch, FontSynthesis, FontSynthesisStyle, LineHeight,
+    FontSize, FontSizeAdjust, FontSynthesis, FontSynthesisStyle, FontWidth, LineHeight,
 };
 pub use self::font::{FontVariantAlternates, FontWeight};
 pub use self::font::{FontVariantEastAsian, FontVariationSettings};
@@ -104,7 +104,7 @@ pub use self::position::PositionTryOrder;
 pub use self::position::PositionVisibility;
 pub use self::position::ScopedName;
 pub use self::position::{
-    GridAutoFlow, GridTemplateAreas, MasonryAutoFlow, Position, PositionOrAuto, ZIndex,
+    FlexWrap, GridAutoFlow, GridTemplateAreas, MasonryAutoFlow, Position, PositionOrAuto, ZIndex,
 };
 pub use self::position::{PositionArea, PositionAreaKeyword};
 pub use self::ratio::Ratio;
@@ -247,7 +247,7 @@ impl<'a> Context<'a> {
     /// Lazily evaluate the container size query, returning the result.
     pub fn get_container_size_query(&self) -> ContainerSizeQueryResult {
         let mut resolved = self.container_size_query.borrow_mut();
-        resolved.get().clone()
+        resolved.get()
     }
 
     /// Creates a suitable context for media query evaluation, in which
@@ -299,7 +299,7 @@ impl<'a> Context<'a> {
             None => (None, None),
         };
 
-        let style = style.as_ref().map(|s| &**s);
+        let style = style.as_deref();
         let quirks_mode = device.quirks_mode();
         let context = Context {
             builder: StyleBuilder::for_inheritance(device, stylist, style, None),
@@ -416,7 +416,7 @@ impl<'a> Context<'a> {
 
     /// Get the inherited custom properties map.
     pub fn inherited_custom_properties(&self) -> &ComputedCustomProperties {
-        &self.builder.inherited_custom_properties()
+        self.builder.inherited_custom_properties()
     }
 
     /// Whether the style is for the root element.

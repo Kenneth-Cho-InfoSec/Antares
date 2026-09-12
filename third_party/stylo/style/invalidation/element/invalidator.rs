@@ -499,13 +499,8 @@ impl SelectorVisitor for NegationScopeVisitor {
     }
 
     fn visit_simple_selector(&mut self, component: &Component<Self::Impl>) -> bool {
-        if self.in_negation {
-            match component {
-                Component::Scope => {
-                    self.found_scope_in_negation = true;
-                },
-                _ => {},
-            }
+        if self.in_negation && component == &Component::Scope {
+            self.found_scope_in_negation = true;
         }
         true
     }
@@ -744,13 +739,6 @@ where
     ) -> bool {
         let mut sibling_invalidations = InvalidationVector::new();
 
-        let result = self.invalidate_child(
-            child,
-            invalidations,
-            &mut sibling_invalidations,
-            DescendantInvalidationKind::Dom,
-        );
-
         // Roots of NAC subtrees can indeed generate sibling invalidations, but
         // they can be just ignored, since they have no siblings.
         //
@@ -758,7 +746,12 @@ where
         // matching due to this being NAC, like those coming from document
         // rules, but we overinvalidate instead of checking this.
 
-        result
+        self.invalidate_child(
+            child,
+            invalidations,
+            &mut sibling_invalidations,
+            DescendantInvalidationKind::Dom,
+        )
     }
 
     /// Invalidate a child and recurse down invalidating its descendants if
@@ -777,10 +770,12 @@ where
             let mut child_invalidator =
                 TreeStyleInvalidator::new(child, self.stack_limit_checker, self.processor);
 
-            invalidated_child |= child_invalidator.process_sibling_invalidations(
-                &mut invalidations_for_descendants,
-                sibling_invalidations,
-            );
+            if !sibling_invalidations.is_empty() {
+                invalidated_child |= child_invalidator.process_sibling_invalidations(
+                    &mut invalidations_for_descendants,
+                    sibling_invalidations,
+                );
+            }
 
             invalidated_child |= child_invalidator.process_descendant_invalidations(
                 invalidations,
@@ -1022,6 +1017,9 @@ where
     /// ones we got from the previous one.
     ///
     /// Returns whether invalidated the current element's style.
+    ///
+    /// Callers should skip this when `sibling_invalidations` is empty, as it
+    /// builds and drains a `SmallVec` to do nothing.
     fn process_sibling_invalidations(
         &mut self,
         descendant_invalidations: &mut DescendantInvalidationLists<'b>,
@@ -1212,7 +1210,7 @@ where
                 ));
             }
         }
-        return (result, next_invalidations);
+        (result, next_invalidations)
     }
 
     /// Processes a given invalidation, potentially invalidating the style of

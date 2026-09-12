@@ -5,7 +5,7 @@ authors = ["The Servo Project Developers"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/servo/stylo"
 description = "An allocator-agnostic crate for measuring the heap size of a value"
-edition = "2021"
+edition = "2024"
 
 [lib]
 path = "lib.rs"
@@ -16,8 +16,9 @@ servo = ["string_cache"]
 
 [dependencies]
 app_units = "0.7"
-cssparser = "0.37"
+cssparser = "0.38"
 euclid = "0.22"
+parking_lot = "0.12"
 selectors = { workspace = true }
 servo_arc = { workspace = true }
 smallbitvec = "2.3.0"

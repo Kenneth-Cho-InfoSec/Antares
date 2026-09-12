@@ -7,7 +7,6 @@
 //! [container]: https://drafts.csswg.org/css-contain-3/#container-rule
 
 use crate::computed_value_flags::ComputedValueFlags;
-use crate::derives::*;
 use crate::dom::{AttributeTracker, TElement};
 use crate::logical_geometry::{LogicalSize, WritingMode};
 use crate::parser::ParserContext;
@@ -15,6 +14,7 @@ use crate::properties::ComputedValues;
 use crate::queries::feature::{AllowsRanges, Evaluator, FeatureFlags, QueryFeatureDescription};
 use crate::queries::values::Orientation;
 use crate::queries::{FeatureType, QueryCondition};
+use crate::selector_map::{PrecomputedHashMap, PrecomputedHashSet};
 use crate::shared_lock::{
     DeepCloneWithLock, Locked, SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard,
 };
@@ -22,6 +22,7 @@ use crate::stylesheets::{CssRules, CustomMediaEvaluator};
 use crate::stylist::Stylist;
 use crate::values::computed::{CSSPixelLength, ContainerType, Context, Ratio};
 use crate::values::specified::ContainerName;
+use crate::{derives::*, LocalName};
 use app_units::Au;
 use cssparser::{Parser, SourceLocation};
 use euclid::default::Size2D;
@@ -61,7 +62,7 @@ impl DeepCloneWithLock for ContainerRule {
         Self {
             conditions: self.conditions.clone(),
             rules: Arc::new(lock.wrap(rules.deep_clone_with_lock(lock, guard))),
-            source_location: self.source_location.clone(),
+            source_location: self.source_location,
         }
     }
 }
@@ -84,6 +85,44 @@ impl ToCssWithGuard for ContainerRule {
 #[css(comma)]
 pub struct ContainerConditions(#[css(iterable)] pub ArcSlice<ContainerCondition>);
 
+/// A set of attribute names used for invalidation of attr() inside
+/// style container queries.
+pub type AttrReferenceSet = PrecomputedHashSet<LocalName>;
+
+/// Whether this container uses attr() references and if so whether or not this
+/// is a named or unnamed container query. Used for determining which kind of
+/// restyle hint we need when traversing invalidation.
+#[derive(Debug, Clone, Copy, MallocSizeOf, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(C)]
+pub enum ContainerAttributeDependencyKind {
+    /// This container does not use attr() references.
+    None = 0,
+    /// This unnamed container uses attr() references.
+    UnnamedContainer = 1,
+    /// This named container uses attr() references.
+    NamedContainer = 2,
+}
+
+impl ContainerAttributeDependencyKind {
+    /// A named container that uses attr needs to invalidate all descendants that
+    /// are affected by style container queries. If we only have an unnamed
+    /// container or no attribute dependencies we keep looking for a condition that
+    /// would require us to invalidate more.
+    pub fn element_container_dependency_kind<E: TElement>(
+        element: E,
+        local_name: &LocalName,
+        stylist: &Stylist,
+    ) -> Self {
+        let mut name_kind = ContainerAttributeDependencyKind::None;
+        stylist.any_applicable_rule_data(element, |data| {
+            let value = data.might_have_attribute_dependency_in_container(local_name);
+            name_kind = std::cmp::max(name_kind, value);
+            name_kind == ContainerAttributeDependencyKind::NamedContainer
+        });
+        name_kind
+    }
+}
+
 /// A container condition and filter, combined.
 #[derive(Debug, ToShmem, ToCss)]
 pub struct ContainerCondition {
@@ -92,6 +131,8 @@ pub struct ContainerCondition {
     condition: Option<QueryCondition>,
     #[css(skip)]
     flags: FeatureFlags,
+    #[css(skip)]
+    attributes_referenced: AttrReferenceSet,
 }
 
 /// The result of a successful container query lookup.
@@ -165,10 +206,7 @@ impl ContainerCondition {
         self.condition.as_ref()
     }
     /// Parse a container condition.
-    pub fn parse<'a>(
-        context: &ParserContext,
-        input: &mut Parser<'a, '_>,
-    ) -> Result<Self, ParseError<'a>> {
+    pub fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let name = input
             .try_parse(|input| ContainerName::parse_for_query(context, input))
             .ok()
@@ -177,7 +215,11 @@ impl ContainerCondition {
             .try_parse(|input| QueryCondition::parse(context, input, FeatureType::Container))
             .ok();
         if condition.is_none() && name.is_none() {
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+        }
+        let mut attributes_referenced = AttrReferenceSet::default();
+        if let Some(c) = condition.as_ref() {
+            c.collect_attribute_references(&mut attributes_referenced)
         }
         let flags = condition
             .as_ref()
@@ -186,6 +228,7 @@ impl ContainerCondition {
             name,
             condition,
             flags,
+            attributes_referenced,
         })
     }
 
@@ -254,16 +297,14 @@ impl ContainerCondition {
     where
         E: TElement,
     {
-        match traverse_container(
+        traverse_container(
             e,
             originating_element_style,
             |element, originating_element_style| {
                 self.valid_container_info(element, originating_element_style)
             },
-        ) {
-            Some((_, result)) => Some(result),
-            None => None,
-        }
+        )
+        .map(|(_, result)| result)
     }
 
     /// Tries to match a container query condition for a given element.
@@ -327,9 +368,10 @@ impl ContainerCondition {
                     invalidation_flags
                         .insert(ComputedValueFlags::USES_VIEWPORT_UNITS_ON_CONTAINER_QUERIES);
                 }
-                if flags.contains(ComputedValueFlags::USES_FONT_RELATIVE_UNITS) {
-                    invalidation_flags
-                        .insert(ComputedValueFlags::USES_FONT_RELATIVE_UNITS_ON_CONTAINER_QUERIES);
+                if flags.contains(ComputedValueFlags::USES_FONT_OR_WM_RELATIVE_UNITS) {
+                    invalidation_flags.insert(
+                        ComputedValueFlags::USES_FONT_OR_WM_RELATIVE_UNITS_ON_CONTAINER_QUERIES,
+                    );
                 }
                 if flags.intersects(ComputedValueFlags::tree_counting_function_flags()) {
                     // Container query usage of sibling-index() and sibling-count() requires
@@ -341,6 +383,36 @@ impl ContainerCondition {
                 matches
             },
         )
+    }
+
+    /// Get the attribute functions referenced by this condition, if any.
+    pub fn get_attributes_referenced(&self) -> &AttrReferenceSet {
+        &self.attributes_referenced
+    }
+
+    /// Insert the attribute dependencies and attribute dependency kind into
+    /// the attribute_dependencies set and the attr_function_dependencies map.
+    pub fn insert_attribute_references_in_dependency_map(
+        &self,
+        kind_map: &mut PrecomputedHashMap<LocalName, ContainerAttributeDependencyKind>,
+        attribute_dependencies: &mut AttrReferenceSet,
+    ) {
+        let name_kind = if self.name.is_none() {
+            ContainerAttributeDependencyKind::UnnamedContainer
+        } else {
+            ContainerAttributeDependencyKind::NamedContainer
+        };
+        for attr in self.get_attributes_referenced() {
+            kind_map
+                .entry(attr.clone())
+                .and_modify(|v| {
+                    if *v == ContainerAttributeDependencyKind::UnnamedContainer {
+                        *v = name_kind
+                    }
+                })
+                .or_insert(name_kind);
+            attribute_dependencies.insert(attr.clone());
+        }
     }
 }
 
@@ -485,10 +557,8 @@ impl ContainerSizeQueryResult {
             if let Some(w) = self.width {
                 return w;
             }
-        } else {
-            if let Some(h) = self.height {
-                return h;
-            }
+        } else if let Some(h) = self.height {
+            return h;
         }
         Self::get_logical_viewport_size(context).inline
     }
@@ -650,16 +720,16 @@ impl<'a> ContainerSizeQuery<'a> {
 
         // If there's no style, such as being `display: none` or so, we still want to show a
         // correct computed value, so give it a try.
-        let should_traverse = parent_style.map_or(true, |s| {
+        let should_traverse = parent_style.is_none_or(|s| {
             s.flags
                 .contains(ComputedValueFlags::SELF_OR_ANCESTOR_HAS_SIZE_CONTAINER_TYPE)
         });
         if !should_traverse {
             return Self::none();
         }
-        return Self::NotEvaluated(Box::new(move || {
+        Self::NotEvaluated(Box::new(move || {
             Self::lookup(element, if is_pseudo { known_parent_style } else { None })
-        }));
+        }))
     }
 
     /// Create a new instance, but with optional element.

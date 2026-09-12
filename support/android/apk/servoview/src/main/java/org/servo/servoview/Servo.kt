@@ -243,6 +243,8 @@ class Servo(
 
         fun onUrlChanged(url: String)
 
+        fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {}
+
         fun onImeShow()
 
         fun onImeHide()
@@ -319,6 +321,7 @@ class Servo(
         override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
             navigator.canGoBackState.value = canGoBack
             navigator.canGoForwardState.value = canGoForward
+            runCallback.inUIThread { client.onHistoryChanged(canGoBack, canGoForward) }
         }
 
         override fun onMediaSessionMetadata(title: String, artist: String, album: String) {

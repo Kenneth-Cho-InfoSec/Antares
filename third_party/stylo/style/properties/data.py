@@ -20,7 +20,7 @@ LOGICAL_SIZES = ["block-size", "inline-size"]
 LOGICAL_AXES = ["block", "inline"]
 
 SYSTEM_FONT_LONGHANDS = """font_family font_size font_style
-                           font_stretch font_weight""".split()
+                           font_width font_weight""".split()
 
 PRIORITARY_PROPERTIES = set(
     [
@@ -48,7 +48,7 @@ PRIORITARY_PROPERTIES = set(
         "font-size",
         "font-size-adjust",
         "font-weight",
-        "font-stretch",
+        "font-width",
         "font-style",
         "font-family",
         # color-scheme affects how system colors and light-dark() resolve.
@@ -110,7 +110,7 @@ PRIORITARY_PROPERTY_DEPENDENCIES = {
     # lengths (other than font-size) via font-relative units.
     "font-size-adjust": ["appearance"],
     "font-weight": ["appearance"],
-    "font-stretch": ["appearance"],
+    "font-width": ["appearance"],
     "font-style": ["appearance"],
     # Writing-mode properties affect logical -> physical property conversions, but also
     # font metrics.
@@ -125,7 +125,7 @@ PRIORITARY_PROPERTY_DEPENDENCIES = {
         "text-orientation",
         "font-size",
         "font-weight",
-        "font-stretch",
+        "font-width",
         "font-style",
         "font-size-adjust",
     ],
@@ -557,6 +557,11 @@ class Longhand(Property):
         ]
 
     def may_be_disabled_in(self, shorthand, engine):
+        if "ALLOWS_DISABLED_SUBPROPERTIES" in shorthand.flags:
+            assert "IS_LEGACY_SHORTHAND" in shorthand.flags
+            assert len(shorthand.sub_properties) == 1
+            return False
+
         if engine == "gecko":
             return self.gecko_pref and self.gecko_pref != shorthand.gecko_pref
         elif engine == "servo":
@@ -649,6 +654,7 @@ class Longhand(Property):
                 "Display",
                 "DominantBaseline",
                 "FillRule",
+                "FlexWrap",
                 "Float",
                 "FontLanguageOverride",
                 "FontSynthesis",
@@ -668,6 +674,7 @@ class Longhand(Property):
                 "SelfAlignment",
                 "JustifyItems",
                 "LineBreak",
+                "MarginTrim",
                 "MasonryAutoFlow",
                 "MozTheme",
                 "BoolInteger",
@@ -860,8 +867,9 @@ class StyleStruct(object):
 
 
 class Descriptor(object):
-    def __init__(self, name, type, parser=None, gecko_pref=None, ignore_malloc_size_of=None):
+    def __init__(self, name, type, parser=None, gecko_pref=None, ignore_malloc_size_of=None, aliases=[]):
         self.name = name
+        self.aliases = aliases
         self.type = type
         self.parser = parser
         self.gecko_pref = gecko_pref
@@ -1276,11 +1284,14 @@ class PropertyRestrictions:
     # https://drafts.csswg.org/css-pseudo/#placeholder
     #
     # The spec says that placeholder and first-line have the same restrictions,
-    # but that's not true in Gecko and we also allow a handful other properties
-    # for ::placeholder.
+    # except those defined in css-inline.
+    # We also allow a handful other properties for ::placeholder, which is allowed by
+    # the spec.
     @staticmethod
     def placeholder(data):
         props = PropertyRestrictions.first_line(data)
+        for p in PropertyRestrictions.spec(data, "css-inline"):
+            props.discard(p)
         props.add("opacity")
         props.add("text-overflow")
         props.add("text-align")

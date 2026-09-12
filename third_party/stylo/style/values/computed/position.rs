@@ -20,10 +20,10 @@ use crate::values::generics::position::{
     PositionOrAuto as GenericPositionOrAuto, ZIndex as GenericZIndex,
 };
 pub use crate::values::specified::position::{
-    AnchorName, DashedIdentAndOrTryTactic, GridAutoFlow, GridTemplateAreas, MasonryAutoFlow,
-    PositionAnchor, PositionArea, PositionAreaAxis, PositionAreaKeyword, PositionAreaType,
-    PositionTryFallbacks, PositionTryFallbacksTryTactic, PositionTryFallbacksTryTacticKeyword,
-    PositionTryOrder, PositionVisibility, ScopedName,
+    AnchorName, DashedIdentAndOrTryTactic, FlexWrap, GridAutoFlow, GridTemplateAreas,
+    MasonryAutoFlow, PositionAnchor, PositionArea, PositionAreaAxis, PositionAreaKeyword,
+    PositionAreaType, PositionTryFallbacks, PositionTryFallbacksTryTactic,
+    PositionTryFallbacksTryTacticKeyword, PositionTryOrder, PositionVisibility, ScopedName,
 };
 use crate::Zero;
 use std::fmt::{self, Write};
@@ -233,7 +233,7 @@ impl ToComputedValue for PositionArea {
     type ComputedValue = Self;
 
     fn to_computed_value(&self, _context: &Context) -> Self {
-        let mut computed = self.clone();
+        let mut computed = *self;
         let pair_type = self.get_type();
         if pair_type == PositionAreaType::Logical || pair_type == PositionAreaType::SelfLogical {
             if computed.second != PositionAreaKeyword::None {
@@ -262,7 +262,7 @@ impl ToComputedValue for PositionArea {
     }
 
     fn from_computed_value(computed: &Self) -> Self {
-        computed.clone()
+        *computed
     }
 }
 
