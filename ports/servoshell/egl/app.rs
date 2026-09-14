@@ -750,18 +750,22 @@ impl App {
     /// WebView's demand-driven BeginFrame source and provides back-pressure to the embedder.
     pub fn needs_vsync(&self) -> bool {
         let platform_window = self.window().platform_window();
-        let embedded_platform_window = platform_window
-            .as_headed_window()
-            .expect("No headed window");
+        let Some(embedded_platform_window) = platform_window.as_headed_window() else {
+            // Surface teardown can interleave with frame callbacks. Missing the
+            // window here must not panic: unwinding across JNI wedges the
+            // embedder blank with painting half-torn-down.
+            return false;
+        };
         embedded_platform_window.pending_repaint.get() ||
             embedded_platform_window.refresh_driver.has_pending_frame()
     }
 
     pub fn pause_painting(&self) {
         let platform_window = self.window().platform_window();
-        let embedded_platform_window = platform_window
-            .as_headed_window()
-            .expect("No headed window");
+        let Some(embedded_platform_window) = platform_window.as_headed_window() else {
+            warn!("pause_painting with no headed window; nothing to unbind");
+            return;
+        };
         if let Err(error) = embedded_platform_window.rendering_context.take_window() {
             warn!("Unbinding native surface from context failed ({error:?})");
         }
@@ -776,9 +780,10 @@ impl App {
         let window_handle = unsafe { WindowHandle::borrow_raw(window_handle) };
         let size = viewport_rect.size.to_u32();
         let platform_window = self.window().platform_window();
-        let embedded_platform_window = platform_window
-            .as_headed_window()
-            .expect("No headed window");
+        let Some(embedded_platform_window) = platform_window.as_headed_window() else {
+            warn!("resume_painting with no headed window; ignoring");
+            return;
+        };
         if let Err(error) = embedded_platform_window
             .rendering_context
             .set_window(window_handle, PhysicalSize::new(size.width, size.height))
