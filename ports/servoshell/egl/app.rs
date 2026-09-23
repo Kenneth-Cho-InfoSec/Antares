@@ -247,7 +247,67 @@ impl PlatformWindow for EmbeddedPlatformWindow {
     }
 
     fn show_console_message(&self, level: servo::ConsoleLogLevel, message: &str) {
+        let level_int = console_log_level_to_int(level.clone());
         log::log!(level.into(), "{message}");
+        // Mirror page console output to the Android host (in-app console
+        // panel) in addition to logcat. Levels use ConsoleLogLevel order.
+        self.host.on_console_message(level_int, message.to_owned());
+    }
+}
+
+/// Stable integer mapping for `HostTrait::on_console_message`, following
+/// `ConsoleLogLevel` declaration order.
+fn console_log_level_to_int(level: servo::ConsoleLogLevel) -> i32 {
+    match level {
+        servo::ConsoleLogLevel::Log => 0,
+        servo::ConsoleLogLevel::Debug => 1,
+        servo::ConsoleLogLevel::Info => 2,
+        servo::ConsoleLogLevel::Warn => 3,
+        servo::ConsoleLogLevel::Error => 4,
+        servo::ConsoleLogLevel::Trace => 5,
+        servo::ConsoleLogLevel::Dir => 6,
+    }
+}
+
+/// Display string for an evaluated value, mirroring embedder REPL conventions.
+fn display_js_value(value: &servo::JSValue) -> String {
+    match value {
+        servo::JSValue::Undefined => "undefined".to_owned(),
+        servo::JSValue::Null => "null".to_owned(),
+        servo::JSValue::Boolean(value) => value.to_string(),
+        servo::JSValue::Number(value) => {
+            if value.is_finite() && value.fract() == 0.0 {
+                // `2`, not `2.0`, like consoles print integers.
+                format!("{}", *value as i64)
+            } else {
+                format!("{value}")
+            }
+        },
+        servo::JSValue::String(value) => value.clone(),
+        servo::JSValue::Array(_) | servo::JSValue::Object(_) => {
+            serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
+        },
+        servo::JSValue::Element(description)
+        | servo::JSValue::ShadowRoot(description)
+        | servo::JSValue::Frame(description)
+        | servo::JSValue::Window(description) => description.clone(),
+    }
+}
+
+/// Display string for an evaluation failure, preferring the script's own
+/// message and stack over the internal error shape.
+fn display_js_error(error: &servo::JavaScriptEvaluationError) -> String {
+    match error {
+        servo::JavaScriptEvaluationError::EvaluationFailure(Some(info)) => {
+            if let Some(stack) = info.stack.as_ref().filter(|stack| !stack.is_empty()) {
+                stack.clone()
+            } else if info.message.is_empty() {
+                format!("{error:?}")
+            } else {
+                info.message.clone()
+            }
+        },
+        _ => format!("{error:?}"),
     }
 }
 
@@ -468,6 +528,32 @@ impl App {
             });
             self.spin_event_loop();
         }
+    }
+
+    /// Evaluate JavaScript and deliver the JSON-encoded result to the host.
+    /// The payload is `{"ok":true,"value":"…"}` with a display string, or
+    /// `{"ok":false,"error":"…"}`. Display mapping mirrors embedder REPL
+    /// conventions (strings raw, `undefined`/`null` named, objects as compact
+    /// JSON, DOM nodes as their descriptions).
+    pub fn evaluate_javascript_with_callback(&self, script: &str, request_id: i32) {
+        let Some(webview) = self.active_or_newest_webview() else {
+            self.host.on_javascript_evaluation_complete(
+                request_id,
+                r#"{"ok":false,"error":"no document"}"#.to_owned(),
+            );
+            return;
+        };
+        let host = self.host.clone();
+        webview.evaluate_javascript(script, move |result| {
+            let payload = match result {
+                Ok(value) => serde_json::json!({"ok": true, "value": display_js_value(&value)})
+                    .to_string(),
+                Err(error) => serde_json::json!({"ok": false, "error": display_js_error(&error)})
+                    .to_string(),
+            };
+            host.on_javascript_evaluation_complete(request_id, payload);
+        });
+        self.spin_event_loop();
     }
 
     /// Set the user agent used by DOM APIs and subsequent network requests. An empty override

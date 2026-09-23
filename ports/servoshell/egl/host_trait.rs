@@ -42,4 +42,12 @@ pub trait HostTrait {
     fn on_show_select_element(&self, webview_id: WebViewId, prompt: SelectElement);
     /// Called when we get a panic message from constellation
     fn on_panic(&self, reason: String, backtrace: Option<String>);
+    /// Page script called a `console.*` API. Levels are `ConsoleLogLevel`
+    /// discriminants (Log=0, Debug=1, Info=2, Warn=3, Error=4, Trace=5, Dir=6).
+    /// Embedders without a console UI keep the default no-op.
+    fn on_console_message(&self, _level: i32, _message: String) {}
+    /// An `evaluateJavascriptWithCallback` request completed. `result_json`
+    /// is `{"ok":true,"value":<JSON>}` or `{"ok":false,"error":"…"}`.
+    /// Embedders without eval support keep the default no-op.
+    fn on_javascript_evaluation_complete(&self, _request_id: i32, _result_json: String) {}
 }

@@ -350,6 +350,24 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_evaluateJavascript<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_evaluateJavascriptWithCallback<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    script: JString<'local>,
+    request_id: jint,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let script = JString::cast_local(env, script)?.try_to_string(env)?;
+        debug!("evaluateJavascriptWithCallback {request_id}");
+        call(env, |app| {
+            app.evaluate_javascript_with_callback(&script, request_id)
+        });
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_org_servo_servoview_JNIServo_setUserAgent<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -921,8 +939,41 @@ impl HostTrait for HostCallbacks {
             .unwrap();
     }
 
-    fn on_ime_show(&self, _: InputMethodControl) {
+    fn on_console_message(&self, level: i32, message: String) {
         self.jvm
+            .attach_current_thread(|env| -> Result<(), Error> {
+                let Ok(message) = new_string_as_jvalue(env, &message) else {
+                    return Ok(());
+                };
+                env.call_method(
+                    callback_ref(),
+                    jni_str!("onConsoleMessage"),
+                    jni_sig!("(ILjava/lang/String;)V"),
+                    &[JValue::Int(level as jint), (&message).into()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn on_javascript_evaluation_complete(&self, request_id: i32, result_json: String) {
+        self.jvm
+            .attach_current_thread(|env| -> Result<(), Error> {
+                let Ok(result_json) = new_string_as_jvalue(env, &result_json) else {
+                    return Ok(());
+                };
+                env.call_method(
+                    callback_ref(),
+                    jni_str!("onEvalResult"),
+                    jni_sig!("(ILjava/lang/String;)V"),
+                    &[JValue::Int(request_id as jint), (&result_json).into()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn on_ime_show(&self, _: InputMethodControl) {        self.jvm
             .attach_current_thread(|env| -> Result<(), Error> {
                 env.call_method(callback_ref(), jni_str!("onImeShow"), jni_sig!("()V"), &[])?;
                 Ok(())
