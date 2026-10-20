@@ -10,11 +10,11 @@
 
 use crate::color::AbsoluteColor;
 use crate::properties::{ComputedValues, PropertyId};
+use crate::values::CSSFloat;
 use crate::values::computed::url::ComputedUrl;
 use crate::values::computed::{Angle, Image, Length};
 use crate::values::generics::{ClampToNonNegative, NonNegative};
 use crate::values::specified::SVGPathData;
-use crate::values::CSSFloat;
 use app_units::Au;
 use smallvec::SmallVec;
 use std::cmp;

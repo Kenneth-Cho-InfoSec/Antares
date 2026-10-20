@@ -7,8 +7,8 @@
 use crate::typed_om::numeric::NoCalcNumeric;
 use crate::typed_om::numeric_type::NumericType;
 use crate::typed_om::{MathSum, MathValue, NumericValue, UnitValue};
+use hashbrown::HashMap;
 use itertools::Itertools;
-use std::collections::HashMap;
 use style_traits::CssString;
 use thin_vec::ThinVec;
 
@@ -22,7 +22,7 @@ fn product_of_two_unit_maps(s: &UnitMap, other: &UnitMap) -> UnitMap {
     // Step 2.
     for (unit, power) in other {
         // Step 2.1 & 2.2.
-        *result.entry(unit.clone()).or_insert(0) += power;
+        *result.entry_ref(unit).or_insert(0) += power;
     }
 
     // Step 3.
@@ -360,9 +360,11 @@ impl SumValue {
     /// Step 3-6 of:
     /// https://drafts.css-houdini.org/css-typed-om-1/#dom-cssnumericvalue-tosum
     pub fn to_units(&self, units: &[&str]) -> Result<MathSum, ()> {
-        debug_assert!(units
-            .iter()
-            .all(|unit| NumericType::try_from_unit(unit).is_ok()));
+        debug_assert!(
+            units
+                .iter()
+                .all(|unit| NumericType::try_from_unit(unit).is_ok())
+        );
 
         // Step 3.
         let mut values = self

@@ -10,10 +10,10 @@ use crate::gecko_bindings::structs;
 use crate::parser::ParserContext;
 use crate::stylesheets::{CorsMode, UrlExtraData};
 use crate::values::computed::{Context, ToComputedValue};
+use hashbrown::HashMap;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use nsstring::nsCString;
 use servo_arc::Arc;
-use std::collections::HashMap;
 use std::fmt::{self, Write};
 use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, RwLock};
@@ -108,27 +108,26 @@ impl CssUrl {
         cors_mode: CorsMode,
     ) -> Self {
         use crate::use_counters::CustomUseCounter;
-        if let Some(counters) = context.use_counters {
-            if !counters
+        if let Some(counters) = context.use_counters
+            && !counters
                 .custom
                 .recorded(CustomUseCounter::MaybeHasFullBaseUriDependency)
-            {
-                let dep = NonLocalUriDependency::scan(&url);
-                if dep >= NonLocalUriDependency::Absolute {
-                    counters
-                        .custom
-                        .record(CustomUseCounter::HasNonLocalUriDependency);
-                }
-                if dep >= NonLocalUriDependency::Path {
-                    counters
-                        .custom
-                        .record(CustomUseCounter::MaybeHasPathBaseUriDependency);
-                }
-                if dep >= NonLocalUriDependency::Full {
-                    counters
-                        .custom
-                        .record(CustomUseCounter::MaybeHasFullBaseUriDependency);
-                }
+        {
+            let dep = NonLocalUriDependency::scan(&url);
+            if dep >= NonLocalUriDependency::Absolute {
+                counters
+                    .custom
+                    .record(CustomUseCounter::HasNonLocalUriDependency);
+            }
+            if dep >= NonLocalUriDependency::Path {
+                counters
+                    .custom
+                    .record(CustomUseCounter::MaybeHasPathBaseUriDependency);
+            }
+            if dep >= NonLocalUriDependency::Full {
+                counters
+                    .custom
+                    .record(CustomUseCounter::MaybeHasFullBaseUriDependency);
             }
         }
         CssUrl(Arc::new(CssUrlData {

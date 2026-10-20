@@ -12,9 +12,9 @@ use crate::properties::PropertyDeclarationBlock;
 use crate::shared_lock::{
     DeepCloneWithLock, Locked, SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard,
 };
-use crate::stylesheets::{style_or_page_rule_to_css, CssRules};
+use crate::stylesheets::{CssRules, style_or_page_rule_to_css};
 use crate::values::{AtomIdent, CustomIdent};
-use cssparser::{match_ignore_ascii_case, Parser, SourceLocation, Token};
+use cssparser::{Parser, SourceLocation, Token, match_ignore_ascii_case};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use servo_arc::Arc;

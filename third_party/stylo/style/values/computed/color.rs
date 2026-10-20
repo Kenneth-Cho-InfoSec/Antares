@@ -140,11 +140,7 @@ impl Color {
         let b = b.raw_components();
         let la = luminance(compute(a[0]), compute(a[1]), compute(a[2])) + 0.05;
         let lb = luminance(compute(b[0]), compute(b[1]), compute(b[2])) + 0.05;
-        if la > lb {
-            la / lb
-        } else {
-            lb / la
-        }
+        if la > lb { la / lb } else { lb / la }
     }
 }
 

@@ -6,7 +6,7 @@
 
 use app_units::Au;
 use cssparser::ToCss as CssparserToCss;
-use cssparser::{serialize_string, ParseError, Parser, UnicodeRange};
+use cssparser::{ParseError, Parser, UnicodeRange, serialize_string};
 use servo_arc::Arc;
 use std::fmt::{self, Write};
 
@@ -51,10 +51,12 @@ use std::fmt::{self, Write};
 ///       flag that shares a bit with itself. For example, if you have three
 ///       bitflags like:
 ///
-///         FOO = 1 << 0;
-///         BAR = 1 << 1;
-///         BAZ = 1 << 2;
-///         BAZZ = BAR | BAZ;
+///       ```
+///       let FOO = 1 << 0;
+///       let BAR = 1 << 1;
+///       let BAZ = 1 << 2;
+///       let BAZZ = BAR | BAZ;
+///       ```
 ///
 ///       Then the following combinations won't be valid:
 ///
@@ -66,12 +68,11 @@ use std::fmt::{self, Write};
 ///    * `validate_mixed` can be used to reject invalid mixed combinations, and also to simplify
 ///      the type or add default ones if needed.
 ///    * `overlapping_bits` enables some tracking during serialization of mixed flags to avoid
-///       serializing variants that can subsume other variants.
-///       In the example above, you could do:
-///         mixed="foo,bazz,bar,baz", overlapping_bits
-///       to ensure that if bazz is serialized, bar and baz aren't, even though
-///       their bits are set. Note that the serialization order is canonical,
-///       and thus depends on the order you specify the flags in.
+///      serializing variants that can subsume other variants.
+///      In the example above, you could do: `mixed="foo,bazz,bar,baz", overlapping_bits`
+///      to ensure that if bazz is serialized, bar and baz aren't, even though
+///      their bits are set. Note that the serialization order is canonical,
+///      and thus depends on the order you specify the flags in.
 ///
 /// * finally, one can put `#[css(derive_debug)]` on the whole type, to
 ///   implement `Debug` by a single call to `ToCss::to_css`.
@@ -102,7 +103,7 @@ pub trait ToCss {
     }
 }
 
-impl<'a, T> ToCss for &'a T
+impl<T> ToCss for &T
 where
     T: ToCss + ?Sized,
 {
@@ -536,10 +537,21 @@ pub mod specified {
     /// Whether to allow negative lengths or not.
     #[repr(u8)]
     #[derive(
-        Clone, Copy, Debug, Deserialize, Eq, MallocSizeOf, PartialEq, PartialOrd, Serialize, ToShmem,
+        Clone,
+        Copy,
+        Debug,
+        Default,
+        Deserialize,
+        Eq,
+        MallocSizeOf,
+        PartialEq,
+        PartialOrd,
+        Serialize,
+        ToShmem,
     )]
     pub enum AllowedNumericType {
         /// Allow all kind of numeric values.
+        #[default]
         All,
         /// Allow only non-negative numeric values.
         NonNegative,
@@ -547,13 +559,6 @@ pub mod specified {
         AtLeastOne,
         /// Allow only numeric values from 0 to 1.0.
         ZeroToOne,
-    }
-
-    impl Default for AllowedNumericType {
-        #[inline]
-        fn default() -> Self {
-            AllowedNumericType::All
-        }
     }
 
     impl AllowedNumericType {
@@ -564,10 +569,10 @@ pub mod specified {
                 return true;
             }
             match *self {
-                AllowedNumericType::All => true,
-                AllowedNumericType::NonNegative => val >= 0.0,
-                AllowedNumericType::AtLeastOne => val >= 1.0,
-                AllowedNumericType::ZeroToOne => val >= 0.0 && val <= 1.0,
+                Self::All => true,
+                Self::NonNegative => val >= 0.0,
+                Self::AtLeastOne => val >= 1.0,
+                Self::ZeroToOne => (0.0..=1.0).contains(&val),
             }
         }
 
@@ -575,10 +580,10 @@ pub mod specified {
         #[inline]
         pub fn clamp(&self, val: f32) -> f32 {
             match *self {
-                AllowedNumericType::All => val,
-                AllowedNumericType::NonNegative => val.max(0.),
-                AllowedNumericType::AtLeastOne => val.max(1.),
-                AllowedNumericType::ZeroToOne => val.max(0.).min(1.),
+                Self::All => val,
+                Self::NonNegative => val.max(0.),
+                Self::AtLeastOne => val.max(1.),
+                Self::ZeroToOne => val.clamp(0., 1.),
             }
         }
     }

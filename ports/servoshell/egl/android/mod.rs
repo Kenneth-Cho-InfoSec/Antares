@@ -27,7 +27,7 @@ use raw_window_handle::{
 pub use servo::MediaSessionPlaybackState;
 use servo::{
     self, DevicePixel, EventLoopWaker, InputMethodControl, LoadStatus, MediaSessionActionType,
-    SelectElement, WebViewId,
+    MouseButton, SelectElement, WebViewId,
 };
 
 use super::app::{App, AppInitOptions};
@@ -69,6 +69,16 @@ where
         Some(app) => (f)(app),
         None => throw(env, jni_str!("Servo not available in this thread")),
     });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_version<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) -> JString<'local> {
+    let version = crate::VERSION;
+    env.with_env(|env| -> jni::errors::Result<_> { env.new_string(version) })
+        .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 /// Initialize Servo. At that point, we need a valid GL context. In the future, this will
@@ -114,8 +124,6 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         // embedding application start a WebDriver listener in a production Android engine.
         #[cfg(servo_production)]
         args.retain(|argument| argument != "--webdriver" && !argument.starts_with("--webdriver="));
-
-        let (display_handle, window_handle) = display_and_window_handle(env, &surface);
 
         // Note: Android debug logs are stripped from a release build.
         // debug!() will only show in a debug build. Use info!() if logs
@@ -704,6 +712,23 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_pinchZoomEnd<'local>(
     env.with_env(|env| -> jni::errors::Result<_> {
         debug!("pinchZoomEnd");
         call(env, |s| s.pinchzoom_end(factor, x, y));
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_scroll(
+    mut env: EnvUnowned,
+    _: JClass,
+    dx: jint,
+    dy: jint,
+    x: jint,
+    y: jint,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        debug!("scroll");
+        call(env, |s| s.scroll(dx as f32, dy as f32, x as f32, y as f32));
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()

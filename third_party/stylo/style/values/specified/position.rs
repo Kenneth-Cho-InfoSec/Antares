@@ -7,6 +7,7 @@
 //!
 //! [position]: https://drafts.csswg.org/css-backgrounds-3/#position
 
+use crate::Atom;
 use crate::derives::*;
 use crate::logical_geometry::{LogicalAxis, LogicalSide, PhysicalSide, WritingMode};
 use crate::parser::{Parse, ParserContext};
@@ -26,13 +27,11 @@ use crate::values::specified::align::AlignFlags;
 use crate::values::specified::percentage::NoCalcPercentage;
 use crate::values::specified::{AllowQuirks, Integer, LengthPercentage, NonNegativeNumber};
 use crate::values::{AtomIdent, DashedIdent};
-use crate::Atom;
-use cssparser::{match_ignore_ascii_case, Parser};
+use cssparser::Parser;
+use hashbrown::hash_map::Entry;
 use num_traits::FromPrimitive;
-use selectors::parser::SelectorParseErrorKind;
 use servo_arc::Arc;
-use smallvec::{smallvec, SmallVec};
-use std::collections::hash_map::Entry;
+use smallvec::{SmallVec, smallvec};
 use std::fmt::{self, Write};
 use style_traits::arc_slice::ArcSlice;
 use style_traits::values::specified::AllowedNumericType;
@@ -653,19 +652,18 @@ impl Parse for DashedIdentAndOrTryTactic {
         };
 
         loop {
-            if result.ident.is_empty() {
-                if let Ok(ident) = input.try_parse(|i| DashedIdent::parse(context, i)) {
-                    result.ident = ident;
-                    continue;
-                }
+            if result.ident.is_empty()
+                && let Ok(ident) = input.try_parse(|i| DashedIdent::parse(context, i))
+            {
+                result.ident = ident;
+                continue;
             }
-            if result.try_tactic.is_empty() {
-                if let Ok(try_tactic) =
+            if result.try_tactic.is_empty()
+                && let Ok(try_tactic) =
                     input.try_parse(|i| PositionTryFallbacksTryTactic::parse(context, i))
-                {
-                    result.try_tactic = try_tactic;
-                    continue;
-                }
+            {
+                result.try_tactic = try_tactic;
+                continue;
             }
             break;
         }
@@ -1609,144 +1607,10 @@ impl ToCss for GridAutoFlow {
     }
 }
 
-#[repr(u8)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-/// Masonry auto-placement algorithm packing.
-pub enum MasonryPlacement {
-    /// Place the item in the track(s) with the smallest extent so far.
-    Pack,
-    /// Place the item after the last item, from start to end.
-    Next,
-}
-
-#[repr(u8)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-/// Masonry auto-placement algorithm item sorting option.
-pub enum MasonryItemOrder {
-    /// Place all items with a definite placement before auto-placed items.
-    DefiniteFirst,
-    /// Place items in `order-modified document order`.
-    Ordered,
-}
-
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-    ToTyped,
-)]
-#[repr(C)]
-#[typed(todo_derive_fields)]
-/// Controls how the Masonry layout algorithm works
-/// specifying exactly how auto-placed items get flowed in the masonry axis.
-pub struct MasonryAutoFlow {
-    /// Specify how to pick a auto-placement track.
-    #[css(contextual_skip_if = "is_pack_with_non_default_order")]
-    pub placement: MasonryPlacement,
-    /// Specify how to pick an item to place.
-    #[css(skip_if = "is_item_order_definite_first")]
-    pub order: MasonryItemOrder,
-}
-
-#[inline]
-fn is_pack_with_non_default_order(placement: &MasonryPlacement, order: &MasonryItemOrder) -> bool {
-    *placement == MasonryPlacement::Pack && *order != MasonryItemOrder::DefiniteFirst
-}
-
-#[inline]
-fn is_item_order_definite_first(order: &MasonryItemOrder) -> bool {
-    *order == MasonryItemOrder::DefiniteFirst
-}
-
-impl MasonryAutoFlow {
-    #[inline]
-    /// Get initial `masonry-auto-flow` value.
-    pub fn initial() -> MasonryAutoFlow {
-        MasonryAutoFlow {
-            placement: MasonryPlacement::Pack,
-            order: MasonryItemOrder::DefiniteFirst,
-        }
-    }
-}
-
-impl Parse for MasonryAutoFlow {
-    /// [ definite-first | ordered ] || [ pack | next ]
-    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<MasonryAutoFlow, ParseError> {
-        let mut value = MasonryAutoFlow::initial();
-        let mut got_placement = false;
-        let mut got_order = false;
-        while !input.is_exhausted() {
-            let ident = input.expect_ident()?;
-            let success = match_ignore_ascii_case! { &ident,
-                "pack" if !got_placement => {
-                    got_placement = true;
-                    true
-                },
-                "next" if !got_placement => {
-                    value.placement = MasonryPlacement::Next;
-                    got_placement = true;
-                    true
-                },
-                "definite-first" if !got_order => {
-                    got_order = true;
-                    true
-                },
-                "ordered" if !got_order => {
-                    value.order = MasonryItemOrder::Ordered;
-                    got_order = true;
-                    true
-                },
-                _ => false
-            };
-            if !success {
-                return Err(ParseError::custom(SelectorParseErrorKind::UnexpectedIdent));
-            }
-        }
-
-        if got_placement || got_order {
-            Ok(value)
-        } else {
-            Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
-        }
-    }
-}
-
 /// Whether the `balance` value of `flex-wrap` is enabled.
 #[inline]
 fn flex_wrap_balance_enabled() -> bool {
-    crate::pref!("layout.flexbox.balance", gecko = false)
+    crate::pref!("layout.css.flexbox-balance.enabled", gecko = false)
 }
 
 /// The specified and computed value of the `flex-wrap` property:
@@ -1867,10 +1731,10 @@ impl TemplateAreasParser {
                 simplified_string.push_str(token);
                 Atom::from(token)
             } else {
-                if let Some(index) = current_area_index.take() {
-                    if self.areas[index].columns.end != column {
-                        return Err(());
-                    }
+                if let Some(index) = current_area_index.take()
+                    && self.areas[index].columns.end != column
+                {
+                    return Err(());
                 }
                 simplified_string.push('.');
                 continue;
@@ -1921,11 +1785,11 @@ impl TemplateAreasParser {
             // https://github.com/w3c/csswg-drafts/issues/5110
             return Err(());
         }
-        if let Some(index) = current_area_index {
-            if self.areas[index].columns.end != column + 1 {
-                debug_assert_ne!(self.areas[index].rows.start, self.row);
-                return Err(());
-            }
+        if let Some(index) = current_area_index
+            && self.areas[index].columns.end != column + 1
+        {
+            debug_assert_ne!(self.areas[index].rows.start, self.row);
+            return Err(());
         }
         if self.row == 1 {
             self.width = column;
@@ -2244,4 +2108,90 @@ impl Parse for AnchorFunction {
             })
         })
     }
+}
+
+/// https://drafts.csswg.org/css-flexbox/#flex-direction-property
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FlexDirection {
+    Row,
+    RowReverse,
+    Column,
+    ColumnReverse,
+}
+
+/// https://drafts.csswg.org/css-ui/#propdef-box-sizing
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum BoxSizing {
+    ContentBox,
+    BorderBox,
+}
+
+/// https://drafts.csswg.org/css-images/#propdef-object-fit
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum ObjectFit {
+    Fill,
+    Contain,
+    Cover,
+    None,
+    ScaleDown,
 }

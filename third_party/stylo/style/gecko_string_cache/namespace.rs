@@ -48,7 +48,7 @@ impl PrecomputedHash for Namespace {
 }
 
 /// A Gecko WeakNamespace is a wrapped WeakAtom.
-#[derive(Deref, Hash)]
+#[derive(Deref, Hash, PartialEq, Eq)]
 pub struct WeakNamespace(WeakAtom);
 
 impl Deref for Namespace {
@@ -92,15 +92,5 @@ impl WeakNamespace {
     #[inline]
     pub fn clone(&self) -> Namespace {
         Namespace(self.0.clone())
-    }
-}
-
-impl Eq for WeakNamespace {}
-impl PartialEq for WeakNamespace {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        let weak: *const WeakNamespace = self;
-        let other: *const WeakNamespace = other;
-        weak == other
     }
 }

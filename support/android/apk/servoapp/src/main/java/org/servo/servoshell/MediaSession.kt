@@ -20,9 +20,9 @@ import android.graphics.drawable.Icon
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
-import org.servo.servoview.Servo
+import org.servo.servoview.ServoView
 
-class MediaSession(private val servo: Servo, private val context: Context) {
+class MediaSession(private val servoView: ServoView, private val context: Context) {
     private class NotificationID {
         private var lastID = 0
         val next: Int
@@ -79,10 +79,10 @@ class MediaSession(private val servo: Servo, private val context: Context) {
                 object : BroadcastReceiver() {
                     override fun onReceive(context: Context?, intent: Intent) {
                         if (intent.action == KEY_MEDIA_PAUSE) {
-                            servo.mediaSessionAction(ACTION_PAUSE)
+                            servoView.mediaSessionAction(ACTION_PAUSE)
                             Log.d("MediaSession", "PAUSE action")
                         } else if (intent.action == KEY_MEDIA_PLAY) {
-                            servo.mediaSessionAction(ACTION_PLAY)
+                            servoView.mediaSessionAction(ACTION_PLAY)
                             Log.d("MediaSession", "PLAY action")
                         }
                     }

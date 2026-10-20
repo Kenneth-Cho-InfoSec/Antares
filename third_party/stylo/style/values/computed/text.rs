@@ -4,6 +4,7 @@
 
 //! Computed types for text properties.
 
+use crate::Zero;
 use crate::derives::*;
 #[cfg(feature = "gecko")]
 use crate::gecko_bindings::bindings;
@@ -11,24 +12,24 @@ use crate::typed_om::{KeywordValue, ToTyped, TypedValue};
 use crate::values::animated::text::TextDecorationInset as AnimatedTextDecorationInset;
 use crate::values::animated::{Context as AnimatedContext, ToAnimatedValue};
 use crate::values::computed::length::{CSSPixelLength, LengthPercentage};
+use crate::values::generics::NumberOrAuto;
 use crate::values::generics::text::{
     GenericHyphenateLimitChars, GenericInitialLetter, GenericTextDecorationInset,
     GenericTextDecorationLength, GenericTextIndent,
 };
-use crate::values::generics::NumberOrAuto;
 use crate::values::specified::text as specified;
 use crate::values::specified::text::{TextEmphasisFillMode, TextEmphasisShapeKeyword};
 use crate::values::{CSSFloat, CSSInteger, ComputeSquaredDistance};
-use crate::Zero;
 use std::fmt::{self, Write};
 use style_traits::{CssString, CssWriter, ToCss};
 use thin_vec::ThinVec;
 
 pub use crate::values::specified::text::{
-    HyphenateCharacter, LineBreak, MozControlCharacterVisibility, OverflowWrap, RubyPosition,
-    TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim, TextDecorationLine,
-    TextDecorationSkipInk, TextEmphasisPosition, TextJustify, TextOverflow, TextTransform,
-    TextUnderlinePosition, WordBreak,
+    HyphenateCharacter, Hyphens, LineBreak, MozControlCharacterVisibility, OverflowWrap, RubyAlign,
+    RubyPosition, TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim, TextCombineUpright,
+    TextDecorationLine, TextDecorationSkipInk, TextDecorationStyle, TextEmphasisPosition,
+    TextJustify, TextOverflow, TextRendering, TextSecurity, TextSizeAdjust, TextTransform,
+    TextUnderlinePosition, TextWrapMode, TextWrapStyle, UnicodeBidi, WhiteSpaceCollapse, WordBreak,
 };
 
 /// A computed value for the `initial-letter` property.
@@ -49,7 +50,7 @@ impl ToAnimatedValue for TextDecorationInset {
                 let font_size_px = context
                     .style
                     .get_font()
-                    .clone_font_size()
+                    .slow_clone_font_size()
                     .computed_size()
                     .px();
                 #[cfg(feature = "gecko")]

@@ -6,8 +6,8 @@
 
 use crate::custom_properties::VariableValue;
 use crate::parser::{Parse, ParserContext};
-use crate::values::fmt;
 use crate::values::CssWriter;
+use crate::values::fmt;
 use crate::{derives::*, values::DashedIdent};
 use cssparser::Parser;
 use std::fmt::Write;

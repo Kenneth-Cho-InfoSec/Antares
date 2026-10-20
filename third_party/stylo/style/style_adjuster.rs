@@ -8,6 +8,8 @@
 use crate::computed_value_flags::ComputedValueFlags;
 use crate::dom::TElement;
 use crate::logical_geometry::PhysicalSide;
+#[cfg(feature = "gecko")]
+use crate::properties::LonghandId;
 use crate::properties::longhands::display::computed_value::T as Display;
 use crate::properties::longhands::float::computed_value::T as Float;
 use crate::properties::longhands::position::computed_value::T as Position;
@@ -16,8 +18,6 @@ use crate::properties::longhands::{
     contain::computed_value::T as Contain, container_type::computed_value::T as ContainerType,
     content_visibility::computed_value::T as ContentVisibility,
 };
-#[cfg(feature = "gecko")]
-use crate::properties::LonghandId;
 use crate::properties::{ComputedValues, LonghandIdSet, StyleBuilder};
 use crate::values::computed::position::{
     PositionTryFallbacksTryTactic, PositionTryFallbacksTryTacticKeyword, TryTacticAdjustment,
@@ -41,7 +41,6 @@ pub struct StyleAdjuster<'a, 'b: 'a> {
     style: &'a mut StyleBuilder<'b>,
 }
 
-#[cfg(feature = "gecko")]
 fn is_topmost_svg_svg_element<E>(e: E) -> bool
 where
     E: TElement,
@@ -64,7 +63,6 @@ where
 }
 
 // https://drafts.csswg.org/css-display/#unbox
-#[cfg(feature = "gecko")]
 fn is_effective_display_none_for_display_contents<E>(element: E) -> bool
 where
     E: TElement,
@@ -150,7 +148,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         if !self.style.is_absolutely_positioned() {
             self.style.mutate_box().set_position(Position::Absolute);
         }
-        if self.style.get_box().clone_display().is_contents() {
+        if self.style.get_box().get_display().is_contents() {
             self.style.mutate_box().set_display(Display::Block);
         }
     }
@@ -166,14 +164,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         use crate::properties::longhands::_moz_box_orient::computed_value::T as BoxOrient;
         use crate::values::specified::box_::{DisplayInside, DisplayOutside};
         let box_style = self.style.get_box();
-        let line_clamp = box_style.clone_line_clamp();
+        let line_clamp = box_style.get_line_clamp();
         if line_clamp.is_none() {
             return;
         }
 
-        let disp = box_style.clone_display();
+        let disp = *box_style.get_display();
         if disp.inside() != DisplayInside::WebkitBox
-            || self.style.get_xul().clone__moz_box_orient() != BoxOrient::Vertical
+            || *self.style.get_xul().get__moz_box_orient() != BoxOrient::Vertical
         {
             return;
         }
@@ -233,7 +231,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
         blockify_if!(self.style.is_root_element);
         if !self.skip_item_display_fixup(element) {
-            let parent_display = layout_parent_style.get_box().clone_display();
+            let parent_display = *layout_parent_style.get_box().get_display();
             blockify_if!(parent_display.is_item_container());
         }
 
@@ -246,7 +244,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             return;
         }
 
-        let display = self.style.get_box().clone_display();
+        let display = *self.style.get_box().get_display();
         let blockified_display = display.equivalent_block_display(self.style.is_root_element);
         if display != blockified_display {
             self.style
@@ -258,27 +256,22 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// Compute a few common flags for both text and element's style.
     fn set_bits(&mut self) {
         let box_style = self.style.get_box();
-        let display = box_style.clone_display();
+        let display = *box_style.get_display();
 
         if !display.is_contents() {
-            if !self
-                .style
-                .get_text()
-                .clone_text_decoration_line()
-                .is_empty()
-            {
+            if !self.style.get_text().get_text_decoration_line().is_empty() {
                 self.style
                     .add_flags(ComputedValueFlags::HAS_TEXT_DECORATION_LINES);
             }
 
-            if self.style.get_effects().clone_opacity() == 0. {
+            if *self.style.get_effects().get_opacity() == 0. {
                 self.style
                     .add_flags(ComputedValueFlags::IS_IN_OPACITY_ZERO_SUBTREE);
             }
         } else if self
             .style
             .get_parent_box()
-            .clone_display()
+            .get_display()
             .is_item_container()
             || self
                 .style
@@ -301,14 +294,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
         #[cfg(feature = "gecko")]
         if box_style
-            .clone_effective_containment()
+            .get_effective_containment()
             .contains(Contain::STYLE)
         {
             self.style
                 .add_flags(ComputedValueFlags::SELF_OR_ANCESTOR_HAS_CONTAIN_STYLE);
         }
 
-        if box_style.clone_container_type().is_size_container_type() {
+        if box_style.get_container_type().is_size_container_type() {
             self.style
                 .add_flags(ComputedValueFlags::SELF_OR_ANCESTOR_HAS_SIZE_CONTAINER_TYPE);
         }
@@ -344,8 +337,8 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         use crate::computed_values::writing_mode::T as WritingMode;
         use crate::logical_geometry;
 
-        let writing_mode = self.style.get_inherited_box().clone_writing_mode();
-        let text_combine_upright = self.style.get_inherited_text().clone_text_combine_upright();
+        let writing_mode = *self.style.get_inherited_box().get_writing_mode();
+        let text_combine_upright = *self.style.get_inherited_text().get_text_combine_upright();
 
         if matches!(
             writing_mode,
@@ -369,7 +362,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// them.
     #[cfg(feature = "gecko")]
     fn adjust_for_text_in_ruby(&mut self) {
-        let parent_display = self.style.get_parent_box().clone_display();
+        let parent_display = *self.style.get_parent_box().get_display();
         if parent_display.is_ruby_type()
             || self
                 .style
@@ -395,11 +388,11 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// <https://lists.w3.org/Archives/Public/www-style/2017Mar/0045.html>
     /// <https://github.com/servo/servo/issues/15754>
     fn adjust_for_writing_mode(&mut self, layout_parent_style: &ComputedValues) {
-        let our_writing_mode = self.style.get_inherited_box().clone_writing_mode();
-        let parent_writing_mode = layout_parent_style.get_inherited_box().clone_writing_mode();
+        let our_writing_mode = *self.style.get_inherited_box().get_writing_mode();
+        let parent_writing_mode = *layout_parent_style.get_inherited_box().get_writing_mode();
 
         if our_writing_mode != parent_writing_mode
-            && self.style.get_box().clone_display() == Display::Inline
+            && *self.style.get_box().get_display() == Display::Inline
         {
             // TODO(emilio): Figure out if we can just set the adjusted display
             // on Gecko too and unify this code path.
@@ -419,8 +412,8 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// `auto`/`hidden` (respectively) if one of `overflow-x` or `overflow-y` is
     /// neither `visible` nor `clip`."
     fn adjust_for_overflow(&mut self) {
-        let overflow_x = self.style.get_box().clone_overflow_x();
-        let overflow_y = self.style.get_box().clone_overflow_y();
+        let overflow_x = *self.style.get_box().get_overflow_x();
+        let overflow_y = *self.style.get_box().get_overflow_y();
         if overflow_x == overflow_y {
             return; // optimization for the common case
         }
@@ -435,18 +428,18 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     #[cfg(feature = "gecko")]
     fn adjust_for_contain(&mut self) {
         let box_style = self.style.get_box();
-        let container_type = box_style.clone_container_type();
-        let content_visibility = box_style.clone_content_visibility();
+        let container_type = *box_style.get_container_type();
+        let content_visibility = *box_style.get_content_visibility();
         if !container_type.is_size_container_type()
             && content_visibility == ContentVisibility::Visible
         {
             debug_assert_eq!(
-                box_style.clone_contain(),
-                box_style.clone_effective_containment()
+                box_style.get_contain(),
+                box_style.get_effective_containment()
             );
             return;
         }
-        let old_contain = box_style.clone_contain();
+        let old_contain = *box_style.get_contain();
         let mut new_contain = old_contain;
         match content_visibility {
             ContentVisibility::Visible => {},
@@ -472,8 +465,8 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         }
         if new_contain == old_contain {
             debug_assert_eq!(
-                box_style.clone_contain(),
-                box_style.clone_effective_containment()
+                box_style.get_contain(),
+                box_style.get_effective_containment()
             );
             return;
         }
@@ -488,14 +481,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// <https://github.com/w3c/csswg-drafts/issues/8407>
     #[cfg(feature = "gecko")]
     fn adjust_for_contain_intrinsic_size(&mut self) {
-        let content_visibility = self.style.get_box().clone_content_visibility();
+        let content_visibility = *self.style.get_box().get_content_visibility();
         if content_visibility != ContentVisibility::Auto {
             return;
         }
 
         let pos = self.style.get_position();
-        let new_width = pos.clone_contain_intrinsic_width().add_auto_if_needed();
-        let new_height = pos.clone_contain_intrinsic_height().add_auto_if_needed();
+        let new_width = pos.get_contain_intrinsic_width().add_auto_if_needed();
+        let new_height = pos.get_contain_intrinsic_height().add_auto_if_needed();
         if new_width.is_none() && new_height.is_none() {
             return;
         }
@@ -514,16 +507,16 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// https://drafts.csswg.org/css-display/#unbox-html
     ///
     /// And forbidding display: contents in pseudo-elements, at least for now.
-    #[cfg(feature = "gecko")]
     fn adjust_for_prohibited_display_contents<E>(&mut self, element: Option<E>)
     where
         E: TElement,
     {
-        if self.style.get_box().clone_display() != Display::Contents {
+        if *self.style.get_box().get_display() != Display::Contents {
             return;
         }
 
         // FIXME(emilio): ::before and ::after should support display: contents, see bug 1418138.
+        #[cfg(feature = "gecko")]
         if self.style.pseudo.is_some_and(|p| !p.is_element_backed()) {
             self.style.mutate_box().set_display(Display::Inline);
             return;
@@ -550,7 +543,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             return;
         }
 
-        let old_collapse = self.style.get_inherited_text().clone_white_space_collapse();
+        let old_collapse = *self.style.get_inherited_text().get_white_space_collapse();
         let new_collapse = match old_collapse {
             WhiteSpaceCollapse::Preserve | WhiteSpaceCollapse::BreakSpaces => old_collapse,
             WhiteSpaceCollapse::Collapse
@@ -572,7 +565,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         if self.style.pseudo != Some(&PseudoElement::MozFieldsetContent) {
             return;
         }
-        let parent_display = self.style.get_parent_box().clone_display();
+        let parent_display = *self.style.get_parent_box().get_display();
         debug_assert!(
             !parent_display.is_contents(),
             "How did we create a fieldset-content box with display: contents?"
@@ -595,11 +588,11 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// table.
     fn adjust_for_table_text_align(&mut self) {
         use crate::properties::longhands::text_align::computed_value::T as TextAlign;
-        if self.style.get_box().clone_display() != Display::Table {
+        if *self.style.get_box().get_display() != Display::Table {
             return;
         }
 
-        match self.style.get_inherited_text().clone_text_align() {
+        match *self.style.get_inherited_text().get_text_align() {
             TextAlign::MozLeft | TextAlign::MozCenter | TextAlign::MozRight => {},
             _ => return,
         }
@@ -618,7 +611,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         if self.style.is_floating() || self.style.is_absolutely_positioned() {
             return false;
         }
-        let parent_display = self.style.get_parent_box().clone_display();
+        let parent_display = *self.style.get_parent_box().get_display();
         if self
             .style
             .get_parent_flags()
@@ -630,7 +623,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
                 return true;
             }
         }
-        match self.style.get_box().clone_display() {
+        match *self.style.get_box().get_display() {
             // Ruby base and text are always non-breakable.
             Display::RubyBase | Display::RubyText => true,
             // Ruby base container and text container are breakable.
@@ -665,7 +658,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     {
         use crate::properties::longhands::unicode_bidi::computed_value::T as UnicodeBidi;
 
-        let self_display = self.style.get_box().clone_display();
+        let self_display = *self.style.get_box().get_display();
         // Check whether line break should be suppressed for this element.
         if self.should_suppress_linebreak(element) {
             self.style
@@ -692,7 +685,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         // Force bidi isolation on all internal ruby boxes and ruby container
         // per spec https://drafts.csswg.org/css-ruby-1/#bidi
         if self_display.is_ruby_type() {
-            let new_value = match self.style.get_text().clone_unicode_bidi() {
+            let new_value = match *self.style.get_text().get_unicode_bidi() {
                 UnicodeBidi::Normal | UnicodeBidi::Embed => Some(UnicodeBidi::Isolate),
                 UnicodeBidi::BidiOverride => Some(UnicodeBidi::IsolateOverride),
                 _ => None,
@@ -740,15 +733,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// to comply with:
     ///
     /// <https://drafts.csswg.org/css-align/#valdef-justify-items-legacy>
-    #[cfg(feature = "gecko")]
     fn adjust_for_justify_items(&mut self) {
         use crate::values::specified::align;
-        let justify_items = self.style.get_position().clone_justify_items();
+        let justify_items = *self.style.get_position().get_justify_items();
         if justify_items.specified != align::JustifyItems::legacy() {
             return;
         }
 
-        let parent_justify_items = self.style.get_parent_position().clone_justify_items();
+        let parent_justify_items = *self.style.get_parent_position().get_justify_items();
 
         if !parent_justify_items.computed.contains(AlignFlags::LEGACY) {
             return;
@@ -775,13 +767,13 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         use crate::properties::longhands::line_height::computed_value::T as LineHeight;
 
         let box_ = self.style.get_box();
-        let appearance = match box_.clone_appearance() {
-            Appearance::Auto => box_.clone__moz_default_appearance(),
+        let appearance = match *box_.get_appearance() {
+            Appearance::Auto => *box_.get__moz_default_appearance(),
             a => a,
         };
 
         if appearance == Appearance::Menulist {
-            if self.style.get_font().clone_line_height() == LineHeight::normal() {
+            if *self.style.get_font().get_line_height() == LineHeight::normal() {
                 return;
             }
             if self.style.pseudo.is_some() {
@@ -809,18 +801,18 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// We intentionally don't check 'list-style-image' below since we want it to use
     /// the same font as its fallback ('list-style-type') in case it fails to load.
     #[cfg(feature = "gecko")]
-    fn adjust_for_marker_pseudo(&mut self, author_specified_properties: &LonghandIdSet) {
+    fn adjust_for_marker_pseudo(&mut self, author_or_user_specified_properties: &LonghandIdSet) {
         use crate::values::computed::counters::Content;
         use crate::values::computed::font::{FontFamily, FontSynthesis, FontSynthesisStyle};
         use crate::values::computed::text::{LetterSpacing, WordSpacing};
 
         let is_legacy_marker = self.style.pseudo.is_some_and(|p| p.is_marker())
-            && self.style.get_list().clone_list_style_type().is_bullet()
-            && self.style.get_counters().clone_content() == Content::Normal;
+            && self.style.get_list().get_list_style_type().is_bullet()
+            && matches!(self.style.get_counters().get_content(), Content::Normal);
         if !is_legacy_marker {
             return;
         }
-        if !author_specified_properties.contains(LonghandId::FontFamily) {
+        if !author_or_user_specified_properties.contains(LonghandId::FontFamily) {
             self.style
                 .mutate_font()
                 .set_font_family(FontFamily::moz_bullet().clone());
@@ -828,23 +820,23 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             // FIXME(mats): We can remove this if support for font-synthesis is added to @font-face rules.
             // Then we can add it to the @font-face rule in html.css instead.
             // https://github.com/w3c/csswg-drafts/issues/6081
-            if !author_specified_properties.contains(LonghandId::FontSynthesisWeight) {
+            if !author_or_user_specified_properties.contains(LonghandId::FontSynthesisWeight) {
                 self.style
                     .mutate_font()
                     .set_font_synthesis_weight(FontSynthesis::None);
             }
-            if !author_specified_properties.contains(LonghandId::FontSynthesisStyle) {
+            if !author_or_user_specified_properties.contains(LonghandId::FontSynthesisStyle) {
                 self.style
                     .mutate_font()
                     .set_font_synthesis_style(FontSynthesisStyle::None);
             }
         }
-        if !author_specified_properties.contains(LonghandId::LetterSpacing) {
+        if !author_or_user_specified_properties.contains(LonghandId::LetterSpacing) {
             self.style
                 .mutate_inherited_text()
                 .set_letter_spacing(LetterSpacing::normal());
         }
-        if !author_specified_properties.contains(LonghandId::WordSpacing) {
+        if !author_or_user_specified_properties.contains(LonghandId::WordSpacing) {
             self.style
                 .mutate_inherited_text()
                 .set_word_spacing(WordSpacing::normal());
@@ -892,7 +884,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
     fn apply_position_area_tactic(&mut self, tactic: PositionTryFallbacksTryTacticKeyword) {
         let pos = self.style.get_position();
-        let old = pos.clone_position_area();
+        let old = *pos.get_position_area();
         let wm = self.style.writing_mode;
         let new = old.with_tactic(wm, tactic);
         if new == old {
@@ -928,18 +920,18 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
     fn swap_sizes(&mut self, block_start: PhysicalSide, inline_start: PhysicalSide) {
         let pos = self.style.mutate_position();
-        let mut min_width = pos.clone_min_width();
+        let mut min_width = pos.slow_clone_min_width();
         min_width.try_tactic_adjustment(inline_start, block_start);
-        let mut max_width = pos.clone_max_width();
+        let mut max_width = pos.slow_clone_max_width();
         max_width.try_tactic_adjustment(inline_start, block_start);
-        let mut width = pos.clone_width();
+        let mut width = pos.slow_clone_width();
         width.try_tactic_adjustment(inline_start, block_start);
 
-        let mut min_height = pos.clone_min_height();
+        let mut min_height = pos.slow_clone_min_height();
         min_height.try_tactic_adjustment(block_start, inline_start);
-        let mut max_height = pos.clone_max_height();
+        let mut max_height = pos.slow_clone_max_height();
         max_height.try_tactic_adjustment(block_start, inline_start);
-        let mut height = pos.clone_height();
+        let mut height = pos.slow_clone_height();
         height.try_tactic_adjustment(block_start, inline_start);
 
         let pos = self.style.mutate_position();
@@ -977,8 +969,8 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
     fn flip_alignment_start(&mut self) {
         let pos = self.style.get_position();
-        let align = pos.clone_align_self();
-        let mut justify = pos.clone_justify_self();
+        let align = *pos.get_align_self();
+        let mut justify = *pos.get_justify_self();
         if align == justify {
             return;
         }
@@ -1003,9 +995,9 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     fn flip_self_alignment(&mut self, block: bool) {
         let pos = self.style.get_position();
         let cur = if block {
-            pos.clone_align_self()
+            *pos.get_align_self()
         } else {
-            pos.clone_justify_self()
+            *pos.get_justify_self()
         };
         let flipped = cur.flip_position();
         if flipped == cur {
@@ -1026,22 +1018,21 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         layout_parent_style: &ComputedValues,
         element: Option<E>,
         try_tactic: &PositionTryFallbacksTryTactic,
-        author_specified_properties: &LonghandIdSet,
+        author_or_user_specified_properties: &LonghandIdSet,
     ) where
         E: TElement,
     {
-        if cfg!(debug_assertions) {
-            if let Some(e) = element {
-                if let Some(p) = e.implemented_pseudo_element() {
-                    // It'd be nice to assert `self.style.pseudo == Some(&pseudo)`,
-                    // but we do resolve ::-moz-list pseudos on ::before / ::after
-                    // content, sigh.
-                    debug_assert!(
-                        self.style.pseudo.is_some(),
-                        "Someone really messed up (no pseudo style for {e:?}, {p:?})"
-                    );
-                }
-            }
+        if cfg!(debug_assertions)
+            && let Some(e) = element
+            && let Some(p) = e.implemented_pseudo_element()
+        {
+            // It'd be nice to assert `self.style.pseudo == Some(&pseudo)`,
+            // but we do resolve ::-moz-list pseudos on ::before / ::after
+            // content, sigh.
+            debug_assert!(
+                self.style.pseudo.is_some(),
+                "Someone really messed up (no pseudo style for {e:?}, {p:?})"
+            );
         }
         // FIXME(emilio): The apply_declarations callsite in Servo's
         // animation, and the font stuff for Gecko
@@ -1053,9 +1044,9 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         // );
 
         self.adjust_for_visited(element);
+        self.adjust_for_prohibited_display_contents(element);
         #[cfg(feature = "gecko")]
         {
-            self.adjust_for_prohibited_display_contents(element);
             self.adjust_for_fieldset_content();
             self.adjust_for_text_control_editing_root();
         }
@@ -1069,15 +1060,15 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         {
             self.adjust_for_contain();
             self.adjust_for_contain_intrinsic_size();
-            self.adjust_for_justify_items();
         }
+        self.adjust_for_justify_items();
         self.adjust_for_table_text_align();
         self.adjust_for_writing_mode(layout_parent_style);
         #[cfg(feature = "gecko")]
         self.adjust_for_ruby(element);
         self.adjust_for_appearance(element);
         #[cfg(feature = "gecko")]
-        self.adjust_for_marker_pseudo(author_specified_properties);
+        self.adjust_for_marker_pseudo(author_or_user_specified_properties);
         if !try_tactic.is_empty() {
             self.adjust_for_try_tactic(try_tactic);
         }

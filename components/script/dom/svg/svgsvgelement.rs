@@ -328,7 +328,7 @@ impl SVGSVGElement {
         let document = self.owner_document();
         let window = self.owner_window();
         let preferred_dark = matches!(
-            document.theme().unwrap_or(window.embedder_theme()),
+            document.theme().unwrap_or(window.webview_theme()),
             Theme::Dark
         );
         let declared = document

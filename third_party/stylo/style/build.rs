@@ -4,7 +4,7 @@
 
 use std::env;
 use std::path::Path;
-use std::process::{exit, Command};
+use std::process::{Command, exit};
 use std::sync::LazyLock;
 use walkdir::WalkDir;
 

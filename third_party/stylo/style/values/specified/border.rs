@@ -4,6 +4,7 @@
 
 //! Specified types for CSS values related to borders.
 
+use crate::Zero;
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::typed_om::{ToTyped, TypedValue};
@@ -17,7 +18,6 @@ use crate::values::generics::rect::Rect;
 use crate::values::generics::size::Size2D;
 use crate::values::specified::length::{Length, NonNegativeLength, NonNegativeLengthPercentage};
 use crate::values::specified::{AllowQuirks, NonNegativeNumber, NonNegativeNumberOrPercentage};
-use crate::Zero;
 use app_units::Au;
 use cssparser::Parser;
 use std::fmt::{self, Write};
@@ -427,4 +427,58 @@ impl Parse for BorderImageRepeat {
             vertical.unwrap_or(horizontal),
         ))
     }
+}
+
+/// https://drafts.csswg.org/css-break/#propdef-box-decoration-break
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum BoxDecorationBreak {
+    Slice,
+    Clone,
+}
+
+/// Nonstandard (https://developer.mozilla.org/en-US/docs/Web/CSS/-moz-float-edge)
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FloatEdge {
+    ContentBox,
+    MarginBox,
 }

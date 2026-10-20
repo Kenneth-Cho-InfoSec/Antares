@@ -27,6 +27,9 @@ use servo_arc::Arc;
 
 macro_rules! impl_simple_arc_ffi {
     ($ty:ty, $addref:ident, $release:ident) => {
+        /// # Safety
+        ///
+        /// `obj` must be a valid pointer and Arc-allocated.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $addref(obj: *const $ty) {
             unsafe {
@@ -34,6 +37,9 @@ macro_rules! impl_simple_arc_ffi {
             }
         }
 
+        /// # Safety
+        ///
+        /// `obj` must be a valid pointer and Arc-allocated.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $release(obj: *const $ty) {
             unsafe {

@@ -10,7 +10,7 @@ use crate::derives::*;
 use crate::properties::PropertyDeclarationBlock;
 use crate::shared_lock::{DeepCloneWithLock, Locked};
 use crate::shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
-use cssparser::{match_ignore_ascii_case, SourceLocation};
+use cssparser::{SourceLocation, match_ignore_ascii_case};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use servo_arc::Arc;

@@ -7,7 +7,7 @@
 use crate::dom::TElement;
 use crate::gecko::wrapper::namespace_id_to_atom;
 use crate::gecko_bindings::bindings;
-use crate::gecko_bindings::structs::{self, nsAtom, AttrAtomArray};
+use crate::gecko_bindings::structs::{self, AttrAtomArray, nsAtom};
 use crate::invalidation::element::element_wrapper::ElementSnapshot;
 use crate::selector_parser::{AttrValue, SnapshotMap};
 use crate::string_cache::WeakAtom;

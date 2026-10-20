@@ -63,10 +63,10 @@ impl Animation {
         let animation = Self::new_with_proto(cx, global, None);
         // Stub animations never tick, so resolve both promises immediately.
         *animation.ready_promise.borrow_mut() = Some(
-            Promise::new_resolved_rooted(cx, global, animation.clone()).to_traced(),
+            Promise::new_resolved(cx, global, animation.clone()).to_traced(),
         );
         *animation.finished_promise.borrow_mut() = Some(
-            Promise::new_resolved_rooted(cx, global, animation.clone()).to_traced(),
+            Promise::new_resolved(cx, global, animation.clone()).to_traced(),
         );
         animation
     }
@@ -136,21 +136,25 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-animation-ready>
+    #[allow(unsafe_code)]
     fn Ready(&self) -> RootedPromise {
+        let cx = unsafe { JSContext::from_ptr(js::rust::Runtime::get().unwrap()) };
         self.ready_promise
             .borrow()
             .as_ref()
             .expect("ready promise initialized at construction")
-            .root()
+            .root(&cx)
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-animation-finished>
+    #[allow(unsafe_code)]
     fn Finished(&self) -> RootedPromise {
+        let cx = unsafe { JSContext::from_ptr(js::rust::Runtime::get().unwrap()) };
         self.finished_promise
             .borrow()
             .as_ref()
             .expect("finished promise initialized at construction")
-            .root()
+            .root(&cx)
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-animation-cancel>

@@ -5,6 +5,7 @@
 //! A cache from rule node to computed values, in order to cache reset
 //! properties.
 
+use crate::FxHashMap;
 use crate::computed_value_flags::ComputedValueFlags;
 use crate::context::CascadeInputs;
 use crate::logical_geometry::WritingMode;
@@ -14,7 +15,6 @@ use crate::selector_parser::PseudoElement;
 use crate::shared_lock::StylesheetGuards;
 use crate::values::computed::{Context, NonNegativeLength};
 use crate::values::specified::color::ColorSchemeFlags;
-use rustc_hash::FxHashMap;
 use servo_arc::Arc;
 use smallvec::SmallVec;
 
@@ -89,10 +89,10 @@ impl CachedConditions {
             return false;
         }
 
-        if let Some(fs) = self.font_size {
-            if style.get_font().clone_font_size().computed_size != fs {
-                return false;
-            }
+        if let Some(fs) = self.font_size
+            && style.get_font().slow_clone_font_size().computed_size != fs
+        {
+            return false;
         }
 
         if let Some(lh) = self.line_height {
@@ -185,8 +185,7 @@ impl RuleCache {
         if context
             .builder
             .pseudo
-            .and_then(|p| p.property_restriction())
-            .is_some()
+            .is_some_and(|p| !p.property_restriction().is_empty())
         {
             return None;
         }
@@ -230,7 +229,7 @@ impl RuleCache {
         // A pseudo-element with property restrictions can result in different computed values if
         // it's also used for a non-pseudo.
         // TODO: we could consider inserting them and just checking the builder like we do for zoom.
-        if pseudo.and_then(|p| p.property_restriction()).is_some() {
+        if pseudo.is_some_and(|p| !p.property_restriction().is_empty()) {
             return false;
         }
 

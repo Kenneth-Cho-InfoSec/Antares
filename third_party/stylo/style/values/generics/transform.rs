@@ -17,7 +17,7 @@ use crate::values::specified::angle::Angle as SpecifiedAngle;
 use crate::values::specified::length::Length as SpecifiedLength;
 use crate::values::specified::length::LengthPercentage as SpecifiedLengthPercentage;
 use crate::values::specified::number::Number as SpecifiedNumber;
-use crate::values::{computed, CSSFloat};
+use crate::values::{CSSFloat, computed};
 use crate::{One, Zero, ZeroNoPercent};
 use euclid::default::{Rect, Transform3D};
 use std::fmt::{self, Write};

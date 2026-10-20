@@ -21,11 +21,11 @@ use crate::selector_map::PrecomputedHashSet;
 use crate::str::{starts_with_ignore_ascii_case, string_as_ascii_lowercase};
 use crate::stylesheets::container_rule::AttrReferenceSet;
 use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
+use crate::values::DashedIdent;
 use crate::values::computed::{self, CSSPixelLength, ToComputedValue};
 use crate::values::specified::{
     Angle, Integer, Length, Number, Percentage, Ratio, Resolution, Time,
 };
-use crate::values::DashedIdent;
 use crate::{Atom, Zero};
 use cssparser::{Parser, Token};
 use selectors::kleene_value::KleeneValue;
@@ -416,7 +416,7 @@ impl QueryFeatureExpression {
             None => {
                 return Err(ParseError::custom(
                     StyleParseErrorKind::MediaQueryExpectedFeatureName,
-                ))
+                ));
             },
         };
 
@@ -901,17 +901,17 @@ impl QueryStyleRange {
         let op1 = Operator::parse(input)?;
         let value2 = QueryExpressionValue::parse_for_style_range(context, input)?;
 
-        if let Ok(op2) = input.try_parse(|i| Operator::parse(i)) {
-            if op1.is_compatible_with(op2) {
-                let value3 = QueryExpressionValue::parse_for_style_range(context, input)?;
-                return Ok(Self::StyleRange3 {
-                    value1,
-                    op1,
-                    value2,
-                    op2,
-                    value3,
-                });
-            }
+        if let Ok(op2) = input.try_parse(|i| Operator::parse(i))
+            && op1.is_compatible_with(op2)
+        {
+            let value3 = QueryExpressionValue::parse_for_style_range(context, input)?;
+            return Ok(Self::StyleRange3 {
+                value1,
+                op1,
+                value2,
+                op2,
+                value3,
+            });
         }
 
         Ok(Self::StyleRange2 {
@@ -1045,6 +1045,7 @@ impl QueryStyleRange {
                     .expect("container queries should have a stylist around");
                 let substituted = custom_properties::substitute(
                     value,
+                    /* property_id */ None,
                     &sub_funcs,
                     stylist,
                     context,

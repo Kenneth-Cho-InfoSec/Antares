@@ -11,7 +11,7 @@ use crate::rule_tree::{CascadeLevel, CascadeOrigin, ShadowCascadeOrder};
 use crate::selector_map::SelectorMap;
 use crate::selector_parser::PseudoElement;
 use crate::shared_lock::Locked;
-use crate::stylesheets::{layer_rule::LayerOrder, Origin};
+use crate::stylesheets::{Origin, layer_rule::LayerOrder};
 use crate::stylist::{AuthorStylesEnabled, CascadeData, Rule, RuleInclusion, Stylist};
 use selectors::matching::MatchingContext;
 use servo_arc::ArcBorrow;
@@ -155,15 +155,16 @@ where
             let cascade_data = collector.stylist.cascade_data().borrow_for_origin(origin);
             // Element-backed pseudo-elements (e.g. ::picker), also apply UA rules that target
             // underlying element directly (like [popover] rules).
-            if origin == Origin::UserAgent && collector.is_element_backed_pseudo_element() {
-                if let Some(map) = cascade_data.normal_rules(&[]) {
-                    collector.collect_rules_in_map_with_target(
-                        map,
-                        cascade_level,
-                        cascade_data,
-                        collector.element,
-                    );
-                }
+            if origin == Origin::UserAgent
+                && collector.is_element_backed_pseudo_element()
+                && let Some(map) = cascade_data.normal_rules(&[])
+            {
+                collector.collect_rules_in_map_with_target(
+                    map,
+                    cascade_level,
+                    cascade_data,
+                    collector.element,
+                );
             }
             if let Some(map) = cascade_data.normal_rules(collector.pseudo_elements) {
                 collector.collect_rules_in_map(map, cascade_level, cascade_data);
@@ -398,15 +399,15 @@ where
             }
             // We allow stylesheets in the UA tree style the pseudo-element as the real element as
             // well.
-            if collector.is_element_backed_pseudo_element() {
-                if let Some(map) = cascade_data.normal_rules(&[]) {
-                    collector.collect_rules_in_map_with_target(
-                        map,
-                        cascade_level,
-                        cascade_data,
-                        collector.element,
-                    );
-                }
+            if collector.is_element_backed_pseudo_element()
+                && let Some(map) = cascade_data.normal_rules(&[])
+            {
+                collector.collect_rules_in_map_with_target(
+                    map,
+                    cascade_level,
+                    cascade_data,
+                    collector.element,
+                );
             }
         });
     }
@@ -450,23 +451,23 @@ where
                 ),
             };
 
-            if let Some(cascade_data) = cascade_data {
-                if let Some(part_rules) = cascade_data.part_rules(self.pseudo_elements) {
-                    let containing_host = outer_shadow.map(|s| s.host());
-                    let cascade_level = CascadeLevel::author_normal(shadow_cascade_order);
-                    self.in_tree(containing_host, |collector| {
-                        for p in &parts {
-                            if let Some(part_rules) = part_rules.get(&p.0) {
-                                collector.collect_rules_in_list(
-                                    part_rules,
-                                    cascade_level,
-                                    cascade_data,
-                                );
-                            }
+            if let Some(cascade_data) = cascade_data
+                && let Some(part_rules) = cascade_data.part_rules(self.pseudo_elements)
+            {
+                let containing_host = outer_shadow.map(|s| s.host());
+                let cascade_level = CascadeLevel::author_normal(shadow_cascade_order);
+                self.in_tree(containing_host, |collector| {
+                    for p in &parts {
+                        if let Some(part_rules) = part_rules.get(&p.0) {
+                            collector.collect_rules_in_list(
+                                part_rules,
+                                cascade_level,
+                                cascade_data,
+                            );
                         }
-                    });
-                    shadow_cascade_order.inc();
-                }
+                    }
+                });
+                shadow_cascade_order.inc();
             }
 
             inner_shadow = match outer_shadow {

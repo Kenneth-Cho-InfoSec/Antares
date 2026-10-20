@@ -11,7 +11,7 @@ use crate::values::generics::easing::TimingFunction as GenericTimingFunction;
 use crate::values::generics::easing::{StepPosition, TimingKeyword};
 use crate::values::specified::percentage::ToPercentage;
 use crate::values::specified::{AnimationName, Integer, Number, Percentage};
-use cssparser::{match_ignore_ascii_case, Delimiter, Parser, Token};
+use cssparser::{Delimiter, Parser, Token, match_ignore_ascii_case};
 use selectors::parser::SelectorParseErrorKind;
 use style_traits::{ParseError, StyleParseErrorKind};
 

@@ -81,15 +81,13 @@ class Servo(
                 context,
                 args,
                 url,
-                size,
-                density,
                 logStr,
                 experimentalMode,
                 userAgent,
                 darkTheme,
                 servoCallbacks,
-                surface,
             )
+            jni.addPlatformWindow(size, density, surface)
         }
     }
 

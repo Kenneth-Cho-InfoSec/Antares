@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use crate::Atom;
 use crate::derives::*;
 use crate::values::AtomIdent;
-use crate::Atom;
 
 type Mapping<'a> = (&'a str, &'a str);
 

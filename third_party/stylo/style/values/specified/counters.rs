@@ -6,12 +6,12 @@
 
 use crate::counter_style::CounterStyle;
 use crate::parser::{Parse, ParserContext};
+use crate::values::CustomIdent;
 use crate::values::generics::counters as generics;
 use crate::values::generics::counters::CounterPair;
-use crate::values::specified::image::Image;
 use crate::values::specified::Integer;
-use crate::values::CustomIdent;
-use cssparser::{match_ignore_ascii_case, Parser, Token};
+use crate::values::specified::image::Image;
+use cssparser::{Parser, Token, match_ignore_ascii_case};
 use selectors::parser::SelectorParseErrorKind;
 use style_traits::{ParseError, StyleParseErrorKind};
 
@@ -164,11 +164,11 @@ impl Parse for Content {
         let mut items = thin_vec::ThinVec::new();
         let mut alt_start = None;
         loop {
-            if alt_start.is_none() {
-                if let Ok(image) = input.try_parse(|i| Image::parse_forbid_none(context, i)) {
-                    items.push(generics::ContentItem::Image(image));
-                    continue;
-                }
+            if alt_start.is_none()
+                && let Ok(image) = input.try_parse(|i| Image::parse_forbid_none(context, i))
+            {
+                items.push(generics::ContentItem::Image(image));
+                continue;
             }
             let Ok(t) = input.next() else { break };
             match *t {
@@ -224,7 +224,11 @@ impl Parse for Content {
                         }
                     });
                 },
-                Token::Delim('/') if alt_start.is_none() && !items.is_empty() => {
+                Token::Delim('/')
+                    if alt_start.is_none()
+                        && !items.is_empty()
+                        && crate::pref!("layout.css.content.alt-text.enabled", gecko = true) =>
+                {
                     alt_start = Some(items.len());
                 },
                 _ => return Err(ParseError::unexpected_token()),

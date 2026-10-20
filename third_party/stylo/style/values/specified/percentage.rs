@@ -13,7 +13,7 @@ use crate::values::generics::{NonNegative, Optional};
 use crate::values::specified::calc::{CalcNode, CalcNumeric, CalcPercentageLeaf, Leaf};
 use crate::values::specified::{CalcLengthPercentage, LengthPercentage, NoCalcNumber, Number};
 use crate::values::tagged_numeric::{Extracted, NumericUnion, Unpacked, UnpackedMut};
-use crate::values::{normalize, reify_percentage, serialize_percentage, CSSFloat};
+use crate::values::{CSSFloat, normalize, reify_percentage, serialize_percentage};
 use cssparser::{Parser, Token};
 use std::fmt::{self, Write};
 use style_traits::values::specified::AllowedNumericType;
@@ -21,7 +21,20 @@ use style_traits::{CssWriter, ParseError, SpecifiedValueInfo, ToCss};
 use thin_vec::ThinVec;
 
 /// A percentage value, where [0 .. 100%] maps to [0.0 .. 1.0]
-#[derive(Clone, Copy, Debug, Default, MallocSizeOf, PartialEq, ToShmem)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Deserialize,
+    MallocSizeOf,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToAnimatedZero,
+    ToResolvedValue,
+    ToShmem,
+)]
 #[repr(C)]
 pub struct NoCalcPercentage(CSSFloat);
 
@@ -95,18 +108,6 @@ impl ToComputedValue for NoCalcPercentage {
 
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
         Self::new(computed.0)
-    }
-}
-
-impl From<f32> for NoCalcPercentage {
-    fn from(value: f32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<NoCalcPercentage> for f32 {
-    fn from(percentage: NoCalcPercentage) -> f32 {
-        percentage.0
     }
 }
 

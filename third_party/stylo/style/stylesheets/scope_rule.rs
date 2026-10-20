@@ -21,10 +21,10 @@ use cssparser::{Parser, SourceLocation, ToCss};
 use malloc_size_of::{
     MallocSizeOfOps, MallocUnconditionalShallowSizeOf, MallocUnconditionalSizeOf,
 };
+use selectors::OpaqueElement;
 use selectors::context::{MatchingContext, QuirksMode};
 use selectors::matching::matches_selector;
 use selectors::parser::{Component, ParseRelative, Selector, SelectorList};
-use selectors::OpaqueElement;
 use servo_arc::Arc;
 use std::fmt::{self, Write};
 use style_traits::{CssStringWriter, CssWriter, ParseError};
@@ -195,10 +195,10 @@ impl ImplicitScopeRoot {
                 ImplicitScopeTarget::Element(*e)
             },
             Self::Constructed | Self::DocumentElement => {
-                if matches!(self, Self::Constructed) {
-                    if let Some(host) = current_host {
-                        return ImplicitScopeTarget::Element(host);
-                    }
+                if matches!(self, Self::Constructed)
+                    && let Some(host) = current_host
+                {
+                    return ImplicitScopeTarget::Element(host);
                 }
                 ImplicitScopeTarget::DocumentElement
             },
@@ -247,7 +247,7 @@ impl<'a> ScopeTarget<'a> {
                     return false;
                 }
                 for selector in list.slice().iter() {
-                    if matches_selector(selector, 0, None, &element, context) {
+                    if matches_selector(selector, 0, None, element, context) {
                         return true;
                     }
                 }
@@ -340,7 +340,7 @@ where
     let mut parent = Some(element);
     context.nest_for_scope_condition(Some(root), |context| {
         while let Some(p) = parent {
-            if matches_selector(selector, 0, None, &p, context) {
+            if matches_selector(selector, 0, None, p, context) {
                 return true;
             }
             if p.opaque() == root {
@@ -348,11 +348,12 @@ where
                 break;
             }
             parent = p.parent_element();
-            if parent.is_none() && root_may_be_shadow_host {
-                if let Some(host) = p.containing_shadow_host() {
-                    // Pretty much an edge case where user specified scope-start and -end of :host
-                    return host.opaque() == root;
-                }
+            if parent.is_none()
+                && root_may_be_shadow_host
+                && let Some(host) = p.containing_shadow_host()
+            {
+                // Pretty much an edge case where user specified scope-start and -end of :host
+                return host.opaque() == root;
             }
         }
         false
@@ -396,26 +397,21 @@ impl ScopeSubjectMap {
         let iter = selector.iter();
         for c in iter {
             let component_any = match c {
-                Component::Class(cls) => {
-                    match self.buckets.classes.try_entry(cls.0.clone(), quirks_mode) {
-                        Ok(e) => {
-                            e.or_insert(());
-                            false
-                        },
-                        Err(_) => true,
-                    }
-                },
-                Component::ID(id) => match self.buckets.ids.try_entry(id.0.clone(), quirks_mode) {
-                    Ok(e) => {
-                        e.or_insert(());
-                        false
-                    },
-                    Err(_) => true,
-                },
+                Component::Class(cls) => self
+                    .buckets
+                    .classes
+                    .try_get_or_insert_with(&cls.0, quirks_mode, || ())
+                    .is_err(),
+                Component::ID(id) => self
+                    .buckets
+                    .ids
+                    .try_get_or_insert_with(&id.0, quirks_mode, || ())
+                    .is_err(),
                 Component::LocalName(local_name) => {
                     self.buckets
                         .local_names
-                        .insert(local_name.lower_name.clone(), ());
+                        .entry_ref(&local_name.lower_name)
+                        .or_insert(());
                     false
                 },
                 Component::Is(list) | Component::Where(list) => {
@@ -446,10 +442,10 @@ impl ScopeSubjectMap {
             return false;
         }
 
-        if let Some(id) = element.id() {
-            if self.buckets.ids.get(id, quirks_mode).is_some() {
-                return false;
-            }
+        if let Some(id) = element.id()
+            && self.buckets.ids.get(id, quirks_mode).is_some()
+        {
+            return false;
         }
 
         let mut found = false;
@@ -476,6 +472,7 @@ pub fn scope_selector_list_is_trivial(list: &SelectorList<SelectorImpl>) -> bool
         // A selector is trivial if:
         // * There is no selector conditional on its siblings and/or descendant to match, and
         // * There is no dependency on sibling relations, and
+        // * There is no attribute selector in the selector, which is specific to that element, and
         // * There's no ID selector in the selector. A more correct approach may be to ensure that
         //   scoping roots of the style sharing candidates and targets have matching IDs, but that
         //   requires re-plumbing what we pass around for scope roots.
@@ -486,11 +483,14 @@ pub fn scope_selector_list_is_trivial(list: &SelectorList<SelectorImpl>) -> bool
                     Component::ID(_)
                     | Component::Nth(_)
                     | Component::NthOf(_)
+                    | Component::AttributeInNoNamespaceExists { .. }
+                    | Component::AttributeInNoNamespace { .. }
+                    | Component::AttributeOther(_)
                     | Component::Has(_) => return false,
-                    Component::Is(list) | Component::Where(list) | Component::Negation(list) => {
-                        if !scope_selector_list_is_trivial(list) {
-                            return false;
-                        }
+                    Component::Is(list) | Component::Where(list) | Component::Negation(list)
+                        if !scope_selector_list_is_trivial(list) =>
+                    {
+                        return false;
                     },
                     _ => (),
                 }

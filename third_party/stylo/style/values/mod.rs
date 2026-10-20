@@ -8,13 +8,13 @@
 
 #![deny(missing_docs)]
 
+use crate::Atom;
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::typed_om::{KeywordValue, NumericType, NumericValue, ToTyped, TypedValue, UnitValue};
 use crate::values::distance::{ComputeSquaredDistance, SquaredDistance};
 use crate::values::generics::position::IsTreeScoped;
-use crate::Atom;
-pub use cssparser::{serialize_identifier, serialize_name, CowRcStr, Parser};
+pub use cssparser::{CowRcStr, Parser, serialize_identifier, serialize_name};
 pub use cssparser::{SourceLocation, Token};
 use num_traits::Zero;
 use precomputed_hash::PrecomputedHash;
@@ -41,11 +41,7 @@ pub type CSSFloat = f32;
 /// it into NaN.
 #[inline]
 pub fn normalize(v: CSSFloat) -> CSSFloat {
-    if v.is_nan() {
-        0.0
-    } else {
-        v
-    }
+    if v.is_nan() { 0.0 } else { v }
 }
 
 /// Computes the minimum value of the two floats. The CSS Values and Units definition
@@ -87,6 +83,92 @@ pub fn calc_sign(value: CSSFloat) -> CSSFloat {
     } else {
         1.0
     }
+}
+
+/// Generates a random integer given a base value and limit.
+/// https://drafts.csswg.org/css-values-5/#generate-a-random-integer
+pub fn calc_random_integer(base: f32, limit: f32) -> f32 {
+    (base * limit).floor()
+}
+
+/// Evaluates a random() function given a base value and its arguments.
+/// https://drafts.csswg.org/css-values-5/#random-evaluation
+pub fn calc_random(base: f32, min: f32, max: f32, step: Option<f32>) -> f32 {
+    if base.is_nan() || min.is_nan() || max.is_nan() || step.is_some_and(f32::is_nan) {
+        return f32::NAN;
+    }
+
+    // Clamps a <number> into the range of a random base value, using the highest
+    // f32 strictly less than one. The random base value has a half-open range of
+    // [0, 1), but the `fixed <number>` format of <random-key> accepts the closed
+    // range of [0, 1]. So if an author specifies `fixed 1`, this value is used
+    // instead as the random base value.
+    let base = normalize(base.max(0.).min((1.0f32).next_down()));
+
+    // "In random(A, B), if A is infinite, the result is infinite."
+    if min.is_infinite() {
+        return min;
+    }
+
+    // "If A is finite, but the difference between A and B is either infinite or
+    // large enough to be treated as infinite in the user agent, the result is
+    // NaN."
+    if !(max - min).is_finite() {
+        return f32::NAN;
+    }
+
+    // "If the maximum value is less than the minimum value, it behaves as if
+    // it's equal to the minimum value."
+    let max = if max < min { min } else { max };
+    let range = max - min;
+
+    let Some(step) = step else {
+        return min + base * range;
+    };
+
+    // "If C is infinite, the result is A."
+    if step.is_infinite() {
+        return min;
+    }
+
+    // "If C is negative, zero, or positive but close enough to zero that the
+    // range for the step multiplier would be infinite in the user agent, the
+    // step must be ignored."
+    if step <= 0.0 {
+        return min + base * range;
+    }
+
+    // "Let epsilon be step / 1000, or the smallest representable value greater
+    // than zero in the numeric type being used if epsilon would round to zero."
+    let epsilon = match step / 1000.0 {
+        e if e > 0.0 => e,
+        _ => (0.0f32).next_up(),
+    };
+
+    // "Let N be the largest integer such that min + N * step is less than or
+    // equal to max."
+    let mut n = (range / step).floor();
+    if n.is_infinite() {
+        return min + base * range;
+    }
+
+    // "If N produces a value that is not within epsilon of max, but N+1 would
+    // produce a value within epsilon of max, set N to N+1."
+    if (min + n * step - max).abs() > epsilon && (min + (n + 1.0) * step - max).abs() <= epsilon {
+        n += 1.0;
+    }
+
+    // "Let step index be a random integer less than N+1, given R. Let value
+    // be min + step index * step."
+    let step_index = calc_random_integer(base, n + 1.0);
+    let value = min + step_index * step;
+
+    // "If step index is N and value is within epsilon of max, return max."
+    if step_index == n && (value - max).abs() <= epsilon {
+        return max;
+    }
+
+    value
 }
 
 /// A CSS integer value.

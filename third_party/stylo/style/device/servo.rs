@@ -10,22 +10,22 @@ use crate::custom_properties::CssEnvironment;
 use crate::font_metrics::FontMetrics;
 use crate::logical_geometry::WritingMode;
 use crate::media_queries::MediaType;
-use crate::properties::style_structs::Font;
 use crate::properties::ComputedValues;
+use crate::properties::style_structs::Font;
 use crate::queries::values::PrefersColorScheme;
 use crate::servo::media_features::PointerCapabilities;
+use crate::values::KeyframesName;
 use crate::values::computed::font::GenericFontFamily;
 use crate::values::computed::{
     CSSPixelLength, Length, LineHeight, LinkParameters, NonNegativeLength,
 };
+use crate::values::specified::ViewportVariant;
 use crate::values::specified::color::{ColorSchemeFlags, ForcedColors, SystemColor};
 use crate::values::specified::font::{
-    QueryFontMetricsFlags, FONT_MEDIUM_CAP_PX, FONT_MEDIUM_CH_PX, FONT_MEDIUM_EX_PX,
-    FONT_MEDIUM_IC_PX, FONT_MEDIUM_LINE_HEIGHT_PX, FONT_MEDIUM_PX,
+    FONT_MEDIUM_CAP_PX, FONT_MEDIUM_CH_PX, FONT_MEDIUM_EX_PX, FONT_MEDIUM_IC_PX,
+    FONT_MEDIUM_LINE_HEIGHT_PX, FONT_MEDIUM_PX, QueryFontMetricsFlags,
 };
-use crate::values::specified::ViewportVariant;
-use crate::values::KeyframesName;
-use app_units::{Au, AU_PER_PX};
+use app_units::{AU_PER_PX, Au};
 use euclid::default::Size2D as UntypedSize2D;
 use euclid::{Scale, SideOffsets2D, Size2D};
 use malloc_size_of_derive::MallocSizeOf;
@@ -147,6 +147,14 @@ impl Device {
     /// Get the quirks mode of the current device.
     pub fn quirks_mode(&self) -> QuirksMode {
         self.extra.quirks_mode
+    }
+
+    /// Returns a value that identifies this document, used to vary the random
+    /// base values of `random()` functions between document instances.
+    #[inline]
+    pub fn document_random_seed(&self) -> u64 {
+        // TODO: Implement a document-specific value.
+        0
     }
 
     /// Gets the base size given a generic font family.

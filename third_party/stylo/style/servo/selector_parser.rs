@@ -6,6 +6,7 @@
 
 //! Servo's selector parser.
 
+use crate::FxHashMap;
 use crate::attr::{AttrIdentifier, AttrValue};
 use crate::computed_value_flags::ComputedValueFlags;
 use crate::derives::*;
@@ -18,11 +19,8 @@ use crate::selector_parser::AttrValue as SelectorAttrValue;
 use crate::selector_parser::{PseudoElementCascadeType, SelectorParser};
 use crate::values::{AtomIdent, AtomString};
 use crate::{Atom, CaseSensitivityExt, LocalName, Namespace, Prefix};
-use cssparser::{
-    match_ignore_ascii_case, serialize_identifier, CowRcStr, Parser as CssParser, ToCss,
-};
+use cssparser::{Parser as CssParser, ToCss, match_ignore_ascii_case, serialize_identifier};
 use dom::{DocumentState, ElementState};
-use rustc_hash::FxHashMap;
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::parser::SelectorParseErrorKind;
 use std::fmt;
@@ -43,15 +41,10 @@ pub enum PseudoElement {
     After = 0,
     Before,
     Selection,
-    // If/when :first-letter is added, update is_first_letter accordingly.
-
-    // If/when :first-line is added, update is_first_line accordingly.
-
-    // If/when ::first-letter or ::first-line are added, adjust our
-    // property_restriction implementation to do property filtering for them.
-    // Also, make sure the UA sheet has the !important rules some of the
+    // Make sure the UA sheet has the !important rules some of the
     // APPLIES_TO_PLACEHOLDER properties expect!
     FirstLetter,
+    FirstLine,
 
     // Non-eager pseudos.
     Backdrop,
@@ -67,6 +60,7 @@ pub enum PseudoElement {
     SliderFill,
     SliderThumb,
     SliderTrack,
+    MozProgressBar,
 
     // Private, Servo-specific implemented pseudos. Only matchable in UA sheet.
     ServoTextControlInnerContainer,
@@ -95,6 +89,7 @@ impl ToCss for PseudoElement {
             Before => "::before",
             Selection => "::selection",
             FirstLetter => "::first-letter",
+            FirstLine => "::first-line",
             Backdrop => "::backdrop",
             DetailsContent => "::details-content",
             Marker => "::marker",
@@ -104,6 +99,7 @@ impl ToCss for PseudoElement {
             SliderFill => "::slider-fill",
             SliderTrack => "::slider-track",
             SliderThumb => "::slider-thumb",
+            MozProgressBar => "::-moz-progress-bar",
             ServoTextControlInnerContainer => "::-servo-text-control-inner-container",
             ServoTextControlInnerEditor => "::-servo-text-control-inner-editor",
             ServoAnonymousBox => "::-servo-anonymous-box",
@@ -123,7 +119,7 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
 }
 
 /// The number of eager pseudo-elements. Keep this in sync with cascade_type.
-pub const EAGER_PSEUDO_COUNT: usize = 4;
+pub const EAGER_PSEUDO_COUNT: usize = 5;
 
 impl PseudoElement {
     /// Gets the canonical index of this eagerly-cascaded pseudo-element.
@@ -199,7 +195,7 @@ impl PseudoElement {
     /// Whether the current pseudo element is :first-line
     #[inline]
     pub fn is_first_line(&self) -> bool {
-        false
+        *self == PseudoElement::FirstLine
     }
 
     /// Whether this pseudo-element is representing the color swatch
@@ -252,6 +248,7 @@ impl PseudoElement {
             PseudoElement::After
             | PseudoElement::Before
             | PseudoElement::FirstLetter
+            | PseudoElement::FirstLine
             | PseudoElement::Selection => PseudoElementCascadeType::Eager,
             PseudoElement::Backdrop
             | PseudoElement::ColorSwatch
@@ -262,6 +259,7 @@ impl PseudoElement {
             | PseudoElement::SliderFill
             | PseudoElement::SliderThumb
             | PseudoElement::SliderTrack
+            | PseudoElement::MozProgressBar
             | PseudoElement::ServoTextControlInnerContainer
             | PseudoElement::ServoTextControlInnerEditor => PseudoElementCascadeType::Lazy,
             PseudoElement::ServoAnonymousBox
@@ -286,21 +284,23 @@ impl PseudoElement {
 
     /// Property flag that properties must have to apply to this pseudo-element.
     #[inline]
-    pub fn property_restriction(&self) -> Option<PropertyFlags> {
-        Some(match self {
+    pub fn property_restriction(&self) -> PropertyFlags {
+        match self {
             PseudoElement::FirstLetter => PropertyFlags::APPLIES_TO_FIRST_LETTER,
+            PseudoElement::FirstLine => PropertyFlags::APPLIES_TO_FIRST_LINE,
             PseudoElement::Marker if crate::pref!("layout.css.marker.restricted") => {
                 PropertyFlags::APPLIES_TO_MARKER
             },
             PseudoElement::Placeholder => PropertyFlags::APPLIES_TO_PLACEHOLDER,
-            _ => return None,
-        })
+            PseudoElement::Selection => PropertyFlags::APPLIES_TO_HIGHLIGHT,
+            _ => PropertyFlags::empty(),
+        }
     }
 
     /// Whether this pseudo-element should actually exist if it has
     /// the given styles.
     pub fn should_exist(&self, style: &ComputedValues) -> bool {
-        let display = style.get_box().clone_display();
+        let display = *style.get_box().get_display();
         if display == Display::None {
             return false;
         }
@@ -350,6 +350,7 @@ impl PseudoElement {
                     | Self::SliderFill
                     | Self::SliderThumb
                     | Self::SliderTrack
+                    | Self::MozProgressBar
                     | Self::ServoTextControlInnerContainer
                     | Self::ServoTextControlInnerEditor,
             )
@@ -610,10 +611,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         !self.for_supports_rule
     }
 
-    fn parse_non_ts_pseudo_class(
-        &self,
-        name: CowRcStr<'i>,
-    ) -> Result<NonTSPseudoClass, ParseError> {
+    fn parse_non_ts_pseudo_class(&self, name: &str) -> Result<NonTSPseudoClass, ParseError> {
         let pseudo_class = match_ignore_ascii_case! { &name,
             "active" => NonTSPseudoClass::Active,
             "any-link" => NonTSPseudoClass::AnyLink,
@@ -664,7 +662,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
 
     fn parse_non_ts_functional_pseudo_class(
         &self,
-        name: CowRcStr<'i>,
+        name: &str,
         parser: &mut CssParser<'i>,
         after_part: bool,
     ) -> Result<NonTSPseudoClass, ParseError> {
@@ -682,7 +680,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         Ok(pseudo_class)
     }
 
-    fn parse_pseudo_element(&self, name: CowRcStr<'i>) -> Result<PseudoElement, ParseError> {
+    fn parse_pseudo_element(&self, name: &str) -> Result<PseudoElement, ParseError> {
         use self::PseudoElement::*;
         let pseudo_element = match_ignore_ascii_case! { &name,
             "before" => Before,
@@ -691,6 +689,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "selection" => Selection,
             "file-selector-button" => FileSelectorButton,
             "first-letter" => FirstLetter,
+            "first-line" if crate::pref!("layout.css.first-line.enabled") => FirstLine,
             "marker" => Marker,
             "details-content" => DetailsContent,
             "color-swatch" => ColorSwatch,
@@ -710,6 +709,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "slider-fill" => SliderFill,
             "slider-thumb" => SliderThumb,
             "slider-track" => SliderTrack,
+            "-moz-progress-bar" => MozProgressBar,
             "-servo-anonymous-box" => {
                 if !self.in_user_agent_stylesheet() {
                     return Err(ParseError::custom(SelectorParseErrorKind::UnexpectedIdent))
@@ -854,8 +854,7 @@ impl ServoElementSnapshot {
 
     fn get_attr(&self, namespace: &Namespace, name: &LocalName) -> Option<&AttrValue> {
         self.attrs
-            .as_ref()
-            .unwrap()
+            .as_ref()?
             .iter()
             .find(|&&(ref ident, _)| ident.local_name == *name && ident.namespace == *namespace)
             .map(|&(_, ref v)| v)
@@ -876,11 +875,11 @@ impl ServoElementSnapshot {
     where
         F: FnMut(&AttrValue) -> bool,
     {
-        self.attrs
-            .as_ref()
-            .unwrap()
-            .iter()
-            .any(|&(ref ident, ref v)| ident.local_name == *name && f(v))
+        self.attrs.as_ref().is_some_and(|attrs| {
+            attrs
+                .iter()
+                .any(|&(ref ident, ref v)| ident.local_name == *name && f(v))
+        })
     }
 }
 

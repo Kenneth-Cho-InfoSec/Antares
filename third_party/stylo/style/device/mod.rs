@@ -9,8 +9,8 @@ use crate::custom_properties::CssEnvironment;
 #[cfg(feature = "servo")]
 use crate::derives::*;
 use crate::properties::ComputedValues;
-use crate::values::computed::font::QueryFontMetricsFlags;
 use crate::values::computed::Length;
+use crate::values::computed::font::QueryFontMetricsFlags;
 use parking_lot::RwLock;
 use servo_arc::Arc;
 use std::mem;
@@ -212,7 +212,10 @@ impl Device {
     pub fn update_root_font_metrics(&self) -> bool {
         let root_style = self.root_style.read();
         let root_effective_zoom = root_style.effective_zoom;
-        let root_font_size = (*root_style).get_font().clone_font_size().computed_size();
+        let root_font_size = (*root_style)
+            .get_font()
+            .slow_clone_font_size()
+            .computed_size();
 
         let root_font_metrics = self.query_font_metrics(
             root_style.writing_mode.is_upright(),

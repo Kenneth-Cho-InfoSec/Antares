@@ -4,13 +4,16 @@
 
 //! Selector matching.
 
+use crate::AllocErr;
+use crate::ArcSlice;
+use crate::FxHashMap;
 use crate::applicable_declarations::{
     ApplicableDeclarationBlock, ApplicableDeclarationList, CascadePriority, ScopeProximity,
 };
 use crate::computed_value_flags::ComputedValueFlags;
 use crate::context::{CascadeInputs, QuirksMode, TreeCountingCaches};
 use crate::custom_properties::ComputedCustomProperties;
-use crate::custom_properties::{parse_name, SpecifiedValue};
+use crate::custom_properties::{SpecifiedValue, parse_name};
 use crate::derives::*;
 use crate::device::Device;
 use crate::dom::TElement;
@@ -19,8 +22,8 @@ use crate::dom::TShadowRoot;
 #[cfg(feature = "gecko")]
 use crate::gecko_bindings::structs::{ServoStyleSetSizes, StyleRuleInclusion};
 use crate::invalidation::element::invalidation_map::{
-    note_selector_for_invalidation, AdditionalRelativeSelectorInvalidationMap, Dependency,
-    DependencyInvalidationKind, InvalidationMap, ScopeDependencyInvalidationKind,
+    AdditionalRelativeSelectorInvalidationMap, Dependency, DependencyInvalidationKind,
+    InvalidationMap, ScopeDependencyInvalidationKind, note_selector_for_invalidation,
 };
 use crate::invalidation::media_queries::{
     EffectiveMediaQueryResults, MediaListKey, ToMediaListKey,
@@ -30,7 +33,7 @@ use crate::invalidation::stylesheets::{RuleChangeKind, StylesheetInvalidationSet
 use crate::properties::StyleBuilder;
 use crate::properties::{
     self, AnimationDeclarations, CascadeMode, ComputedValues, FirstLineReparenting,
-    PropertyDeclarationBlock,
+    PropertyDeclarationBlock, PropertyIdRef,
 };
 use crate::properties_and_values::registry::{
     PropertyRegistration, ScriptRegistry as CustomPropertyScriptRegistry,
@@ -52,15 +55,15 @@ use crate::shared_lock::{Locked, SharedRwLockReadGuard, StylesheetGuards};
 use crate::sharing::{RevalidationResult, ScopeRevalidationResult};
 use crate::stylesheet_set::{DataValidity, DocumentStylesheetSet, SheetRebuildKind};
 use crate::stylesheet_set::{DocumentStylesheetFlusher, SheetCollectionFlusher};
+use crate::stylesheets::UrlExtraData;
 use crate::stylesheets::container_rule::{ContainerAttributeDependencyKind, ContainerCondition};
 use crate::stylesheets::import_rule::ImportLayer;
 use crate::stylesheets::keyframes_rule::KeyframesAnimation;
 use crate::stylesheets::layer_rule::{LayerName, LayerOrder};
 use crate::stylesheets::scope_rule::{
-    collect_scope_roots, element_is_outside_of_scope, scope_selector_list_is_trivial,
-    ImplicitScopeRoot, ScopeRootCandidate, ScopeSubjectMap, ScopeTarget,
+    ImplicitScopeRoot, ScopeRootCandidate, ScopeSubjectMap, ScopeTarget, collect_scope_roots,
+    element_is_outside_of_scope, scope_selector_list_is_trivial,
 };
-use crate::stylesheets::UrlExtraData;
 use crate::stylesheets::{
     CounterStyleRule, CssRule, CssRuleRef, EffectiveRulesIterator, FontFaceRule,
     FontFeatureValuesRule, FontPaletteValuesRule, Origin, OriginSet, PagePseudoClassFlags,
@@ -71,20 +74,17 @@ use crate::stylesheets::{CustomMediaEvaluator, CustomMediaMap};
 #[cfg(feature = "gecko")]
 use crate::values::specified::position::PositionTryFallbacksItem;
 use crate::values::specified::position::PositionTryFallbacksTryTactic;
-use crate::values::{computed, AtomIdent, Parser, SourceLocation};
-use crate::AllocErr;
-use crate::ArcSlice;
+use crate::values::{AtomIdent, Parser, SourceLocation, computed};
 use crate::{Atom, LocalName, Namespace, ShrinkIfNeeded, WeakAtom};
 use dom::{DocumentState, ElementState};
 #[cfg(feature = "gecko")]
 use malloc_size_of::MallocUnconditionalShallowSizeOf;
 use malloc_size_of::{MallocShallowSizeOf, MallocSizeOf, MallocSizeOfOps};
-use rustc_hash::FxHashMap;
 use selectors::attr::{CaseSensitivity, NamespaceConstraint};
 use selectors::bloom::BloomFilter;
 use selectors::matching::{
-    matches_complex_selector, matches_selector, selector_may_match, MatchingContext, MatchingMode,
-    NeedsSelectorFlags, SelectorCaches, SubjectOrPseudoElement,
+    MatchingContext, MatchingMode, NeedsSelectorFlags, SelectorCaches, SubjectOrPseudoElement,
+    matches_complex_selector, matches_selector, selector_may_match,
 };
 use selectors::matching::{MatchingForInvalidation, VisitedHandlingMode};
 use selectors::parser::{
@@ -236,7 +236,7 @@ where
     where
         S: StylesheetInDocument + PartialEq + 'static,
     {
-        use std::collections::hash_map::Entry as HashMapEntry;
+        use hashbrown::hash_map::Entry as HashMapEntry;
         debug!("StyleSheetCache::lookup({})", self.len());
 
         if !collection.dirty() {
@@ -674,17 +674,12 @@ impl From<StyleRuleInclusion> for RuleInclusion {
 /// If used outside of `@scope`, it cannot possibly match the host.
 /// Even when inside of `@scope`, it's conditional if the selector will
 /// match the shadow host.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Default)]
 enum ScopeMatchesShadowHost {
+    #[default]
     NotApplicable,
     No,
     Yes,
-}
-
-impl Default for ScopeMatchesShadowHost {
-    fn default() -> Self {
-        Self::NotApplicable
-    }
 }
 
 impl ScopeMatchesShadowHost {
@@ -1060,7 +1055,10 @@ impl Stylist {
 
         self.num_rebuilds += 1;
 
-        let (flusher, mut invalidations) = self.stylesheets.flush();
+        let cascade_data = &self.cascade_data;
+        let (flusher, mut invalidations) = self.stylesheets.flush(&self.device, guards, |origin| {
+            &cascade_data.borrow_for_origin(origin).custom_media
+        });
 
         self.cascade_data
             .rebuild(
@@ -1104,21 +1102,13 @@ impl Stylist {
         before_sheet: StylistSheet,
         guard: &SharedRwLockReadGuard,
     ) {
-        let custom_media = self.cascade_data.custom_media_for_sheet(&sheet, guard);
-        self.stylesheets.insert_stylesheet_before(
-            Some(&self.device),
-            custom_media,
-            sheet,
-            before_sheet,
-            guard,
-        )
+        self.stylesheets
+            .insert_stylesheet_before(sheet, before_sheet, guard)
     }
 
     /// Appends a new stylesheet to the current set.
     pub fn append_stylesheet(&mut self, sheet: StylistSheet, guard: &SharedRwLockReadGuard) {
-        let custom_media = self.cascade_data.custom_media_for_sheet(&sheet, guard);
-        self.stylesheets
-            .append_stylesheet(Some(&self.device), custom_media, sheet, guard)
+        self.stylesheets.append_stylesheet(sheet, guard)
     }
 
     /// Remove a given stylesheet to the current set.
@@ -1910,7 +1900,7 @@ impl Stylist {
                                 &selector_and_hashes.selector,
                                 selector_and_hashes.selector_offset,
                                 Some(&selector_and_hashes.hashes),
-                                &element,
+                                element,
                                 matching_context,
                             ));
                             true
@@ -1933,7 +1923,7 @@ impl Stylist {
                         &selector_and_hashes.selector,
                         selector_and_hashes.selector_offset,
                         Some(&selector_and_hashes.hashes),
-                        &element,
+                        element,
                         &mut matching_context,
                     ));
                     true
@@ -2136,9 +2126,11 @@ impl Stylist {
             None => None,
         };
 
-        if let Err(error) =
-            PropertyRegistration::validate_initial_value(&syntax, initial_value.as_deref())
-        {
+        if let Err(error) = PropertyRegistration::validate_initial_value(
+            PropertyIdRef::from(&name),
+            &syntax,
+            initial_value.as_deref(),
+        ) {
             return match error {
                 PropertyRegistrationError::InitialValueNotComputationallyIndependent => {
                     InitialValueNotComputationallyIndependent
@@ -2207,25 +2199,25 @@ impl<T: 'static> LayerOrderedMap<T> {
     fn clear(&mut self) {
         self.0.clear();
     }
-    fn try_insert(&mut self, name: Atom, v: T, id: LayerId) -> Result<(), AllocErr> {
+    fn try_insert(&mut self, name: &Atom, v: T, id: LayerId) -> Result<(), AllocErr> {
         self.try_insert_with(name, v, id, |_, _| Ordering::Equal)
     }
     fn try_insert_with(
         &mut self,
-        name: Atom,
+        name: &Atom,
         v: T,
         id: LayerId,
         cmp: impl Fn(&T, &T) -> Ordering,
     ) -> Result<(), AllocErr> {
         self.0.try_reserve(1)?;
-        let vec = self.0.entry(name).or_default();
-        if let Some(&mut (ref mut val, ref last_id)) = vec.last_mut() {
-            if *last_id == id {
-                if cmp(val, &v) != Ordering::Greater {
-                    *val = v;
-                }
-                return Ok(());
+        let vec = self.0.entry_ref(name).or_default();
+        if let Some(&mut (ref mut val, ref last_id)) = vec.last_mut()
+            && *last_id == id
+        {
+            if cmp(val, &v) != Ordering::Greater {
+                *val = v;
             }
+            return Ok(());
         }
         vec.push((v, id));
         Ok(())
@@ -2401,7 +2393,7 @@ impl ExtraStyleData {
         rule: &Arc<Locked<CounterStyleRule>>,
         layer: LayerId,
     ) -> Result<(), AllocErr> {
-        let name = rule.read_with(guard).name().0.clone();
+        let name = &rule.read_with(guard).name().0;
         self.counter_styles.try_insert(name, rule.clone(), layer)
     }
 
@@ -2412,7 +2404,7 @@ impl ExtraStyleData {
         rule: Arc<Locked<PositionTryRule>>,
         layer: LayerId,
     ) -> Result<(), AllocErr> {
-        self.position_try_rules.try_insert(name, rule, layer)
+        self.position_try_rules.try_insert(&name, rule, layer)
     }
 
     /// Add the given @page rule.
@@ -2423,18 +2415,18 @@ impl ExtraStyleData {
         layer: LayerId,
     ) -> Result<(), AllocErr> {
         let page_rule = rule.read_with(guard);
-        let mut add_rule = |name| {
-            let vec = self.pages.rules.entry(name).or_default();
+        let mut add_rule = |name: &Atom| {
+            let vec = self.pages.rules.entry_ref(name).or_default();
             vec.push(PageRuleData {
                 layer,
                 rule: rule.clone(),
             });
         };
         if page_rule.selectors.0.is_empty() {
-            add_rule(atom!(""));
+            add_rule(&atom!(""));
         } else {
             for selector in page_rule.selectors.as_slice() {
-                add_rule(selector.name.0.clone());
+                add_rule(&selector.name.0);
             }
         }
         Ok(())
@@ -2501,13 +2493,9 @@ impl MallocSizeOf for ExtraStyleData {
 }
 
 /// SelectorMapEntry implementation for use in our revalidation selector map.
-#[cfg_attr(feature = "gecko", derive(MallocSizeOf))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, MallocSizeOf)]
 struct RevalidationSelectorAndHashes {
-    #[cfg_attr(
-        feature = "gecko",
-        ignore_malloc_size_of = "CssRules have primary refs, we measure there"
-    )]
+    #[ignore_malloc_size_of = "CssRules have primary refs, we measure there"]
     selector: Selector<SelectorImpl>,
     selector_offset: usize,
     hashes: AncestorHashes,
@@ -3081,6 +3069,10 @@ where
         None => return ScopeRootCandidates::default(),
         Some(ref c) => c,
     };
+    if id.0 <= condition_ref.parent.0 {
+        debug_assert!(false, "@scope bookkeeping is corrupt.");
+        return ScopeRootCandidates::default();
+    }
     // Make sure the parent scopes ara evaluated first. This runs a bit counter to normal
     // selector matching where rightmost selectors match first. However, this avoids having
     // to traverse through descendants (i.e. Avoids tree traversal vs linear traversal).
@@ -3182,11 +3174,11 @@ where
                 .zip(end.hashes.iter())
                 .all(|(selector, hashes)| {
                     // Like checking for scope-start, use the bloom filter here.
-                    if let Some(filter) = context.bloom_filter {
-                        if !selector_may_match(hashes, filter) {
-                            // Selector this hash belongs to won't cause us to be out of this scope.
-                            return true;
-                        }
+                    if let Some(filter) = context.bloom_filter
+                        && !selector_may_match(hashes, filter)
+                    {
+                        // Selector this hash belongs to won't cause us to be out of this scope.
+                        return true;
                     }
 
                     !element_is_outside_of_scope(
@@ -3892,9 +3884,11 @@ impl CascadeData {
                 }
             }
 
-            debug_assert!(!pseudo_elements
-                .iter()
-                .any(|p| p.is_precomputed() || p.is_unknown_webkit_pseudo_element()));
+            debug_assert!(
+                !pseudo_elements
+                    .iter()
+                    .any(|p| p.is_precomputed() || p.is_unknown_webkit_pseudo_element())
+            );
 
             let selector = match ancestor_selectors {
                 Some(s) => selector.replace_parent_selector(s),
@@ -3979,7 +3973,7 @@ impl CascadeData {
                     .get_or_insert_with(Box::default)
                     .for_insertion(&pseudo_elements);
                 map.try_reserve(1)?;
-                let vec = map.entry(parts.last().unwrap().clone().0).or_default();
+                let vec = map.entry_ref(&parts.last().unwrap().0).or_default();
                 vec.try_reserve(1)?;
                 vec.push(rule);
             } else {
@@ -4122,7 +4116,7 @@ impl CascadeData {
                 CssRule::Keyframes(ref keyframes_rule) => {
                     debug!("Found valid keyframes rule: {:?}", *keyframes_rule);
                     let keyframes_rule = keyframes_rule.read_with(guard);
-                    let name = keyframes_rule.name.as_atom().clone();
+                    let name = keyframes_rule.name.as_atom();
                     let animation = KeyframesAnimation::from_keyframes(
                         &keyframes_rule.keyframes,
                         keyframes_rule.vendor_prefix.clone(),
@@ -4137,7 +4131,7 @@ impl CascadeData {
                 },
                 CssRule::Property(ref registration) => {
                     self.custom_property_registrations.try_insert(
-                        registration.name.0.clone(),
+                        &registration.name.0,
                         Arc::clone(registration),
                         containing_rule_state.layer_id,
                     )?;
@@ -4357,7 +4351,7 @@ impl CascadeData {
                         .cascade_flags
                         .insert(RuleCascadeFlags::APPEARANCE_BASE);
                 },
-                CssRule::Scope(ref rule) => {
+                CssRule::Scope(ref rule) if self.scope_conditions.len() <= u16::MAX.into() => {
                     containing_rule_state.nested_declarations_context =
                         NestedDeclarationsContext::Scope;
                     let id = ScopeConditionId(self.scope_conditions.len() as u16);
@@ -5018,14 +5012,14 @@ impl Rule {
         mut element: E,
         context: &mut MatchingContext<E::Impl>,
     ) -> bool {
-        if self.bucket_matches == BucketMatches::Full {
-            return true;
-        }
         if context
             .bloom_filter
             .is_some_and(|f| !selector_may_match(&self.hashes, f))
         {
             return false;
+        }
+        if self.bucket_matches == BucketMatches::Full {
+            return true;
         }
         let mut iter = self.selector.iter();
         let mut subject = SubjectOrPseudoElement::Yes;
@@ -5033,7 +5027,7 @@ impl Rule {
             (element, iter) = Self::iter_past_subject(&self.selector, element, context);
             subject = SubjectOrPseudoElement::No;
         }
-        matches_complex_selector(iter, &element, context, subject).to_bool(true)
+        matches_complex_selector(iter, element, context, subject).to_bool(true)
     }
 }
 

@@ -4,10 +4,10 @@
 
 //! Generic types for box properties.
 
+use crate::Zero;
 use crate::derives::*;
 use crate::values::animated::ToAnimatedZero;
 use crate::values::generics::Optional;
-use crate::Zero;
 use std::fmt::{self, Write};
 use style_traits::values::SequenceWriter;
 use style_traits::{CssWriter, ToCss};

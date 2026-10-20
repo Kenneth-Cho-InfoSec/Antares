@@ -5,24 +5,24 @@
 //! `<length>` computed values, and related ones.
 
 use super::{Number, ToComputedValue};
+use crate::Zero;
 use crate::derives::*;
 use crate::logical_geometry::PhysicalSide;
 use crate::typed_om::{NumericType, NumericValue, ToTyped, TypedValue, UnitValue};
+use crate::values::CSSFloat;
+#[cfg(feature = "gecko")]
+use crate::values::DashedIdent;
 use crate::values::animated::{Context as AnimatedContext, ToAnimatedValue};
 use crate::values::computed::position::TryTacticAdjustment;
 use crate::values::computed::{NonNegativeNumber, Percentage, Zoom};
+use crate::values::generics::NonNegative;
 use crate::values::generics::length::{
     GenericLengthOrNumber, GenericLengthPercentageOrNormal, GenericMaxSize, GenericSize,
 };
 #[cfg(feature = "gecko")]
 use crate::values::generics::position::TreeScoped;
-use crate::values::generics::NonNegative;
-use crate::values::generics::{length as generics, ClampToNonNegative};
+use crate::values::generics::{ClampToNonNegative, length as generics};
 use crate::values::resolved::{Context as ResolvedContext, ToResolvedValue};
-use crate::values::CSSFloat;
-#[cfg(feature = "gecko")]
-use crate::values::DashedIdent;
-use crate::Zero;
 use app_units::Au;
 use std::fmt::{self, Write};
 use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
@@ -32,7 +32,7 @@ use thin_vec::ThinVec;
 pub use super::image::Image;
 pub use super::length_percentage::{LengthPercentage, NonNegativeLengthPercentage};
 pub use crate::values::specified::url::UrlOrNone;
-pub use crate::values::specified::{Angle, BorderStyle, Time};
+pub use crate::values::specified::{Angle, BorderStyle, NoCalcPercentage, Time};
 
 /// Some boilerplate to share between negative and non-negative
 /// length-percentage or auto.
@@ -423,11 +423,7 @@ impl NonNegativeLength {
     #[inline]
     /// Ensures it is non negative
     pub fn clamp(self) -> Self {
-        if (self.0).0 < 0. {
-            Self::zero()
-        } else {
-            self
-        }
+        if (self.0).0 < 0. { Self::zero() } else { self }
     }
 }
 
@@ -552,6 +548,14 @@ impl TryTacticAdjustment for Size {
             #[cfg(feature = "gecko")]
             Self::MozAvailable => {},
         }
+    }
+}
+
+impl TryTacticAdjustment for NoCalcPercentage {
+    fn try_tactic_adjustment(&mut self, old_side: PhysicalSide, new_side: PhysicalSide) {
+        let mut percentage = Percentage(self.get());
+        percentage.try_tactic_adjustment(old_side, new_side);
+        *self = NoCalcPercentage::new(percentage.0);
     }
 }
 

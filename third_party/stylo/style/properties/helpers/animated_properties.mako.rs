@@ -25,7 +25,7 @@ use crate::properties::{
 };
 use std::ptr;
 use std::mem;
-use rustc_hash::FxHashMap;
+use crate::FxHashMap;
 use super::ComputedValues;
 #[cfg(feature = "servo")] use crate::context::SharedStyleContext;
 use crate::derives::*;
@@ -350,9 +350,9 @@ impl AnimationValue {
                         };
                         let computed = style_struct
                         % if prop.logical:
-                            .clone_${prop.ident}(context.builder.writing_mode);
+                            .slow_clone_${prop.ident}(context.builder.writing_mode);
                         % else:
-                            .clone_${prop.ident}();
+                            .slow_clone_${prop.ident}();
                         % endif
 
                         % if prop.animation_type != "discrete":
@@ -462,7 +462,7 @@ impl AnimationValue {
             % for prop in data.longhands:
             % if prop.animatable and not prop.logical:
             LonghandId::${prop.camel_case} => {
-                let computed = style.clone_${prop.ident}();
+                let computed = style.slow_clone_${prop.ident}();
                 AnimationValue::${prop.camel_case}(
                 % if prop.animation_type == "discrete":
                     computed
@@ -530,18 +530,12 @@ impl Animate for AnimationValue {
             }
 
             match *self {
-                <% keyfunc = lambda x: (x.animated_type(), x.animation_type == "discrete", x.ident == "display") %>
-                % for (ty, discrete, is_display), props in groupby(animated, key=keyfunc):
+                <% keyfunc = lambda x: (x.animated_type(), x.animation_type == "discrete") %>
+                % for (ty, discrete), props in groupby(animated, key=keyfunc):
                 ${" |\n".join("{}(ref this)".format(prop.camel_case) for prop in props)} => {
                     let other_repr =
                         &*(other as *const _ as *const AnimationValueVariantRepr<${ty}>);
-                    % if is_display:
-                    let value = if crate::pref!("layout.css.display-animations.enabled") {
-                        this.animate(&other_repr.value, procedure)
-                    } else {
-                        animate_discrete(this, &other_repr.value, procedure)
-                    }?;
-                    % elif discrete:
+                    % if discrete:
                     let value = animate_discrete(this, &other_repr.value, procedure)?;
                     % else:
                     let value = this.animate(&other_repr.value, procedure)?;
@@ -665,10 +659,9 @@ impl Animate for Display {
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
         match procedure {
             Procedure::Interpolate { progress } => {
-                debug_assert!(
-                    crate::pref!("layout.css.display-animations.enabled"),
-                    "animating display with the pref disabled",
-                );
+                if !crate::pref!("layout.css.display-animations.enabled") {
+                    return animate_discrete(self, other, procedure)
+                };
                 let (this_weight, other_weight) = procedure.weights();
                 match (*self, *other) {
                     (_, Display::None) => Ok(if this_weight > 0.0 { *self } else { *other }),

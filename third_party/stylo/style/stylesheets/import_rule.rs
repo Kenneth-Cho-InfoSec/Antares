@@ -10,8 +10,8 @@ use crate::media_queries::MediaList;
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{DeepCloneWithLock, SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
 use crate::stylesheets::{
-    layer_rule::LayerName, supports_rule::SupportsCondition, CssRule, CssRuleType,
-    StylesheetInDocument,
+    CssRule, CssRuleType, StylesheetInDocument, layer_rule::LayerName,
+    supports_rule::SupportsCondition,
 };
 use crate::values::CssUrl;
 use cssparser::{Parser, SourceLocation};
@@ -247,11 +247,11 @@ impl ToCssWithGuard for ImportRule {
             dest.write_char(')')?;
         }
 
-        if let Some(media) = self.stylesheet.media(guard) {
-            if !media.is_empty() {
-                dest.write_char(' ')?;
-                media.to_css(&mut CssWriter::new(dest))?;
-            }
+        if let Some(media) = self.stylesheet.media(guard)
+            && !media.is_empty()
+        {
+            dest.write_char(' ')?;
+            media.to_css(&mut CssWriter::new(dest))?;
         }
 
         dest.write_char(';')

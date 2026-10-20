@@ -412,6 +412,7 @@ impl NonCustomPropertyId {
             "Given rule type does not allow declarations."
         );
 
+        #[allow(clippy::identity_op)]
         static MAP: [u32; property_counts::NON_CUSTOM] = [
             % for property in data.longhands + data.shorthands + data.all_aliases():
             % for name in RULE_VALUES:
@@ -536,6 +537,7 @@ ${id_set("PrioritaryPropertyIdSet", [p for p in data.longhands if p.is_prioritar
     MARKER_RESTRICTIONS = PropertyRestrictions.marker(data)
     PLACEHOLDER_RESTRICTIONS = PropertyRestrictions.placeholder(data)
     CUE_RESTRICTIONS = PropertyRestrictions.cue(data)
+    HIGHLIGHT_RESTRICTIONS = PropertyRestrictions.highlight(data)
 
     def restriction_flags(property):
         name = property.name
@@ -550,6 +552,8 @@ ${id_set("PrioritaryPropertyIdSet", [p for p in data.longhands if p.is_prioritar
             flags.append("APPLIES_TO_MARKER")
         if name in CUE_RESTRICTIONS:
             flags.append("APPLIES_TO_CUE")
+        if name in HIGHLIGHT_RESTRICTIONS:
+            flags.append("APPLIES_TO_HIGHLIGHT")
         return flags
 
 %>
@@ -1007,6 +1011,7 @@ impl ShorthandId {
     /// Returns PropertyFlags for the given shorthand property.
     #[inline]
     pub fn flags(self) -> PropertyFlags {
+        #[allow(clippy::identity_op)]
         const FLAGS: [u16; property_counts::SHORTHANDS] = [
             % for property in data.shorthands:
                 % for flag in property.flags:
@@ -1241,13 +1246,11 @@ impl PropertyDeclaration {
     /// Returns whether or not the property is set by a system font
     pub fn get_system(&self) -> Option<SystemFont> {
         match *self {
-            % if engine == "gecko":
             % for prop in SYSTEM_FONT_LONGHANDS:
                 PropertyDeclaration::${to_camel_case(prop)}(ref prop) => {
                     prop.get_system()
                 }
             % endfor
-            % endif
             _ => None,
         }
     }
@@ -1349,7 +1352,7 @@ pub mod style_structs {
                         ///
                         /// Same as `set_display` above.
                         /// Thus, we need to special-case this.
-                        #[allow(non_snake_case)]
+                        #[allow(non_snake_case, clippy::clone_on_copy)]
                         #[inline]
                         pub fn copy_display_from(&mut self, other: &Self) {
                             self.display = other.display.clone();
@@ -1357,7 +1360,7 @@ pub mod style_structs {
                         }
                     % else:
                         /// Set ${longhand.name} from other struct.
-                        #[allow(non_snake_case)]
+                        #[allow(non_snake_case, clippy::clone_on_copy)]
                         #[inline]
                         pub fn copy_${longhand.ident}_from(&mut self, other: &Self) {
                             self.${longhand.ident} = other.${longhand.ident}.clone();
@@ -1370,10 +1373,20 @@ pub mod style_structs {
                         self.copy_${longhand.ident}_from(other)
                     }
 
-                    /// Get the computed value for ${longhand.name}.
+                    % if longhand.has_borrowed_getter():
+                    /// Get a reference to the computed value for ${longhand.name}.
                     #[allow(non_snake_case)]
                     #[inline]
-                    pub fn clone_${longhand.ident}(&self) -> longhands::${longhand.ident}::computed_value::T {
+                    pub fn get_${longhand.ident}(&self) -> &longhands::${longhand.ident}::computed_value::T {
+                        &self.${longhand.ident}
+                    }
+                    % endif
+
+                    /// Clone the computed value for ${longhand.name}. Prefer
+                    /// `get_${longhand.ident}` where a reference is enough.
+                    #[allow(non_snake_case, clippy::clone_on_copy)]
+                    #[inline]
+                    pub fn slow_clone_${longhand.ident}(&self) -> longhands::${longhand.ident}::computed_value::T {
                         self.${longhand.ident}.clone()
                     }
 
@@ -1445,6 +1458,11 @@ pub mod style_structs {
                 ${impl_physical_sides("margin", ["margin-top", "margin-right", "margin-bottom", "margin-left"])}
             % elif style_struct.name == "Position":
                 ${impl_physical_sides("inset", ["top", "right", "bottom", "left"])}
+                /// Sets the computed justify-items value without changing the specified value.
+                pub fn set_computed_justify_items(&mut self, v: crate::values::specified::JustifyItems) {
+                    debug_assert_ne!(v, crate::values::specified::JustifyItems::legacy());
+                    self.justify_items.computed = v;
+                }
             % endif
         }
 
@@ -1478,7 +1496,7 @@ pub mod style_structs {
                 #[allow(non_snake_case)]
                 #[inline]
                 #[cfg(feature = "gecko")]
-                pub fn clone_${longhand.ident}(
+                pub fn slow_clone_${longhand.ident}(
                     &self,
                 ) -> longhands::${longhand.ident}::computed_value::T {
                     longhands::${longhand.ident}::computed_value::List(
@@ -1655,7 +1673,7 @@ impl ComputedValues {
 
     /// Returns whether this style's display value is equal to contents.
     pub fn is_display_contents(&self) -> bool {
-        self.clone_display().is_contents()
+        self.get_box().get_display().is_contents()
     }
 
     /// Gets a reference to the rule node. Panic if no rule node exists.
@@ -1673,15 +1691,35 @@ impl ComputedValues {
         &self.custom_properties
     }
 
+<%
+    # `get_page` / `get_position` would clash with the style struct getters.
+    style_struct_getters = set(s.name_lower for s in data.style_structs)
+%>
 % for prop in data.longhands:
 % if not prop.logical:
-    /// Gets the computed value of a given property.
+% if prop.has_borrowed_getter() and prop.ident not in style_struct_getters:
+    /// Gets a reference to the computed value of a given property.
     #[inline(always)]
     #[allow(non_snake_case)]
-    pub fn clone_${prop.ident}(
+    pub fn get_${prop.ident}(
+        &self
+    % if prop.vector:
+    ) -> &[longhands::${prop.ident}::computed_value::single_value::T] {
+    % else:
+    ) -> &longhands::${prop.ident}::computed_value::T {
+    % endif
+        self.get_${prop.style_struct.name_lower}().get_${prop.ident}()
+    }
+% endif
+
+    /// Clones the computed value of a given property. Prefer `get_${prop.ident}`
+    /// where a reference is enough.
+    #[inline(always)]
+    #[allow(non_snake_case)]
+    pub fn slow_clone_${prop.ident}(
         &self,
     ) -> longhands::${prop.ident}::computed_value::T {
-        self.get_${prop.style_struct.name_lower}().clone_${prop.ident}()
+        self.get_${prop.style_struct.name_lower}().slow_clone_${prop.ident}()
     }
 
     /// Gets the computed value of a given property.
@@ -1712,7 +1750,7 @@ impl ComputedValues {
                 let value = match property_id {
                     % for prop in props:
                     % if not prop.logical:
-                    LonghandId::${prop.camel_case} => self.clone_${prop.ident}(),
+                    LonghandId::${prop.camel_case} => self.slow_clone_${prop.ident}(),
                     % endif
                     % endfor
                     _ => unsafe { debug_unreachable!() },
@@ -1742,7 +1780,7 @@ impl ComputedValues {
                 let value = match property_id {
                     % for prop in props:
                     % if not prop.logical:
-                    LonghandId::${prop.camel_case} => self.clone_${prop.ident}(),
+                    LonghandId::${prop.camel_case} => self.slow_clone_${prop.ident}(),
                     % endif
                     % endfor
                     _ => unsafe { debug_unreachable!() },
@@ -1767,7 +1805,7 @@ impl ComputedValues {
                 let mut computed_value = match physical_property_id {
                     % for prop in props:
                     % if not prop.logical:
-                    LonghandId::${prop.camel_case} => self.clone_${prop.ident}(),
+                    LonghandId::${prop.camel_case} => self.slow_clone_${prop.ident}(),
                     % endif
                     % endfor
                     _ => unsafe { debug_unreachable!() },
@@ -1808,11 +1846,10 @@ impl ComputedValues {
     ///
     /// Usage example:
     /// let top_color =
-    ///   style.resolve_color(&style.get_border().clone_border_top_color());
+    ///   style.resolve_color(style.get_border().get_border_top_color());
     #[inline]
     pub fn resolve_color(&self, color: &computed::Color) -> crate::color::AbsoluteColor {
-        let current_color = self.get_inherited_text().clone_color();
-        color.resolve_to_absolute(&current_color)
+        color.resolve_to_absolute(self.get_inherited_text().get_color())
     }
 
     /// Returns which longhand properties have different values in the two
@@ -1822,7 +1859,7 @@ impl ComputedValues {
         let mut set = LonghandIdSet::new();
         % for prop in data.longhands:
         % if not prop.logical:
-        if self.clone_${prop.ident}() != other.clone_${prop.ident}() {
+        if !self.${prop.ident}_equals(other) {
             set.insert(LonghandId::${prop.camel_case});
         }
         % endif
@@ -2382,7 +2419,7 @@ impl<'a> StyleBuilder<'a> {
             invalid_non_custom_properties: LonghandIdSet::default(),
             writing_mode: style_to_derive_from.writing_mode,
             effective_zoom: style_to_derive_from.effective_zoom,
-            effective_zoom_for_inheritance: Self::zoom_for_inheritance(style_to_derive_from.get_box().clone_zoom(), inherited_style),
+            effective_zoom_for_inheritance: Self::zoom_for_inheritance(*style_to_derive_from.get_box().get_zoom(), inherited_style),
             color_scheme: style_to_derive_from.get_inherited_ui().color_scheme_bits(),
             flags: Cell::new(style_to_derive_from.flags),
             visited_style: None,
@@ -2563,26 +2600,26 @@ impl<'a> StyleBuilder<'a> {
 
     /// Returns whether this computed style represents a floated object.
     pub fn is_floating(&self) -> bool {
-        self.get_box().clone_float().is_floating()
+        self.get_box().get_float().is_floating()
     }
 
     /// Returns whether this computed style represents an absolutely-positioned
     /// object.
     pub fn is_absolutely_positioned(&self) -> bool {
-        self.get_box().clone_position().is_absolutely_positioned()
+        self.get_box().get_position().is_absolutely_positioned()
     }
 
     /// Whether this style has a top-layer style.
     #[cfg(feature = "servo")]
     pub fn in_top_layer(&self) -> bool {
-        matches!(self.get_box().clone__servo_top_layer(),
-                 longhands::_servo_top_layer::computed_value::T::Top)
+        matches!(self.get_box().slow_clone__servo_top_layer(),
+                 longhands::_servo_top_layer::computed_value::T::Auto)
     }
 
     /// Whether this style has a top-layer style.
     #[cfg(feature = "gecko")]
     pub fn in_top_layer(&self) -> bool {
-        matches!(self.get_box().clone__moz_top_layer(),
+        matches!(self.get_box().get__moz_top_layer(),
                  longhands::_moz_top_layer::computed_value::T::Auto)
     }
 
@@ -2666,7 +2703,7 @@ impl<'a> StyleBuilder<'a> {
 
     /// The zoom specified on this element.
     pub fn specified_zoom(&self) -> computed::Zoom {
-        self.get_box().clone_zoom()
+        *self.get_box().get_zoom()
     }
 
     /// Computes effective_zoom and effective_zoom_for_inheritance based on the current style
@@ -2712,7 +2749,7 @@ impl<'a> StyleBuilder<'a> {
                 ComputedValueFlags::DEPENDS_ON_INHERITED_FONT_METRICS,
             ),
         };
-        let line_height = font.clone_line_height();
+        let line_height = font.get_line_height();
         if matches!(line_height, computed::LineHeight::Normal) {
             self.add_flags(flag);
         }

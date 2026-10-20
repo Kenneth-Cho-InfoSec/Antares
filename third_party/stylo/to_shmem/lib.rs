@@ -12,8 +12,8 @@
 #![crate_name = "to_shmem"]
 #![crate_type = "rlib"]
 
+use hashbrown::HashSet;
 use std::alloc::Layout;
-use std::collections::HashSet;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::mem::{self, ManuallyDrop};
@@ -64,8 +64,12 @@ fn padded_size(size: usize, align: usize) -> usize {
 
 impl SharedMemoryBuilder {
     /// Creates a new SharedMemoryBuilder using the specified buffer.
-    pub unsafe fn new(buffer: *mut u8, capacity: usize) -> SharedMemoryBuilder {
-        SharedMemoryBuilder {
+    ///
+    /// # Safety
+    ///
+    /// `buffer` must be a pointer with at least `capacity` bytes.
+    pub unsafe fn new(buffer: *mut u8, capacity: usize) -> Self {
+        Self {
             buffer,
             capacity,
             index: 0,
@@ -78,6 +82,12 @@ impl SharedMemoryBuilder {
     #[inline]
     pub fn len(&self) -> usize {
         self.index
+    }
+
+    /// Returns whether the buffer is empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.index == 0
     }
 
     /// Writes a value into the shared memory buffer and returns a pointer to
@@ -253,16 +263,19 @@ impl<T: ToShmem> ToShmem for Box<T> {
     }
 }
 
-/// Converts all the items in `src` into shared memory form, writes them into
-/// the specified buffer, and returns a pointer to the slice.
-unsafe fn to_shmem_slice_ptr<'a, T, I>(
-    src: I,
+/// Converts all the items in `src` into shared memory form, writes them into the specified buffer,
+/// and returns a pointer to the slice.
+///
+/// # Safety
+///
+/// Dest must have enough space for all elements in `src`.
+unsafe fn to_shmem_slice_ptr<'a, T>(
+    src: impl ExactSizeIterator<Item = &'a T>,
     dest: *mut T,
     builder: &mut SharedMemoryBuilder,
 ) -> std::result::Result<*mut [T], String>
 where
-    T: 'a + ToShmem,
-    I: ExactSizeIterator<Item = &'a T>,
+    T: ToShmem + 'a,
 {
     unsafe {
         let dest = slice::from_raw_parts_mut(dest, src.len());
@@ -277,15 +290,18 @@ where
     }
 }
 
-/// Writes all the items in `src` into a slice in the shared memory buffer and
-/// returns a pointer to the slice.
-pub unsafe fn to_shmem_slice<'a, T, I>(
-    src: I,
+/// Writes all the items in `src` into a slice in the shared memory buffer and returns a pointer to
+/// the slice.
+///
+/// # Safety
+///
+/// ExactSizeIterator must not lie about its length. TODO(emilio): Use TrustedLen eventually.
+pub unsafe fn to_shmem_slice<'a, T>(
+    src: impl ExactSizeIterator<Item = &'a T>,
     builder: &mut SharedMemoryBuilder,
 ) -> std::result::Result<*mut [T], String>
 where
-    T: 'a + ToShmem,
-    I: ExactSizeIterator<Item = &'a T>,
+    T: ToShmem + 'a,
 {
     let dest = builder.alloc_array(src.len());
     unsafe { to_shmem_slice_ptr(src, dest, builder) }
@@ -366,10 +382,9 @@ where
 {
     fn to_shmem(&self, _builder: &mut SharedMemoryBuilder) -> Result<Self> {
         if !self.is_empty() {
-            return Err(format!(
-                "ToShmem failed for HashSet: We only support empty sets \
-                 (we don't expect custom properties in UA sheets, they're observable by content)",
-            ));
+            return Err("ToShmem failed for HashSet: We only support empty sets \
+                 (we don't expect custom properties in UA sheets, they're observable by content)"
+                .to_string());
         }
         Ok(ManuallyDrop::new(Self::default()))
     }
@@ -533,7 +548,7 @@ impl<T: ToShmem> ToShmem for thin_vec::ThinVec<T> {
         let shmem_header_ptr = builder.alloc::<u8>(layout);
         let shmem_data_ptr = unsafe { shmem_header_ptr.add(header_size + header_padding) };
 
-        let data_ptr = self.as_ptr() as *const T as *const u8;
+        let data_ptr = self.as_ptr() as *const u8;
         let header_ptr = unsafe { data_ptr.sub(header_size + header_padding) };
 
         unsafe {
@@ -567,11 +582,10 @@ impl ToShmem for smallbitvec::SmallBitVec {
 
                 unsafe {
                     // Copy the value into the buffer.
-                    let src = vs.as_ptr() as *const usize;
+                    let src = vs.as_ptr();
                     ptr::copy(src, dest, len);
 
-                    let dest_slice =
-                        Box::from_raw(slice::from_raw_parts_mut(dest, len) as *mut [usize]);
+                    let dest_slice = Box::from_raw(std::ptr::slice_from_raw_parts_mut(dest, len));
                     InternalStorage::Spilled(dest_slice)
                 }
             },

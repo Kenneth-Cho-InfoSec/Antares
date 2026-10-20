@@ -9,15 +9,15 @@ use crate::parser::{Parse, ParserContext};
 use crate::typed_om::{NumericBaseType, ToTyped, TypedValue};
 use crate::values::computed::transform::DirectionVector;
 use crate::values::computed::{Context, ToComputedValue};
-use crate::values::generics::transform::IsParallelTo;
 use crate::values::generics::Optional;
+use crate::values::generics::transform::IsParallelTo;
 use crate::values::generics::{GreaterThanOrEqualToOne, NonNegative};
+use crate::values::specified::Percentage;
 use crate::values::specified::calc::{
     CalcNode, CalcNumeric, CalcPercentageLeaf, Leaf, PercentageContext,
 };
-use crate::values::specified::Percentage;
 use crate::values::tagged_numeric::{NumericUnion, Unpacked, UnpackedMut};
-use crate::values::{serialize_number, CSSFloat, CSSInteger};
+use crate::values::{CSSFloat, CSSInteger, serialize_number};
 use crate::{One, Zero};
 use cssparser::{Parser, Token};
 use std::fmt::{self, Write};

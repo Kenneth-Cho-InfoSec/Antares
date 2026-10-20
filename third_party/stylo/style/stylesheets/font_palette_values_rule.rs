@@ -19,13 +19,13 @@ use crate::gecko_bindings::{
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{SharedRwLockReadGuard, ToCssWithGuard};
 use crate::stylesheets::font_feature_values_rule::parse_family_name_list;
+use crate::values::DashedIdent;
 use crate::values::computed::font::FamilyName;
 use crate::values::specified::Color as SpecifiedColor;
 use crate::values::specified::NonNegativeInteger;
-use crate::values::DashedIdent;
 use cssparser::{
-    match_ignore_ascii_case, AtRuleParser, CowRcStr, DeclarationParser, Parser, ParserState,
-    QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, SourceLocation,
+    AtRuleParser, CowRcStr, DeclarationParser, Parser, ParserState, QualifiedRuleParser,
+    RuleBodyItemParser, RuleBodyParser, SourceLocation, match_ignore_ascii_case,
 };
 use selectors::parser::SelectorParseErrorKind;
 use std::fmt::{self, Write};
@@ -242,18 +242,18 @@ impl ToCssWithGuard for FontPaletteValuesRule {
 }
 
 /// Parser for declarations in `FontPaletteValuesRule`.
-struct FontPaletteValuesDeclarationParser<'a> {
-    context: &'a ParserContext<'a>,
-    rule: &'a mut FontPaletteValuesRule,
+struct FontPaletteValuesDeclarationParser<'a, 'b> {
+    context: &'b ParserContext<'a>,
+    rule: &'b mut FontPaletteValuesRule,
 }
 
-impl<'a, 'i> AtRuleParser<'i> for FontPaletteValuesDeclarationParser<'a> {
+impl<'a, 'b, 'i> AtRuleParser<'i> for FontPaletteValuesDeclarationParser<'a, 'b> {
     type Prelude = ();
     type AtRule = ();
     type Error = StyleParseErrorKind;
 }
 
-impl<'a, 'i> QualifiedRuleParser<'i> for FontPaletteValuesDeclarationParser<'a> {
+impl<'a, 'b, 'i> QualifiedRuleParser<'i> for FontPaletteValuesDeclarationParser<'a, 'b> {
     type Prelude = ();
     type QualifiedRule = ();
     type Error = StyleParseErrorKind;
@@ -266,7 +266,7 @@ fn parse_override_colors(
     input.parse_comma_separated(|i| FontPaletteOverrideColor::parse(context, i))
 }
 
-impl<'a, 'b, 'i> DeclarationParser<'i> for FontPaletteValuesDeclarationParser<'a> {
+impl<'a, 'b, 'i> DeclarationParser<'i> for FontPaletteValuesDeclarationParser<'a, 'b> {
     type Declaration = ();
     type Error = StyleParseErrorKind;
 
@@ -292,8 +292,8 @@ impl<'a, 'b, 'i> DeclarationParser<'i> for FontPaletteValuesDeclarationParser<'a
     }
 }
 
-impl<'a, 'i> RuleBodyItemParser<'i, (), StyleParseErrorKind>
-    for FontPaletteValuesDeclarationParser<'a>
+impl<'a, 'b, 'i> RuleBodyItemParser<'i, (), StyleParseErrorKind>
+    for FontPaletteValuesDeclarationParser<'a, 'b>
 {
     fn parse_declarations(&self) -> bool {
         true

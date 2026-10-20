@@ -6,14 +6,14 @@
 //!
 //! [media]: https://drafts.csswg.org/css-conditional/#at-ruledef-media
 
+use crate::Atom;
 use crate::derives::*;
 use crate::media_queries::MediaList;
 use crate::selector_map::{PrecomputedHashMap, PrecomputedHashSet};
 use crate::shared_lock::{DeepCloneWithLock, Locked};
 use crate::shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
 use crate::stylesheets::CssRules;
-use crate::values::{computed, DashedIdent};
-use crate::Atom;
+use crate::values::{DashedIdent, computed};
 use cssparser::Parser;
 use cssparser::SourceLocation;
 #[cfg(feature = "gecko")]

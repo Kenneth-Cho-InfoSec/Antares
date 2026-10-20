@@ -4,13 +4,13 @@
 
 //! Code related to the invalidation of media-query-affected rules.
 
+use crate::FxHashSet;
 use crate::context::QuirksMode;
 use crate::derives::*;
 use crate::device::Device;
 use crate::shared_lock::SharedRwLockReadGuard;
 use crate::stylesheets::{CustomMediaMap, DocumentRule, ImportRule, MediaRule};
 use crate::stylesheets::{NestedRuleIterationCondition, StylesheetContents, SupportsRule};
-use rustc_hash::FxHashSet;
 
 /// A key for a given media query result.
 ///

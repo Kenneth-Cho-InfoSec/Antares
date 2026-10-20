@@ -18,14 +18,14 @@ use crate::properties::ComputedValues;
 use crate::string_cache::Atom;
 use crate::values::computed::font::GenericFontFamily;
 use crate::values::computed::{ColorScheme, Length, LinkParameters, NonNegativeLength};
+use crate::values::specified::ViewportVariant;
 use crate::values::specified::color::{ColorSchemeFlags, ForcedColors, SystemColor};
 use crate::values::specified::font::{
-    QueryFontMetricsFlags, FONT_MEDIUM_CAP_PX, FONT_MEDIUM_CH_PX, FONT_MEDIUM_EX_PX,
-    FONT_MEDIUM_IC_PX, FONT_MEDIUM_LINE_HEIGHT_PX, FONT_MEDIUM_PX,
+    FONT_MEDIUM_CAP_PX, FONT_MEDIUM_CH_PX, FONT_MEDIUM_EX_PX, FONT_MEDIUM_IC_PX,
+    FONT_MEDIUM_LINE_HEIGHT_PX, FONT_MEDIUM_PX, QueryFontMetricsFlags,
 };
-use crate::values::specified::ViewportVariant;
 use crate::values::{CustomIdent, KeyframesName};
-use app_units::{Au, AU_PER_PX};
+use app_units::{AU_PER_PX, Au};
 use euclid::default::Size2D;
 use euclid::{Scale, SideOffsets2D};
 use parking_lot::RwLock;
@@ -84,10 +84,10 @@ impl Device {
         element: Option<GeckoElement>,
     ) -> NonNegativeLength {
         let pres_context = self.pres_context();
-        let line_height = font.clone_line_height();
+        let line_height = font.get_line_height();
         let au = Au(unsafe {
             bindings::Gecko_CalcLineHeight(
-                &line_height,
+                line_height,
                 pres_context.map_or(std::ptr::null(), |pc| pc),
                 writing_mode.is_text_vertical(),
                 &**font,
@@ -183,6 +183,13 @@ impl Device {
     #[inline]
     pub fn document(&self) -> &structs::Document {
         unsafe { &*self.extra.document }
+    }
+
+    /// Returns a value that identifies this document, used to vary the random
+    /// base values of `random()` functions between document instances.
+    #[inline]
+    pub fn document_random_seed(&self) -> u64 {
+        self.extra.document as u64
     }
 
     /// Gets the pres context associated with this document.

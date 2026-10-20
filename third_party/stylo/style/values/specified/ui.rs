@@ -7,9 +7,9 @@
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::values::generics::ui as generics;
+use crate::values::specified::Number;
 use crate::values::specified::color::Color;
 use crate::values::specified::image::Image;
-use crate::values::specified::Number;
 use cssparser::Parser;
 use std::fmt::{self, Write};
 use style_traits::{
@@ -156,6 +156,8 @@ pub enum UserSelect {
     Text,
     #[parse(aliases = "-moz-none")]
     None,
+    #[cfg(feature = "servo")]
+    Contain,
     /// Force selection of all children.
     All,
 }
@@ -339,4 +341,144 @@ pub enum UserFocus {
     Normal,
     None,
     Ignore,
+}
+
+/// https://drafts.csswg.org/css-ui/#input-method-editor
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum ImeMode {
+    Auto,
+    Normal,
+    Active,
+    Disabled,
+    Inactive,
+}
+
+/// https://drafts.csswg.org/css-scrollbars-1/#scrollbar-width
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum ScrollbarWidth {
+    Auto,
+    Thin,
+    None,
+}
+
+/// Privileged property to control titlebar dragging area.
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum WindowDragging {
+    Default,
+    Drag,
+    NoDrag,
+}
+
+/// None (Nonstandard internal property)
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum WindowShadow {
+    Auto,
+    None,
+}
+
+/// https://drafts.csswg.org/css-ui/#field-sizing
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FieldSizing {
+    Fixed,
+    Content,
 }

@@ -14,11 +14,11 @@ use crate::sharing::StyleSharingTarget;
 use crate::style_resolver::{PseudoElementResolution, StyleResolverForElement};
 use crate::stylist::RuleInclusion;
 use crate::traversal_flags::TraversalFlags;
+use hashbrown::HashMap;
 use selectors::matching::SelectorCaches;
 #[cfg(feature = "gecko")]
 use selectors::parser::PseudoElement as PseudoElementTrait;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 
 /// A cache from element reference to known-valid computed style.
 pub type UndisplayedStyleCache =
@@ -131,25 +131,25 @@ pub trait DomTraversal<E: TElement>: Sync {
         let mut data = root.mutate_data();
         let mut data = data.as_deref_mut();
 
-        if let Some(ref mut data) = data {
-            if !traversal_flags.for_animation_only() {
-                // Invalidate our style, and that of our siblings and
-                // descendants as needed.
-                let invalidation_result = data.invalidate_style_if_needed(
-                    root,
-                    shared_context,
-                    None,
-                    &mut SelectorCaches::default(),
-                );
+        if let Some(ref mut data) = data
+            && !traversal_flags.for_animation_only()
+        {
+            // Invalidate our style, and that of our siblings and
+            // descendants as needed.
+            let invalidation_result = data.invalidate_style_if_needed(
+                root,
+                shared_context,
+                None,
+                &mut SelectorCaches::default(),
+            );
 
-                if invalidation_result.has_invalidated_siblings() {
-                    let actual_root = root.as_node().parent_element_or_host().expect(
-                        "How in the world can you invalidate \
+            if invalidation_result.has_invalidated_siblings() {
+                let actual_root = root.as_node().parent_element_or_host().expect(
+                    "How in the world can you invalidate \
                          siblings without a parent?",
-                    );
-                    propagate_dirty_bit_up_to(actual_root, root);
-                    return PreTraverseToken(Some(actual_root));
-                }
+                );
+                propagate_dirty_bit_up_to(actual_root, root);
+                return PreTraverseToken(Some(actual_root));
             }
         }
 
@@ -254,19 +254,18 @@ where
     let mut style = None;
     let mut ancestor = element.traversal_parent();
     while let Some(current) = ancestor {
-        if rule_inclusion == RuleInclusion::All {
-            if let Some(data) = current.borrow_data() {
-                if let Some(ancestor_style) = data.styles.get_primary() {
-                    style = Some(ancestor_style.clone());
-                    break;
-                }
-            }
+        if rule_inclusion == RuleInclusion::All
+            && let Some(data) = current.borrow_data()
+            && let Some(ancestor_style) = data.styles.get_primary()
+        {
+            style = Some(ancestor_style.clone());
+            break;
         }
-        if let Some(ref mut cache) = undisplayed_style_cache {
-            if let Some(s) = cache.get(&current.opaque()) {
-                style = Some(s.clone());
-                break;
-            }
+        if let Some(ref mut cache) = undisplayed_style_cache
+            && let Some(s) = cache.get(&current.opaque())
+        {
+            style = Some(s.clone());
+            break;
         }
         ancestors_requiring_style_resolution.push(current);
         ancestor = current.traversal_parent();

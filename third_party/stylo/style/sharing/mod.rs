@@ -261,9 +261,8 @@ impl ValidationData {
         self.parent_style_identity
             .get_or_insert_with(|| {
                 let parent = el.inheritance_parent().unwrap();
-                let values =
-                    OpaqueComputedValues::from(parent.borrow_data().unwrap().styles.primary());
-                values
+
+                OpaqueComputedValues::from(parent.borrow_data().unwrap().styles.primary())
             })
             .clone()
     }
@@ -592,11 +591,11 @@ impl<E: TElement> StyleSharingCache<E> {
     }
 
     /// Create a new style sharing candidate cache.
-
-    // Forced out of line to limit stack frame sizes after extra inlining from
-    // https://github.com/rust-lang/rust/pull/43931
-    //
-    // See https://github.com/servo/servo/pull/18420#issuecomment-328769322
+    ///
+    /// Forced out of line to limit stack frame sizes after extra inlining from
+    /// https://github.com/rust-lang/rust/pull/43931
+    ///
+    /// See https://github.com/servo/servo/pull/18420#issuecomment-328769322
     #[inline(never)]
     pub fn new() -> Self {
         assert_eq!(
@@ -867,8 +866,8 @@ impl<E: TElement> StyleSharingCache<E> {
             return None;
         }
 
-        if !checks::have_shareable_tree_counting_functions(target, candidate) {
-            trace!("Miss: Tree counting functions");
+        if !checks::have_shareable_element_dependent_functions(target, candidate) {
+            trace!("Miss: Element-dependent functions");
             return None;
         }
 
@@ -933,7 +932,7 @@ impl<E: TElement> StyleSharingCache<E> {
             if !checks::have_same_referenced_attrs(&sharing_target, candidate) {
                 return None;
             }
-            if !checks::have_shareable_tree_counting_functions(&sharing_target, candidate) {
+            if !checks::have_shareable_element_dependent_functions(&sharing_target, candidate) {
                 return None;
             }
             // NOTE(emilio): We only need to check name / namespace because we

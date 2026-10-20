@@ -5,15 +5,15 @@
 //! CSS handling for the [`basic-shape`](https://drafts.csswg.org/css-shapes/#typedef-basic-shape)
 //! types that are generic over their `ToCss` implementations.
 
+use crate::Zero;
 use crate::derives::*;
-use crate::values::animated::{lists, Animate, Procedure, ToAnimatedZero};
+use crate::values::animated::{Animate, Procedure, ToAnimatedZero, lists};
 use crate::values::computed::Percentage;
 use crate::values::distance::{ComputeSquaredDistance, SquaredDistance};
 use crate::values::generics::{
-    border::GenericBorderRadius, position::GenericPositionOrAuto, rect::Rect, NonNegative, Optional,
+    NonNegative, Optional, border::GenericBorderRadius, position::GenericPositionOrAuto, rect::Rect,
 };
 use crate::values::specified::svg_path::{PathCommand, SVGPathData};
-use crate::Zero;
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, ToCss};
 
@@ -37,6 +37,7 @@ use style_traits::{CssWriter, ToCss};
     ToTyped,
 )]
 #[repr(u8)]
+#[derive(Default)]
 pub enum ShapeGeometryBox {
     /// Depending on which kind of element this style value applied on, the
     /// default value of the reference-box can be different.  For an HTML
@@ -45,17 +46,12 @@ pub enum ShapeGeometryBox {
     /// default value at parsing time, we keep this value to make a decision on
     /// it.
     #[css(skip)]
+    #[default]
     ElementDependent,
     FillBox,
     StrokeBox,
     ViewBox,
     ShapeBox(ShapeBox),
-}
-
-impl Default for ShapeGeometryBox {
-    fn default() -> Self {
-        Self::ElementDependent
-    }
 }
 
 /// Skip the serialization if the author omits the box or specifies border-box.
@@ -190,7 +186,7 @@ pub use self::GenericShapeOutside as ShapeOutside;
     ToShmem,
 )]
 #[repr(C, u8)]
-pub enum GenericBasicShape<Angle, Position, LengthPercentage, BasicShapeRect> {
+pub enum GenericBasicShape<Angle, AxisPosition, Position, LengthPercentage, BasicShapeRect> {
     /// The <basic-shape-rect>.
     Rect(BasicShapeRect),
     /// Defines a circle with a center and a radius.
@@ -214,7 +210,7 @@ pub enum GenericBasicShape<Angle, Position, LengthPercentage, BasicShapeRect> {
         #[animation(field_bound)]
         #[css(field_bound)]
         #[compute(field_bound)]
-        GenericPathOrShapeFunction<Angle, Position, LengthPercentage>,
+        GenericPathOrShapeFunction<Angle, AxisPosition, Position, LengthPercentage>,
     ),
 }
 
@@ -408,14 +404,14 @@ pub struct PolygonCoord<LengthPercentage>(pub LengthPercentage, pub LengthPercen
     ToShmem,
 )]
 #[repr(C, u8)]
-pub enum GenericPathOrShapeFunction<Angle, Position, LengthPercentage> {
+pub enum GenericPathOrShapeFunction<Angle, AxisPosition, Position, LengthPercentage> {
     /// Defines a path with SVG path syntax.
     Path(Path),
     /// Defines a shape function, which is identical to path() but it uses the CSS syntax.
     Shape(
         #[css(field_bound)]
         #[compute(field_bound)]
-        Shape<Angle, Position, LengthPercentage>,
+        Shape<Angle, AxisPosition, Position, LengthPercentage>,
     ),
 }
 
@@ -644,27 +640,34 @@ fn is_default<T: Default + PartialEq>(fill: &T) -> bool {
     ToShmem,
 )]
 #[repr(C)]
-pub struct Shape<Angle, Position, LengthPercentage> {
+pub struct Shape<Angle, AxisPosition, Position, LengthPercentage> {
     /// The filling rule for this shape.
     pub fill: FillRule,
     /// The shape command data. Note that the starting point will be the first command in this
     /// slice.
     // Note: The first command is always GenericShapeCommand::Move.
     #[compute(field_bound)]
-    pub commands: crate::OwnedSlice<GenericShapeCommand<Angle, Position, LengthPercentage>>,
+    pub commands:
+        crate::OwnedSlice<GenericShapeCommand<Angle, AxisPosition, Position, LengthPercentage>>,
 }
 
-impl<Angle, Position, LengthPercentage> Shape<Angle, Position, LengthPercentage> {
+impl<Angle, AxisPosition, Position, LengthPercentage>
+    Shape<Angle, AxisPosition, Position, LengthPercentage>
+{
     /// Returns the slice of GenericShapeCommand<..>.
     #[inline]
-    pub fn commands(&self) -> &[GenericShapeCommand<Angle, Position, LengthPercentage>] {
+    pub fn commands(
+        &self,
+    ) -> &[GenericShapeCommand<Angle, AxisPosition, Position, LengthPercentage>] {
         &self.commands
     }
 }
 
-impl<Angle, Position, LengthPercentage> Animate for Shape<Angle, Position, LengthPercentage>
+impl<Angle, AxisPosition, Position, LengthPercentage> Animate
+    for Shape<Angle, AxisPosition, Position, LengthPercentage>
 where
     Angle: Animate,
+    AxisPosition: Animate,
     Position: Animate,
     LengthPercentage: Animate,
 {
@@ -681,10 +684,11 @@ where
     }
 }
 
-impl<Angle, Position, LengthPercentage> ComputeSquaredDistance
-    for Shape<Angle, Position, LengthPercentage>
+impl<Angle, AxisPosition, Position, LengthPercentage> ComputeSquaredDistance
+    for Shape<Angle, AxisPosition, Position, LengthPercentage>
 where
     Angle: ComputeSquaredDistance,
+    AxisPosition: ComputeSquaredDistance,
     Position: ComputeSquaredDistance,
     LengthPercentage: ComputeSquaredDistance,
 {
@@ -696,9 +700,11 @@ where
     }
 }
 
-impl<Angle, Position, LengthPercentage> ToCss for Shape<Angle, Position, LengthPercentage>
+impl<Angle, AxisPosition, Position, LengthPercentage> ToCss
+    for Shape<Angle, AxisPosition, Position, LengthPercentage>
 where
     Angle: ToCss + Zero,
+    AxisPosition: ToCss,
     Position: ToCss,
     LengthPercentage: PartialEq + ToCss,
 {
@@ -760,7 +766,7 @@ where
 )]
 #[allow(missing_docs)]
 #[repr(C, u8)]
-pub enum GenericShapeCommand<Angle, Position, LengthPercentage> {
+pub enum GenericShapeCommand<Angle, AxisPosition, Position, LengthPercentage> {
     /// The move command.
     Move {
         point: CommandEndPoint<Position, LengthPercentage>,
@@ -771,13 +777,11 @@ pub enum GenericShapeCommand<Angle, Position, LengthPercentage> {
     },
     /// The hline command.
     HLine {
-        #[compute(field_bound)]
-        x: AxisEndPoint<LengthPercentage>,
+        x: AxisEndPoint<AxisPosition, LengthPercentage>,
     },
     /// The vline command.
     VLine {
-        #[compute(field_bound)]
-        y: AxisEndPoint<LengthPercentage>,
+        y: AxisEndPoint<AxisPosition, LengthPercentage>,
     },
     /// The cubic Bézier curve command.
     CubicCurve {
@@ -813,9 +817,12 @@ pub enum GenericShapeCommand<Angle, Position, LengthPercentage> {
 
 pub use self::GenericShapeCommand as ShapeCommand;
 
-impl<Angle, Position, LengthPercentage> ToCss for ShapeCommand<Angle, Position, LengthPercentage>
+
+impl<Angle, AxisPosition, Position, LengthPercentage> ToCss
+    for ShapeCommand<Angle, AxisPosition, Position, LengthPercentage>
 where
     Angle: ToCss + Zero,
+    AxisPosition: ToCss,
     Position: ToCss,
     LengthPercentage: PartialEq + ToCss,
 {
@@ -987,12 +994,12 @@ impl<Position, LengthPercentage> CommandEndPoint<Position, LengthPercentage> {
     ToShmem,
 )]
 #[repr(u8)]
-pub enum AxisEndPoint<LengthPercentage> {
-    ToPosition(#[compute(field_bound)] AxisPosition<LengthPercentage>),
+pub enum AxisEndPoint<AxisPosition, LengthPercentage> {
+    ToPosition(AxisPosition),
     ByCoordinate(LengthPercentage),
 }
 
-impl<LengthPercentage> AxisEndPoint<LengthPercentage> {
+impl<AxisPosition, LengthPercentage> AxisEndPoint<AxisPosition, LengthPercentage> {
     /// Return true if it is absolute, i.e. it is To.
     #[inline]
     pub fn is_abs(&self) -> bool {
@@ -1000,7 +1007,9 @@ impl<LengthPercentage> AxisEndPoint<LengthPercentage> {
     }
 }
 
-impl<LengthPercentage: ToCss> ToCss for AxisEndPoint<LengthPercentage> {
+impl<AxisPosition: ToCss, LengthPercentage: ToCss> ToCss
+    for AxisEndPoint<AxisPosition, LengthPercentage>
+{
     fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
     where
         W: Write,

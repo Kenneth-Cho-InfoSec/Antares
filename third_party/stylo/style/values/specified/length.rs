@@ -14,24 +14,24 @@ use crate::font_metrics::{FontMetrics, FontMetricsOrientation};
 use crate::gecko_bindings::structs::GeckoFontMetrics;
 use crate::parser::{Parse, ParserContext};
 use crate::typed_om::{NumericType, NumericValue, ToTyped, TypedValue, UnitValue};
+use crate::values::CSSFloat;
 use crate::values::computed::{self, CSSPixelLength, Context, FontSize};
+use crate::values::generics::NonNegative;
 use crate::values::generics::length as generics;
 use crate::values::generics::length::{
     GenericAnchorSizeFunction, GenericLengthOrNumber, GenericLengthPercentageOrNormal,
     GenericMargin, GenericMaxSize, GenericSize,
 };
-use crate::values::generics::NonNegative;
+use crate::values::specified::NonNegativeNumber;
 use crate::values::specified::calc::{
     AllowAnchorPositioningFunctions, CalcLengthPercentage, CalcNode, PercentageContext,
 };
 use crate::values::specified::font::QueryFontMetricsFlags;
 use crate::values::specified::percentage::NoCalcPercentage;
-use crate::values::specified::NonNegativeNumber;
 use crate::values::tagged_numeric::{Extracted, NumericUnion, Unpacked};
-use crate::values::CSSFloat;
 use crate::{Zero, ZeroNoPercent};
 use app_units::AU_PER_PX;
-use cssparser::{match_ignore_ascii_case, Parser, Token};
+use cssparser::{Parser, Token, match_ignore_ascii_case};
 use std::cmp;
 use std::fmt::{self, Write};
 use style_traits::values::specified::AllowedNumericType;
@@ -403,12 +403,12 @@ impl FontBaseSize {
     pub fn resolve(&self, context: &Context) -> computed::FontSize {
         let style = context.style();
         match *self {
-            Self::CurrentStyle => style.get_font().clone_font_size(),
+            Self::CurrentStyle => style.get_font().slow_clone_font_size(),
             Self::InheritedStyle => {
                 // If we're using the size from our inherited style, we still need to apply our
                 // own zoom.
                 let zoom = style.effective_zoom_for_inheritance;
-                style.get_parent_font().clone_font_size().zoom(zoom)
+                style.get_parent_font().slow_clone_font_size().zoom(zoom)
             },
         }
     }
@@ -1022,7 +1022,11 @@ impl NoCalcLength {
         }
         debug_assert_eq!(unit, LengthUnit::ServoCharacterWidth);
         self.servo_character_width_to_computed_value(
-            context.style().get_font().clone_font_size().computed_size(),
+            context
+                .style()
+                .get_font()
+                .slow_clone_font_size()
+                .computed_size(),
         )
     }
 }

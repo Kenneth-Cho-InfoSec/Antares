@@ -174,9 +174,7 @@ impl AbsoluteColor {
     /// Returns true if this color is within its gamut limits.
     fn in_gamut(&self) -> bool {
         macro_rules! in_range {
-            ($c:expr) => {{
-                $c >= MIN_PRECISION && $c <= 1.0
-            }};
+            ($c:expr) => {{ $c >= MIN_PRECISION && $c <= 1.0 }};
         }
 
         match self.color_space {

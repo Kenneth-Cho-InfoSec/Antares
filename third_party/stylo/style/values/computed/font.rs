@@ -4,8 +4,10 @@
 
 //! Computed values for font properties
 
+use crate::Atom;
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
+use crate::properties::CSSWideKeyword;
 use crate::typed_om::{ToTyped, TypedValue};
 use crate::values::animated::ToAnimatedValue;
 use crate::values::computed::{
@@ -15,15 +17,14 @@ use crate::values::computed::{
 use crate::values::generics::font::{
     FeatureTagValue, FontSettings, TaggedFontValue, VariationValue,
 };
-use crate::values::generics::{font as generics, NonNegative};
+use crate::values::generics::{NonNegative, font as generics};
 use crate::values::resolved::{Context as ResolvedContext, ToResolvedValue};
 use crate::values::specified::font::{
     self as specified, KeywordInfo, MAX_FONT_WEIGHT, MIN_FONT_WEIGHT,
 };
 use crate::values::specified::length::{FontBaseSize, LineHeightBase};
-use crate::values::CSSInteger;
-use crate::Atom;
-use cssparser::{match_ignore_ascii_case, serialize_identifier, CssStringWriter, Parser};
+use crate::values::{CSSInteger, StyleParseErrorKind};
+use cssparser::{CssStringWriter, Parser, serialize_identifier};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use num_traits::abs;
 use num_traits::cast::AsPrimitive;
@@ -32,14 +33,17 @@ use style_traits::{CssWriter, ParseError, ToCss};
 use thin_vec::ThinVec;
 
 pub use crate::values::computed::Length as MozScriptMinSize;
-pub use crate::values::specified::font::MozScriptSizeMultiplier;
-pub use crate::values::specified::font::{FontPalette, FontSynthesis, FontSynthesisStyle};
+pub use crate::values::specified::Integer as SpecifiedInteger;
+pub use crate::values::specified::Number as SpecifiedNumber;
+pub use crate::values::specified::font::{
+    FontKerning, FontOpticalSizing, FontPalette, FontSmoothing, FontSynthesis, FontSynthesisStyle,
+    FontVariantCaps, FontVariantEmoji, FontVariantPosition, MathShift, MathStyle, MathVariant,
+    MozScriptSizeMultiplier,
+};
 pub use crate::values::specified::font::{
     FontVariantAlternates, FontVariantEastAsian, FontVariantLigatures, FontVariantNumeric,
     QueryFontMetricsFlags, XLang, XTextScale,
 };
-pub use crate::values::specified::Integer as SpecifiedInteger;
-pub use crate::values::specified::Number as SpecifiedNumber;
 
 /// Generic template for font property type classes that use a fixed-point
 /// internal representation with `FRACTION_BITS` for the fractional part.
@@ -707,10 +711,54 @@ impl GenericFontFamily {
 impl Parse for SingleFontFamily {
     /// Parse a font-family value.
     fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        // CSS-wide keywords must be quoted if used as a font-family name.
+        // The 'default' keyword is also reserved.
+        // (https://drafts.csswg.org/css-values-4/#custom-idents)
+        let is_reserved_kw = |s: &str| -> bool {
+            CSSWideKeyword::from_ident(s).is_ok() || s.eq_ignore_ascii_case("default")
+        };
+
+        // Determine the canonical syntax for a given font-family name: either as a
+        // quoted string or as space-separated identifiers.
+        let canonical_syntax_for = |s: &str| -> FontFamilyNameSyntax {
+            // The name will need quoting if:
+            // - it contains a word that begins with a digit;
+            // - any non-alphanumeric/dash/underscore ASCII codepoints are present;
+            // - it has leading, trailing, or repeated spaces.
+            // (https://github.com/w3c/csswg-drafts/issues/5846)
+            let mut in_word = false;
+            for b in s.as_bytes() {
+                if in_word && *b == b' ' {
+                    in_word = false;
+                    continue;
+                }
+                if !in_word && b.is_ascii_digit() {
+                    return FontFamilyNameSyntax::Quoted;
+                }
+                if b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_' || !b.is_ascii() {
+                    in_word = true;
+                    continue;
+                }
+                return FontFamilyNameSyntax::Quoted;
+            }
+            if !in_word {
+                return FontFamilyNameSyntax::Quoted;
+            }
+            // Quotes also required if it matches one of the CSS-wide keywords...
+            if is_reserved_kw(s) {
+                return FontFamilyNameSyntax::Quoted;
+            }
+            // ...or if it parses as a generic-font-family.
+            if GenericFontFamily::parse(context, &mut Parser::new(&s)).is_ok() {
+                return FontFamilyNameSyntax::Quoted;
+            }
+            FontFamilyNameSyntax::Identifiers
+        };
+
         if let Ok(value) = input.try_parse(|i| i.expect_string_cloned()) {
             return Ok(SingleFontFamily::FamilyName(FamilyName {
                 name: Atom::from(&*value),
-                syntax: FontFamilyNameSyntax::Quoted,
+                syntax: canonical_syntax_for(&value),
             }));
         }
 
@@ -719,46 +767,19 @@ impl Parse for SingleFontFamily {
         }
 
         let first_ident = input.expect_ident_cloned()?;
-        let reserved = match_ignore_ascii_case! { &first_ident,
-            // https://drafts.csswg.org/css-fonts/#propdef-font-family
-            // "Font family names that happen to be the same as a keyword value
-            //  (`inherit`, `serif`, `sans-serif`, `monospace`, `fantasy`, and `cursive`)
-            //  must be quoted to prevent confusion with the keywords with the same names.
-            //  The keywords ‘initial’ and ‘default’ are reserved for future use
-            //  and must also be quoted when used as font names.
-            //  UAs must not consider these keywords as matching the <family-name> type."
-            "inherit" | "initial" | "unset" | "revert" | "default" => true,
-            _ => false,
-        };
-
         let mut value = first_ident.as_ref().to_owned();
-        let mut serialize_quoted = value.contains(' ');
-
-        // These keywords are not allowed by themselves.
-        // The only way this value can be valid with with another keyword.
-        if reserved {
-            let ident = input.expect_ident()?;
-            serialize_quoted = serialize_quoted || ident.contains(' ');
-            value.push(' ');
-            value.push_str(ident);
-        }
         while let Ok(ident) = input.try_parse(|i| i.expect_ident_cloned()) {
-            serialize_quoted = serialize_quoted || ident.contains(' ');
             value.push(' ');
             value.push_str(&ident);
         }
-        let syntax = if serialize_quoted {
-            // For font family names which contains special white spaces, e.g.
-            // `font-family: \ a\ \ b\ \ c\ ;`, it is tricky to serialize them
-            // as identifiers correctly. Just mark them quoted so we don't need
-            // to worry about them in serialization code.
-            FontFamilyNameSyntax::Quoted
-        } else {
-            FontFamilyNameSyntax::Identifiers
-        };
+
+        if is_reserved_kw(&value) {
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+        }
+
         Ok(SingleFontFamily::FamilyName(FamilyName {
-            name: Atom::from(value),
-            syntax,
+            name: Atom::from(&*value),
+            syntax: canonical_syntax_for(&value),
         }))
     }
 }
@@ -854,10 +875,10 @@ impl FontFamilyList {
     /// Return the generic ID if it is a single generic font
     pub fn single_generic(&self) -> Option<GenericFontFamily> {
         let mut iter = self.iter();
-        if let Some(SingleFontFamily::Generic(f)) = iter.next() {
-            if iter.next().is_none() {
-                return Some(*f);
-            }
+        if let Some(SingleFontFamily::Generic(f)) = iter.next()
+            && iter.next().is_none()
+        {
+            return Some(*f);
         }
         None
     }
@@ -887,7 +908,12 @@ impl ToComputedValue for specified::FontSizeAdjust {
                 FontMetricsOrientation::Horizontal
             };
             let metrics = context.query_font_metrics(FontBaseSize::CurrentStyle, orient, flags);
-            let font_size = context.style().get_font().clone_font_size().used_size.0;
+            let font_size = context
+                .style()
+                .get_font()
+                .slow_clone_font_size()
+                .used_size
+                .0;
             (metrics, font_size)
         };
 
@@ -1001,7 +1027,7 @@ pub type FontVariationSettings = FontSettings<VariationValue<Number>>;
 
 // The computed value of font-{feature,variation}-settings discards values
 // with duplicate tags, keeping only the last occurrence of each tag.
-fn dedup_font_settings<T>(settings_list: &mut Vec<T>)
+fn dedup_font_settings<T>(settings_list: &mut ThinVec<T>)
 where
     T: TaggedFontValue,
 {
@@ -1032,9 +1058,9 @@ where
             .0
             .iter()
             .map(|item| item.to_computed_value(context))
-            .collect::<Vec<_>>();
+            .collect::<ThinVec<_>>();
         dedup_font_settings(&mut v);
-        FontSettings(v.into_boxed_slice())
+        FontSettings(v)
     }
 
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
@@ -1134,8 +1160,8 @@ impl ToComputedValue for specified::MathDepth {
 
         let int = match self {
             specified::MathDepth::AutoAdd => {
-                let parent = cx.builder.get_parent_font().clone_math_depth() as i32;
-                let style = cx.builder.get_parent_font().clone_math_style();
+                let parent = *cx.builder.get_parent_font().get_math_depth() as i32;
+                let style = *cx.builder.get_parent_font().get_math_style();
                 if style == MathStyleValue::Compact {
                     parent.saturating_add(1)
                 } else {
@@ -1143,7 +1169,7 @@ impl ToComputedValue for specified::MathDepth {
                 }
             },
             specified::MathDepth::Add(rel) => {
-                let parent = cx.builder.get_parent_font().clone_math_depth();
+                let parent = *cx.builder.get_parent_font().get_math_depth();
                 (parent as i32).saturating_add(rel.to_computed_value(cx))
             },
             specified::MathDepth::Absolute(abs) => abs.to_computed_value(cx),
@@ -1502,7 +1528,11 @@ impl ToResolvedValue for LineHeight {
         #[cfg(feature = "servo")]
         {
             if let LineHeight::Number(num) = &self {
-                let size = context.style.get_font().clone_font_size().computed_size();
+                let size = context
+                    .style
+                    .get_font()
+                    .slow_clone_font_size()
+                    .computed_size();
                 LineHeight::Length(NonNegativeLength::new(size.px() * num.0))
             } else {
                 self

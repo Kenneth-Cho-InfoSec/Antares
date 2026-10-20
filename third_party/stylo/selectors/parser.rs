@@ -6,8 +6,8 @@ use crate::attr::{AttrSelectorOperator, AttrSelectorWithOptionalNamespace};
 use crate::attr::{NamespaceConstraint, ParsedAttrSelectorOperation, ParsedCaseSensitivity};
 use crate::bloom::BLOOM_HASH_MASK;
 use crate::builder::{
-    relative_selector_list_specificity_and_flags, selector_list_specificity_and_flags,
     SelectorBuilder, SelectorFlags, Specificity, SpecificityAndFlags,
+    relative_selector_list_specificity_and_flags, selector_list_specificity_and_flags,
 };
 use crate::context::QuirksMode;
 use crate::sink::Push;
@@ -97,7 +97,7 @@ pub trait NonTSPseudoClass: Sized + ToCss {
 /// Returns a Cow::Borrowed if `s` is already ASCII lowercase, and a
 /// Cow::Owned if `s` had to be converted into ASCII lowercase.
 fn to_ascii_lowercase(s: &str) -> Cow<'_, str> {
-    if let Some(first_uppercase) = s.bytes().position(|byte| byte >= b'A' && byte <= b'Z') {
+    if let Some(first_uppercase) = s.bytes().position(|byte: u8| byte.is_ascii_uppercase()) {
         let mut string = s.to_owned();
         string[first_uppercase..].make_ascii_lowercase();
         string.into()
@@ -323,7 +323,7 @@ pub trait Parser<'i> {
     /// pseudo-elements.
     fn parse_non_ts_pseudo_class(
         &self,
-        _name: CowRcStr<'i>,
+        _name: &str,
     ) -> Result<<Self::Impl as SelectorImpl>::NonTSPseudoClass, ParseError<Self::Error>> {
         Err(ParseError::custom(
             SelectorParseErrorKind::UnsupportedPseudoClassOrElement,
@@ -332,7 +332,7 @@ pub trait Parser<'i> {
 
     fn parse_non_ts_functional_pseudo_class(
         &self,
-        _name: CowRcStr<'i>,
+        _name: &str,
         _parser: &mut CssParser<'i>,
         _after_part: bool,
     ) -> Result<<Self::Impl as SelectorImpl>::NonTSPseudoClass, ParseError<Self::Error>> {
@@ -343,7 +343,7 @@ pub trait Parser<'i> {
 
     fn parse_pseudo_element(
         &self,
-        _name: CowRcStr<'i>,
+        _name: &str,
     ) -> Result<<Self::Impl as SelectorImpl>::PseudoElement, ParseError<Self::Error>> {
         Err(ParseError::custom(
             SelectorParseErrorKind::UnsupportedPseudoClassOrElement,
@@ -352,7 +352,7 @@ pub trait Parser<'i> {
 
     fn parse_functional_pseudo_element(
         &self,
-        _name: CowRcStr<'i>,
+        _name: &str,
         _arguments: &mut CssParser<'i>,
     ) -> Result<<Self::Impl as SelectorImpl>::PseudoElement, ParseError<Self::Error>> {
         Err(ParseError::custom(
@@ -406,6 +406,7 @@ impl<Impl: SelectorImpl> SelectorList<Impl> {
         list
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_iter(mut iter: impl ExactSizeIterator<Item = Selector<Impl>>) -> Self {
         if iter.len() == 1 {
             Self::from_one(iter.next().unwrap())
@@ -430,6 +431,7 @@ impl<Impl: SelectorImpl> SelectorList<Impl> {
     }
 
     #[inline]
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self.0.borrow() {
             ArcUnionBorrow::First(..) => 1,
@@ -738,7 +740,7 @@ fn collect_ancestor_hashes<Impl: SelectorImpl>(
     len: &mut usize,
 ) -> bool {
     loop {
-        while let Some(item) = iter.next() {
+        for item in iter.by_ref() {
             if let Component::Is(list) | Component::Where(list) = item {
                 let slice = list.slice();
                 if slice.len() == 1
@@ -825,7 +827,7 @@ impl MatchesFeaturelessHost {
     /// Whether we may match.
     #[inline]
     pub fn may_match(self) -> bool {
-        return !matches!(self, Self::Never);
+        !matches!(self, Self::Never)
     }
 }
 
@@ -1029,7 +1031,7 @@ impl<Impl: SelectorImpl> Selector<Impl> {
         if iter.next_sequence().is_some() {
             return MatchesFeaturelessHost::Never;
         }
-        return compound_matches;
+        compound_matches
     }
 
     /// Returns an iterator over this selector in matching order (right-to-left).
@@ -1364,6 +1366,7 @@ impl<Impl: SelectorImpl> Selector<Impl> {
 
     /// Returns count of simple selectors and combinators in the Selector.
     #[inline]
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -2018,7 +2021,7 @@ impl CombinatorComposition {
                 break;
             }
         }
-        return result;
+        result
     }
 }
 
@@ -2045,7 +2048,7 @@ impl<Impl: SelectorImpl> RelativeSelector<Impl> {
                     );
                 }
                 // Leave a hint for narrowing down the search space when we're matching.
-                let composition = CombinatorComposition::for_relative_selector(&selector);
+                let composition = CombinatorComposition::for_relative_selector(selector);
                 let match_hint = RelativeSelectorMatchHint::new(
                     selector.combinator_at_parse_order(1),
                     composition.intersects(CombinatorComposition::DESCENDANTS),
@@ -2292,10 +2295,8 @@ impl<Impl: SelectorImpl> Component<Impl> {
                     return false;
                 }
             },
-            Has(ref list) => {
-                if !visitor.visit_relative_selector_list(list) {
-                    return false;
-                }
+            Has(ref list) if !visitor.visit_relative_selector_list(list) => {
+                return false;
             },
             _ => {},
         }
@@ -2314,8 +2315,7 @@ impl<Impl: SelectorImpl> Component<Impl> {
             | Component::Negation(ref selectors) => {
                 // Check the subject compound.
                 for selector in selectors.slice() {
-                    let mut iter = selector.iter();
-                    while let Some(c) = iter.next() {
+                    for c in selector.iter() {
                         if c.has_indexed_selector_in_subject() {
                             return true;
                         }
@@ -2538,12 +2538,12 @@ impl<Impl: SelectorImpl> ToCss for Selector<Impl> {
 }
 
 impl Combinator {
-    fn to_css_internal<W>(&self, dest: &mut W, prefix_space: bool) -> fmt::Result
+    fn to_css_internal<W>(self, dest: &mut W, prefix_space: bool) -> fmt::Result
     where
         W: fmt::Write,
     {
         if matches!(
-            *self,
+            self,
             Combinator::PseudoElement | Combinator::Part | Combinator::SlotAssignment
         ) {
             return Ok(());
@@ -2551,7 +2551,7 @@ impl Combinator {
         if prefix_space {
             dest.write_char(' ')?;
         }
-        match *self {
+        match self {
             Combinator::Child => dest.write_str("> "),
             Combinator::Descendant => Ok(()),
             Combinator::NextSibling => dest.write_str("+ "),
@@ -2562,7 +2562,7 @@ impl Combinator {
         }
     }
 
-    fn to_css_relative<W>(&self, dest: &mut W) -> fmt::Result
+    fn to_css_relative<W>(self, dest: &mut W) -> fmt::Result
     where
         W: fmt::Write,
     {
@@ -2838,7 +2838,7 @@ where
 
         builder.push_combinator(combinator);
     }
-    return Ok(Selector(builder.build(parse_relative)));
+    Ok(Selector(builder.build(parse_relative)))
 }
 
 fn try_parse_combinator(input: &mut CssParser) -> Result<Combinator, ()> {
@@ -2950,6 +2950,7 @@ enum SimpleSelectorParseResult<Impl: SelectorImpl> {
 }
 
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 enum QNamePrefix<Impl: SelectorImpl> {
     ImplicitNoNamespace,                          // `foo` in attr selectors
     ImplicitAnyNamespace,                         // `foo` in type selectors, without a default ns
@@ -2984,7 +2985,7 @@ where
     let explicit_namespace =
         |input: &mut CssParser<'i>, namespace| match input.next_including_whitespace() {
             Ok(&Token::Delim('*')) if !in_attr_selector => Ok(Some((namespace, None))),
-            Ok(&Token::Ident(ref local_name)) => Ok(Some((namespace, Some(local_name.clone())))),
+            Ok(Token::Ident(local_name)) => Ok(Some((namespace, Some(local_name.clone())))),
             Ok(_) => {
                 let e = if in_attr_selector {
                     SelectorParseErrorKind::InvalidQualNameInAttr
@@ -3175,6 +3176,7 @@ where
 }
 
 /// An attribute selector can have 's' or 'i' as flags, or no flags at all.
+#[derive(Copy, Clone)]
 enum AttributeFlags {
     // Matching should be case-sensitive ('s' flag).
     CaseSensitive,
@@ -3342,44 +3344,41 @@ where
             Some(result) => result,
         };
 
-        if empty {
-            if let Some(url) = parser.default_namespace() {
-                // If there was no explicit type selector, but there is a
-                // default namespace, there is an implicit "<defaultns>|*" type
-                // selector. Except for :host() or :not() / :is() / :where(),
-                // where we ignore it.
-                //
-                // https://drafts.csswg.org/css-scoping/#host-element-in-tree:
-                //
-                //     When considered within its own shadow trees, the shadow
-                //     host is featureless. Only the :host, :host(), and
-                //     :host-context() pseudo-classes are allowed to match it.
-                //
-                // https://drafts.csswg.org/selectors-4/#featureless:
-                //
-                //     A featureless element does not match any selector at all,
-                //     except those it is explicitly defined to match. If a
-                //     given selector is allowed to match a featureless element,
-                //     it must do so while ignoring the default namespace.
-                //
-                // https://drafts.csswg.org/selectors-4/#matches
-                //
-                //     Default namespace declarations do not affect the compound
-                //     selector representing the subject of any selector within
-                //     a :is() pseudo-class, unless that compound selector
-                //     contains an explicit universal selector or type selector.
-                //
-                //     (Similar quotes for :where() / :not())
-                //
-                let ignore_default_ns = state
-                    .intersects(SelectorParsingState::SKIP_DEFAULT_NAMESPACE)
-                    || matches!(
-                        result,
-                        SimpleSelectorParseResult::SimpleSelector(Component::Host(..))
-                    );
-                if !ignore_default_ns {
-                    builder.push_simple_selector(Component::DefaultNamespace(url));
-                }
+        if empty && let Some(url) = parser.default_namespace() {
+            // If there was no explicit type selector, but there is a
+            // default namespace, there is an implicit "<defaultns>|*" type
+            // selector. Except for :host() or :not() / :is() / :where(),
+            // where we ignore it.
+            //
+            // https://drafts.csswg.org/css-scoping/#host-element-in-tree:
+            //
+            //     When considered within its own shadow trees, the shadow
+            //     host is featureless. Only the :host, :host(), and
+            //     :host-context() pseudo-classes are allowed to match it.
+            //
+            // https://drafts.csswg.org/selectors-4/#featureless:
+            //
+            //     A featureless element does not match any selector at all,
+            //     except those it is explicitly defined to match. If a
+            //     given selector is allowed to match a featureless element,
+            //     it must do so while ignoring the default namespace.
+            //
+            // https://drafts.csswg.org/selectors-4/#matches
+            //
+            //     Default namespace declarations do not affect the compound
+            //     selector representing the subject of any selector within
+            //     a :is() pseudo-class, unless that compound selector
+            //     contains an explicit universal selector or type selector.
+            //
+            //     (Similar quotes for :where() / :not())
+            //
+            let ignore_default_ns = state.intersects(SelectorParsingState::SKIP_DEFAULT_NAMESPACE)
+                || matches!(
+                    result,
+                    SimpleSelectorParseResult::SimpleSelector(Component::Host(..))
+                );
+            if !ignore_default_ns {
+                builder.push_simple_selector(Component::DefaultNamespace(url));
             }
         }
 
@@ -3485,14 +3484,14 @@ where
 fn parse_functional_pseudo_class<'i, P, Impl>(
     parser: &P,
     input: &mut CssParser<'i>,
-    name: CowRcStr<'i>,
+    name: &str,
     state: SelectorParsingState,
 ) -> Result<Component<Impl>, ParseError<P::Error>>
 where
     P: Parser<'i, Impl = Impl>,
     Impl: SelectorImpl,
 {
-    match_ignore_ascii_case! { &name,
+    match_ignore_ascii_case! { name,
         "nth-child" => return parse_nth_pseudo_class(parser, input, state, NthType::Child),
         "nth-of-type" => return parse_nth_pseudo_class(parser, input, state, NthType::OfType),
         "nth-last-child" => return parse_nth_pseudo_class(parser, input, state, NthType::LastChild),
@@ -3512,7 +3511,7 @@ where
         _ => {}
     }
 
-    if parser.parse_is_and_where() && parser.is_is_alias(&name) {
+    if parser.parse_is_and_where() && parser.is_is_alias(name) {
         return parse_is_where(parser, input, state, Component::Is);
     }
 
@@ -3597,7 +3596,7 @@ where
     Impl: SelectorImpl,
 {
     let start = input.state();
-    let token = match input.next_including_whitespace().map(|t| t.clone()) {
+    let token = match input.next_including_whitespace() {
         Ok(t) => t,
         Err(..) => {
             input.reset(&start);
@@ -3613,11 +3612,13 @@ where
             let id = Component::ID(id.as_ref().into());
             SimpleSelectorParseResult::SimpleSelector(id)
         },
-        Token::Delim(delim) if delim == '.' || (delim == '&' && parser.parse_parent_selector()) => {
+        Token::Delim(delim)
+            if *delim == '.' || (*delim == '&' && parser.parse_parent_selector()) =>
+        {
             if state.intersects(SelectorParsingState::AFTER_PSEUDO) {
                 return Err(ParseError::custom(SelectorParseErrorKind::InvalidState));
             }
-            SimpleSelectorParseResult::SimpleSelector(if delim == '&' {
+            SimpleSelectorParseResult::SimpleSelector(if *delim == '&' {
                 Component::ParentSelector
             } else {
                 let class = match *input.next_including_whitespace()? {
@@ -3638,8 +3639,8 @@ where
             SimpleSelectorParseResult::SimpleSelector(attr)
         },
         Token::Colon => {
-            let (is_single_colon, next_token) = match input.next_including_whitespace()?.clone() {
-                Token::Colon => (false, input.next_including_whitespace()?.clone()),
+            let (is_single_colon, next_token) = match input.next_including_whitespace()? {
+                Token::Colon => (false, input.next_including_whitespace()?),
                 t => (true, t),
             };
             let (name, is_functional) = match next_token {
@@ -3650,7 +3651,7 @@ where
                     return Err(ParseError::custom(e));
                 },
             };
-            let is_pseudo_element = !is_single_colon || is_css2_pseudo_element(&name);
+            let is_pseudo_element = !is_single_colon || is_css2_pseudo_element(name);
             if is_pseudo_element {
                 // Pseudos after pseudo elements are not allowed in some cases:
                 // - Some states will disallow pseudos, such as the interiors of
@@ -3687,11 +3688,12 @@ where
                         })?;
                         return Ok(Some(SimpleSelectorParseResult::SlottedPseudo(selector)));
                     }
+                    let name = name.clone();
                     input.parse_nested_block(|input| {
-                        P::parse_functional_pseudo_element(parser, name, input)
+                        P::parse_functional_pseudo_element(parser, name.as_ref(), input)
                     })?
                 } else {
-                    P::parse_pseudo_element(parser, name)?
+                    P::parse_pseudo_element(parser, name.as_ref())?
                 };
 
                 if state.intersects(SelectorParsingState::AFTER_BEFORE_OR_AFTER_PSEUDO)
@@ -3708,8 +3710,9 @@ where
                 SimpleSelectorParseResult::PseudoElement(pseudo_element)
             } else {
                 let pseudo_class = if is_functional {
+                    let name = name.clone();
                     input.parse_nested_block(|input| {
-                        parse_functional_pseudo_class(parser, input, name, state)
+                        parse_functional_pseudo_class(parser, input, name.as_ref(), state)
                     })?
                 } else {
                     parse_simple_pseudo_class(parser, name, state)?
@@ -3726,7 +3729,7 @@ where
 
 fn parse_simple_pseudo_class<'i, P, Impl>(
     parser: &P,
-    name: CowRcStr<'i>,
+    name: &str,
     state: SelectorParsingState,
 ) -> Result<Component<Impl>, ParseError<P::Error>>
 where
@@ -3784,7 +3787,7 @@ pub mod tests {
     use super::*;
     use crate::builder::SelectorFlags;
     use crate::parser;
-    use cssparser::{serialize_identifier, Parser as CssParser, ToCss};
+    use cssparser::{Parser as CssParser, ToCss, serialize_identifier};
     use std::collections::HashMap;
     use std::fmt;
 
@@ -3989,10 +3992,7 @@ pub mod tests {
             true
         }
 
-        fn parse_non_ts_pseudo_class(
-            &self,
-            name: CowRcStr<'i>,
-        ) -> Result<PseudoClass, SelectorParseError> {
+        fn parse_non_ts_pseudo_class(&self, name: &str) -> Result<PseudoClass, SelectorParseError> {
             match_ignore_ascii_case! { &name,
                 "hover" => return Ok(PseudoClass::Hover),
                 "active" => return Ok(PseudoClass::Active),
@@ -4005,7 +4005,7 @@ pub mod tests {
 
         fn parse_non_ts_functional_pseudo_class(
             &self,
-            name: CowRcStr<'i>,
+            name: &str,
             parser: &mut CssParser<'i>,
             after_part: bool,
         ) -> Result<PseudoClass, SelectorParseError> {
@@ -4021,10 +4021,7 @@ pub mod tests {
             ))
         }
 
-        fn parse_pseudo_element(
-            &self,
-            name: CowRcStr<'i>,
-        ) -> Result<PseudoElement, SelectorParseError> {
+        fn parse_pseudo_element(&self, name: &str) -> Result<PseudoElement, SelectorParseError> {
             match_ignore_ascii_case! { &name,
                 "before" => return Ok(PseudoElement::Before),
                 "after" => return Ok(PseudoElement::After),
@@ -4039,7 +4036,7 @@ pub mod tests {
 
         fn parse_functional_pseudo_element(
             &self,
-            name: CowRcStr<'i>,
+            name: &str,
             parser: &mut CssParser<'i>,
         ) -> Result<PseudoElement, SelectorParseError> {
             match_ignore_ascii_case! { &name,

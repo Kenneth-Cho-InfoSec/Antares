@@ -39,10 +39,10 @@ use crate::gecko_bindings::sugar::refptr::RefCounted;
 #[cfg(feature = "gecko")]
 use crate::gecko_bindings::{bindings, structs};
 use crate::parser::{NestingContext, ParserContext};
-use crate::properties::{parse_property_declaration_list, PropertyDeclarationBlock};
+use crate::properties::{PropertyDeclarationBlock, parse_property_declaration_list};
 use crate::shared_lock::{DeepCloneWithLock, Locked};
 use crate::shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
-use cssparser::{parse_one_rule, Parser};
+use cssparser::{Parser, parse_one_rule};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use servo_arc::Arc;
@@ -147,7 +147,9 @@ impl From<::url::Url> for UrlExtraData {
 #[cfg(not(feature = "gecko"))]
 impl ToShmem for UrlExtraData {
     fn to_shmem(&self, _builder: &mut SharedMemoryBuilder) -> to_shmem::Result<Self> {
-        unimplemented!("If servo wants to share stylesheets across processes, ToShmem for Url must be implemented");
+        unimplemented!(
+            "If servo wants to share stylesheets across processes, ToShmem for Url must be implemented"
+        );
     }
 }
 
@@ -643,6 +645,7 @@ impl CssRuleTypes {
         CssRuleType::CounterStyle.bit()
             | CssRuleType::FontFace.bit()
             | CssRuleType::FontFeatureValues.bit()
+            | CssRuleType::FontPaletteValues.bit()
             | CssRuleType::Page.bit(),
     );
 
@@ -789,7 +792,8 @@ impl CssRule {
         let error = parser.dom_error.take().unwrap_or(RulesMutateError::Syntax);
         // If new rule is a syntax error, and nested is set, perform the following substeps:
         if matches!(error, RulesMutateError::Syntax) && parser.can_parse_declarations() {
-            let declarations = parse_property_declaration_list(&parser.context, &mut input, &[]);
+            let declarations =
+                parse_property_declaration_list(&mut parser.context, &mut input, &[]);
             if !declarations.is_empty() {
                 return Ok(CssRule::NestedDeclarations(Arc::new(
                     parser.shared_lock.wrap(NestedDeclarationsRule {

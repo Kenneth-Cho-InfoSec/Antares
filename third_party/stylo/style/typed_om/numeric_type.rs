@@ -5,9 +5,9 @@
 //! Typed OM Numeric Type.
 
 use crate::derives::*;
+use crate::values::generics::Optional;
 use crate::values::generics::calc::CalcType;
 use crate::values::generics::grid::FlexUnit;
-use crate::values::generics::Optional;
 use crate::values::specified::angle::AngleUnit;
 use crate::values::specified::frequency::FrequencyUnit;
 use crate::values::specified::length::LengthUnit;

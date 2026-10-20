@@ -78,10 +78,10 @@ impl CssRules {
             let rule = &self.0[index];
 
             // Step 4
-            if let CssRule::Namespace(..) = *rule {
-                if !self.only_ns_or_import() {
-                    return Err(RulesMutateError::InvalidState);
-                }
+            if let CssRule::Namespace(..) = *rule
+                && !self.only_ns_or_import()
+            {
+                return Err(RulesMutateError::InvalidState);
             }
         }
 

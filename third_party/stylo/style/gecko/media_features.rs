@@ -651,9 +651,7 @@ macro_rules! lnf_int_feature {
             FeatureFlags::CHROME_AND_UA_ONLY,
         )
     }};
-    ($feature_name:expr, $int_id:ident) => {{
-        lnf_int_feature!($feature_name, $int_id, get_lnf_int_as_bool)
-    }};
+    ($feature_name:expr, $int_id:ident) => {{ lnf_int_feature!($feature_name, $int_id, get_lnf_int_as_bool) }};
 }
 
 /// Adding new media features requires (1) adding the new feature to this

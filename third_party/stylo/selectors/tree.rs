@@ -24,6 +24,8 @@ unsafe impl Sync for OpaqueElement {}
 impl OpaqueElement {
     /// Creates a new OpaqueElement from an arbitrarily-typed pointer.
     pub fn new<T>(ptr: &T) -> Self {
+        // TODO: with rust 1.89, this can just be
+        // `OpaqueElement(NonNull::from_ref(ptr).cast())`
         unsafe {
             OpaqueElement(NonNull::new_unchecked(
                 ptr as *const T as *const () as *mut (),
@@ -32,18 +34,18 @@ impl OpaqueElement {
     }
 
     /// Creates a new OpaqueElement from a type-erased non-null pointer
-    pub fn from_non_null_ptr(ptr: NonNull<()>) -> Self {
+    pub fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr)
     }
 
-    /// Returns a const ptr to the contained reference. Unsafe especially
-    /// since Element can be recovered and potentially-mutated.
-    pub unsafe fn as_const_ptr<T>(&self) -> *const T {
-        self.0.as_ptr() as *const T
+    /// Returns the reference as an untyped pointer.
+    #[inline]
+    pub fn to_ptr(&self) -> NonNull<()> {
+        self.0
     }
 }
 
-pub trait Element: Sized + Clone + Debug {
+pub trait Element: Sized + Copy + Clone + Debug {
     type Impl: SelectorImpl;
 
     /// Converts self into an opaque representation.
@@ -181,4 +183,18 @@ pub trait Element: Sized + Clone + Debug {
     /// Add hashes unique to this element to the given filter, returning true
     /// if any got added.
     fn add_element_unique_hashes(&self, filter: &mut BloomFilter) -> bool;
+
+    /// The filter summarizing the names present in this element's subtree,
+    /// including the element itself. See the `subtree_filter` module.
+    ///
+    /// The default implementation has every bit set, which never rejects.
+    fn subtree_filter(&self) -> u64 {
+        u64::MAX
+    }
+
+    /// Whether this element's subtree may contain all of the required hashes.
+    #[inline]
+    fn subtree_may_have_hashes(&self, hashes: u64) -> bool {
+        (self.subtree_filter() & hashes) == hashes
+    }
 }

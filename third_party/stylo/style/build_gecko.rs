@@ -11,7 +11,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command};
+use std::process::{Command, exit};
 use std::slice;
 use std::sync::LazyLock;
 use std::sync::Mutex;

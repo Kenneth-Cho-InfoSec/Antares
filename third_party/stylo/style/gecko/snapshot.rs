@@ -5,6 +5,8 @@
 //! A gecko snapshot, that stores the element attributes and state before they
 //! change in order to properly calculate restyle hints.
 
+use crate::LocalName;
+use crate::WeakAtom;
 use crate::dom::TElement;
 use crate::gecko::snapshot_helpers;
 use crate::gecko::wrapper::GeckoElement;
@@ -16,8 +18,6 @@ use crate::invalidation::element::element_wrapper::ElementSnapshot;
 use crate::selector_parser::AttrValue;
 use crate::string_cache::{Atom, Namespace};
 use crate::values::{AtomIdent, AtomString};
-use crate::LocalName;
-use crate::WeakAtom;
 use dom::ElementState;
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 

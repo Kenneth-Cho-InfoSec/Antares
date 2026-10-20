@@ -6,16 +6,16 @@
 //!
 //! [counter-style]: https://drafts.csswg.org/css-counter-styles/
 
+use crate::Atom;
 use crate::derives::*;
 use crate::error_reporting::ContextualParseError;
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{SharedRwLockReadGuard, ToCssWithGuard};
 use crate::values::specified::Integer;
 use crate::values::{AtomString, CustomIdent};
-use crate::Atom;
 use cssparser::{
-    ascii_case_insensitive_phf_map, match_ignore_ascii_case, CowRcStr, Parser, RuleBodyParser,
-    SourceLocation, Token,
+    CowRcStr, Parser, RuleBodyParser, SourceLocation, Token, ascii_case_insensitive_phf_map,
+    match_ignore_ascii_case,
 };
 use std::fmt::{self, Write};
 use std::mem;

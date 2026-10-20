@@ -7,13 +7,13 @@
 
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
+use crate::values::CustomIdent;
 use crate::values::generics::grid::{
     Flex, FlexUnit, GridTemplateComponent, ImplicitGridTracks, RepeatCount,
 };
 use crate::values::generics::grid::{LineNameList, LineNameListValue, NameRepeat, TrackBreadth};
 use crate::values::generics::grid::{TrackList, TrackListValue, TrackRepeat, TrackSize};
 use crate::values::specified::{Integer, LengthPercentage};
-use crate::values::CustomIdent;
 use cssparser::{Parser, Token};
 use style_traits::{ParseError, StyleParseErrorKind};
 
@@ -210,8 +210,7 @@ impl Parse for TrackList<LengthPercentage, Integer> {
         // assume that everything is <fixed-size>. This flag is useful when we encounter <auto-repeat>
         let mut at_least_one_not_fixed = false;
         loop {
-            current_names
-                .extend_from_slice(&mut input.try_parse(parse_line_names).unwrap_or_default());
+            current_names.extend_from_slice(&input.try_parse(parse_line_names).unwrap_or_default());
             if let Ok(track_size) = input.try_parse(|i| TrackSize::parse(context, i)) {
                 if !track_size.is_fixed() {
                     at_least_one_not_fixed = true;
@@ -269,12 +268,10 @@ impl Parse for TrackList<LengthPercentage, Integer> {
 
 #[inline]
 fn allow_grid_template_subgrids() -> bool {
-    crate::pref!("layout.css.grid-template-subgrid-value.enabled", gecko = true)
-}
-
-#[inline]
-fn allow_grid_template_masonry() -> bool {
-    crate::pref!("layout.css.grid-template-masonry-value.enabled")
+    crate::pref!(
+        "layout.css.grid-template-subgrid-value.enabled",
+        gecko = true
+    )
 }
 
 impl Parse for GridTemplateComponent<LengthPercentage, Integer> {
@@ -293,17 +290,10 @@ impl GridTemplateComponent<LengthPercentage, Integer> {
         context: &ParserContext,
         input: &mut Parser,
     ) -> Result<Self, ParseError> {
-        if allow_grid_template_subgrids() {
-            if let Ok(t) = input.try_parse(|i| LineNameList::parse(context, i)) {
-                return Ok(GridTemplateComponent::Subgrid(Box::new(t)));
-            }
-        }
-        if allow_grid_template_masonry()
-            && input
-                .try_parse(|i| i.expect_ident_matching("masonry"))
-                .is_ok()
+        if allow_grid_template_subgrids()
+            && let Ok(t) = input.try_parse(|i| LineNameList::parse(context, i))
         {
-            return Ok(GridTemplateComponent::Masonry);
+            return Ok(GridTemplateComponent::Subgrid(Box::new(t)));
         }
         let track_list = TrackList::parse(context, input)?;
         Ok(GridTemplateComponent::TrackList(Box::new(track_list)))

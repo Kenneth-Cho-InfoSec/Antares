@@ -4,12 +4,12 @@
 
 //! Computed percentages.
 
+use crate::Zero;
 use crate::derives::*;
 use crate::typed_om::{ToTyped, TypedValue};
 use crate::values::generics::{ClampToNonNegative, NonNegative};
 use crate::values::specified::percentage::ToPercentage;
-use crate::values::{reify_percentage, serialize_normalized_percentage, CSSFloat};
-use crate::Zero;
+use crate::values::{CSSFloat, reify_percentage, serialize_normalized_percentage};
 use std::fmt;
 use style_traits::{CssWriter, ToCss};
 use thin_vec::ThinVec;
@@ -101,18 +101,6 @@ impl std::ops::Rem for Percentage {
 
     fn rem(self, other: Self) -> Self {
         Percentage(self.0 % other.0)
-    }
-}
-
-impl From<f32> for Percentage {
-    fn from(value: f32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<Percentage> for f32 {
-    fn from(percentage: Percentage) -> f32 {
-        percentage.0
     }
 }
 

@@ -4,11 +4,15 @@
 
 //! Computed types for SVG properties.
 
+use crate::Zero;
 use crate::values::computed::color::Color;
 use crate::values::computed::url::ComputedUrl;
 use crate::values::computed::{LengthPercentage, NonNegativeLengthPercentage, Opacity};
 use crate::values::generics::svg as generic;
-use crate::Zero;
+pub use crate::values::specified::svg::{
+    ColorInterpolation, MaskComposite, MaskMode, MaskType, ShapeRendering, StrokeLinecap,
+    StrokeLinejoin, TextAnchor,
+};
 
 pub use crate::values::specified::{DProperty, MozContextProperties, SVGPaintOrder, VectorEffect};
 

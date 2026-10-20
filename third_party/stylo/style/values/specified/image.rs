@@ -7,18 +7,19 @@
 //!
 //! [image]: https://drafts.csswg.org/css-images/#image-values
 
+use crate::Atom;
 use crate::color::mix::ColorInterpolationMethod;
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::stylesheets::CorsMode;
 use crate::typed_om::{ImageValue, KeywordValue, ToTyped, TypedValue};
+use crate::values::generics::NonNegative;
 use crate::values::generics::color::{ColorMixFlags, GenericLightDark};
 use crate::values::generics::image::{
     self as generic, Circle, Ellipse, GradientCompatMode, ShapeExtent,
 };
 use crate::values::generics::image::{GradientFlags, PaintWorklet};
 use crate::values::generics::position::Position as GenericPosition;
-use crate::values::generics::NonNegative;
 use crate::values::specified::position::{HorizontalPositionKeyword, VerticalPositionKeyword};
 use crate::values::specified::position::{Position, PositionComponent, Side};
 use crate::values::specified::url::SpecifiedUrl;
@@ -27,8 +28,7 @@ use crate::values::specified::{
     NonNegativeLengthPercentage, Resolution,
 };
 use crate::values::specified::{Number, NumberOrPercentage, Percentage};
-use crate::Atom;
-use cssparser::{match_ignore_ascii_case, Delimiter, Parser, Token};
+use cssparser::{Delimiter, Parser, Token, match_ignore_ascii_case};
 use selectors::parser::SelectorParseErrorKind;
 use std::cmp::Ordering;
 use std::fmt::{self, Write};
@@ -224,12 +224,11 @@ impl Image {
             return Ok(generic::Image::Url(url));
         }
 
-        if !flags.contains(ParseImageFlags::FORBID_IMAGE_SET) {
-            if let Ok(is) =
+        if !flags.contains(ParseImageFlags::FORBID_IMAGE_SET)
+            && let Ok(is) =
                 input.try_parse(|input| ImageSet::parse(context, input, cors_mode, flags))
-            {
-                return Ok(generic::Image::ImageSet(Box::new(is)));
-            }
+        {
+            return Ok(generic::Image::ImageSet(Box::new(is)));
         }
 
         if flags.contains(ParseImageFlags::FORBID_NON_URL) {
@@ -787,12 +786,10 @@ impl Gradient {
                         ..
                     },
                 ) = (a, b)
-                {
-                    if let (&LengthPercentage::Percentage(a), &LengthPercentage::Percentage(b)) =
+                    && let (&LengthPercentage::Percentage(a), &LengthPercentage::Percentage(b)) =
                         (a_position, b_position)
-                    {
-                        return a.get().partial_cmp(&b.get()).unwrap_or(Ordering::Equal);
-                    }
+                {
+                    return a.get().partial_cmp(&b.get()).unwrap_or(Ordering::Equal);
                 }
                 if reverse_stops {
                     Ordering::Greater
@@ -1125,10 +1122,10 @@ impl EndingShape {
             {
                 return Ok(generic::EndingShape::Circle(Circle::Extent(extent)));
             }
-            if compat_mode == GradientCompatMode::Modern {
-                if let Ok(length) = input.try_parse(|i| NonNegativeLength::parse(context, i)) {
-                    return Ok(generic::EndingShape::Circle(Circle::Radius(length)));
-                }
+            if compat_mode == GradientCompatMode::Modern
+                && let Ok(length) = input.try_parse(|i| NonNegativeLength::parse(context, i))
+            {
+                return Ok(generic::EndingShape::Circle(Circle::Radius(length)));
             }
             return Ok(generic::EndingShape::Circle(Circle::Extent(
                 ShapeExtent::FarthestCorner,
@@ -1236,12 +1233,10 @@ impl<T> generic::GradientItem<Color, T> {
 
         loop {
             input.parse_until_before(Delimiter::Comma, |input| {
-                if seen_stop {
-                    if let Ok(hint) = input.try_parse(|i| parse_position(context, i)) {
-                        seen_stop = false;
-                        items.push(generic::GradientItem::InterpolationHint(hint));
-                        return Ok(());
-                    }
+                if seen_stop && let Ok(hint) = input.try_parse(|i| parse_position(context, i)) {
+                    seen_stop = false;
+                    items.push(generic::GradientItem::InterpolationHint(hint));
+                    return Ok(());
                 }
 
                 let stop = generic::ColorStop::parse(context, input, parse_position)?;

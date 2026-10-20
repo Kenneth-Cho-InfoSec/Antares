@@ -6,13 +6,13 @@
 //!
 //! https://drafts.csswg.org/mediaqueries/#typedef-media-query
 
+use crate::Atom;
 use crate::derives::*;
 use crate::parser::ParserContext;
 use crate::queries::{FeatureFlags, FeatureType, QueryCondition};
 use crate::str::string_as_ascii_lowercase;
 use crate::values::CustomIdent;
-use crate::Atom;
-use cssparser::{match_ignore_ascii_case, Parser};
+use cssparser::{Parser, match_ignore_ascii_case};
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, ParseError, ToCss};
 

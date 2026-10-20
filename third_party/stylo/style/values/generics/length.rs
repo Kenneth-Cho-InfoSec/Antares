@@ -4,15 +4,15 @@
 
 //! Generic types for CSS values related to length.
 
+use crate::Zero;
 use crate::derives::*;
 use crate::logical_geometry::PhysicalSide;
 use crate::parser::{Parse, ParserContext};
+use crate::values::DashedIdent;
 use crate::values::computed::position::TryTacticAdjustment;
+use crate::values::generics::Optional;
 use crate::values::generics::box_::PositionProperty;
 use crate::values::generics::position::TreeScoped;
-use crate::values::generics::Optional;
-use crate::values::DashedIdent;
-use crate::Zero;
 use cssparser::Parser;
 use std::fmt::Write;
 use style_derive::Animate;
@@ -188,7 +188,7 @@ where
             "max-content",
             "min-content",
         ]);
-        if crate::pref!("layout.css.webkit-fill-available.enabled", gecko = true) {
+        if crate::pref!("layout.css.anchor-positioning.enabled", gecko = true) {
             f(&["anchor-size"]);
         }
         if cfg!(feature = "gecko") {

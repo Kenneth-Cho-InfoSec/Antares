@@ -4,18 +4,19 @@
 
 //! Specified values for font properties
 
+use crate::Atom;
 use crate::context::QuirksMode;
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::typed_om::NumericBaseType;
-use crate::values::computed::font::{FamilyName, FontFamilyList, SingleFontFamily};
 use crate::values::computed::Percentage as ComputedPercentage;
-use crate::values::computed::{font as computed, Length, NonNegativeLength};
+use crate::values::computed::font::{FamilyName, FontFamilyList, SingleFontFamily};
 use crate::values::computed::{CSSPixelLength, Context, ToComputedValue};
+use crate::values::computed::{Length, NonNegativeLength, font as computed};
+use crate::values::generics::NonNegative;
 use crate::values::generics::font::{
     self as generics, FeatureTagValue, FontSettings, FontTag, GenericLineHeight, VariationValue,
 };
-use crate::values::generics::NonNegative;
 use crate::values::specified::calc::{Leaf, PercentageContext};
 use crate::values::specified::length::{FontBaseSize, LengthUnit, LineHeightBase, PX_PER_PT};
 use crate::values::specified::number::parse_number_with_clamping_mode;
@@ -23,9 +24,8 @@ use crate::values::specified::{AllowQuirks, Angle, Integer, LengthPercentage};
 use crate::values::specified::{
     NoCalcLength, NonNegativeLengthPercentage, NonNegativeNumber, NonNegativePercentage, Number,
 };
-use crate::values::{serialize_atom_identifier, CustomIdent, SelectorParseErrorKind};
-use crate::Atom;
-use cssparser::{match_ignore_ascii_case, Parser, Token};
+use crate::values::{CustomIdent, SelectorParseErrorKind, serialize_atom_identifier};
+use cssparser::{Parser, Token, match_ignore_ascii_case};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps, MallocUnconditionalSizeOf};
 use std::fmt::{self, Write};
@@ -113,13 +113,16 @@ pub enum SystemFont {
 )]
 #[allow(missing_docs)]
 #[cfg(feature = "servo")]
-/// void enum for system font, can never exist
-pub enum SystemFont {}
+/// Dummy struct for system font, can never be constructed.
+pub struct SystemFont {
+    #[css(skip)]
+    _forbid_construction: (),
+}
 
 #[allow(missing_docs)]
 #[cfg(feature = "servo")]
 impl SystemFont {
-    pub fn parse(_: &mut Parser) -> Result<Self, ()> {
+    pub fn parse(_context: &ParserContext, _input: &mut Parser) -> Result<Self, ()> {
         Err(())
     }
 }
@@ -179,15 +182,11 @@ impl ToComputedValue for FontWeight {
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
         match *self {
             FontWeight::Absolute(ref abs) => abs.to_computed_value(context),
-            FontWeight::Bolder => context
-                .builder
-                .get_parent_font()
-                .clone_font_weight()
-                .bolder(),
+            FontWeight::Bolder => context.builder.get_parent_font().get_font_weight().bolder(),
             FontWeight::Lighter => context
                 .builder
                 .get_parent_font()
-                .clone_font_weight()
+                .get_font_weight()
                 .lighter(),
             FontWeight::System(_) => self.compute_system(context),
         }
@@ -807,11 +806,9 @@ impl FontSizeKeyword {
             .unwrap_or(computed::GenericFontFamily::None);
 
         #[cfg(feature = "gecko")]
-        let base_size = unsafe {
-            Atom::with(font.mLanguage.mRawPtr, |language| {
-                cx.device().base_size_for_generic(language, generic)
-            })
-        };
+        let base_size = cx
+            .device()
+            .base_size_for_generic(&font.mLanguage.0, generic);
         #[cfg(feature = "servo")]
         let base_size = cx.device().base_size_for_generic(generic);
 
@@ -912,7 +909,7 @@ impl FontSize {
             context
                 .style()
                 .get_parent_font()
-                .clone_font_size()
+                .slow_clone_font_size()
                 .keyword_info
                 .compose(factor)
         };
@@ -1003,6 +1000,11 @@ impl FontSize {
     /// of different styles and font instances when "random" floating-point sizes are used.
     #[inline]
     pub fn quantize_font_size(size: CSSPixelLength) -> CSSPixelLength {
+        // If the size is < 1024px, just snap to an integer number of appUnits.
+        if size.px() < 1024.0 {
+            return CSSPixelLength::from(app_units::Au::from_f32_px(size.px()));
+        }
+
         // Based on the Veltkamp-Dekker float-splitting algorithm, see e.g.
         // https://indico.cern.ch/event/313684/contributions/1687773/attachments/600513/826490/FPArith-Part2.pdf
         // A 32-bit float has 24 bits of precision (23 stored, plus an implicit 1 bit
@@ -1019,7 +1021,8 @@ impl FontSize {
         }
         let d = size.px() * SCALE_PLUS_ONE;
         let t = d - size.px();
-        CSSPixelLength::new(d - t)
+        // Snap the result to integer appUnits.
+        CSSPixelLength::from(app_units::Au::from_f32_px(d - t))
     }
 }
 
@@ -1607,10 +1610,13 @@ pub enum FontSynthesis {
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
+    Hash,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
@@ -1826,6 +1832,7 @@ impl XTextScale {
     ToShmem,
     ToTyped,
 )]
+#[repr(transparent)]
 /// Internal property that reflects the lang attribute
 pub struct XLang(#[css(skip)] pub Atom);
 
@@ -1847,8 +1854,7 @@ impl Parse for XLang {
     }
 }
 
-#[cfg_attr(feature = "gecko", derive(MallocSizeOf))]
-#[derive(Clone, Copy, Debug, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(Clone, Copy, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
 /// Specifies the minimum font size allowed due to changes in scriptlevel.
 /// Ref: https://wiki.mozilla.org/MathML:mstyle
 pub struct MozScriptMinSize(pub NoCalcLength);
@@ -1873,8 +1879,7 @@ impl Parse for MozScriptMinSize {
 
 /// A value for the `math-depth` property.
 /// https://mathml-refresh.github.io/mathml-core/#the-math-script-level-property
-#[cfg_attr(feature = "gecko", derive(MallocSizeOf))]
-#[derive(Clone, Debug, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
 pub enum MathDepth {
     /// Increment math-depth if math-style is compact.
     AutoAdd,
@@ -1905,11 +1910,11 @@ impl Parse for MathDepth {
     }
 }
 
-#[cfg_attr(feature = "gecko", derive(MallocSizeOf))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
     ToComputedValue,
@@ -2100,4 +2105,287 @@ bitflags! {
         /// Does the caller need math scales to be retrieved?
         const NEEDS_MATH_SCALES = 1 << 3;
     }
+}
+
+/// https://w3c.github.io/mathml-core/#the-math-shift
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum MathShift {
+    Normal,
+    Compact,
+}
+
+/// https://mathml-refresh.github.io/mathml-core/#the-math-style-property
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum MathStyle {
+    Normal,
+    Compact,
+}
+
+/// Internal (not web-exposed). Presentation attribute for legacy mathml mathvariant.
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum MathVariant {
+    None,
+    Normal,
+    Bold,
+    Italic,
+    BoldItalic,
+    Script,
+    BoldScript,
+    Fraktur,
+    DoubleStruck,
+    BoldFraktur,
+    SansSerif,
+    BoldSansSerif,
+    SansSerifItalic,
+    SansSerifBoldItalic,
+    Monospace,
+    Initial,
+    Tailed,
+    Looped,
+    Stretched,
+}
+
+/// https://drafts.csswg.org/css-fonts/#propdef-font-variant-emoji
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontVariantEmoji {
+    Normal,
+    Text,
+    Emoji,
+    Unicode,
+}
+
+/// https://www.w3.org/TR/css-fonts-4/#font-optical-sizing-def
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontOpticalSizing {
+    Auto,
+    None,
+}
+
+/// https://drafts.csswg.org/css-fonts/#propdef-font-kerning
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontKerning {
+    Auto,
+    None,
+    Normal,
+}
+
+/// Nonstandard (https://developer.mozilla.org/en-US/docs/Web/CSS/font-smooth)
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontSmoothing {
+    Auto,
+    #[cfg_attr(feature = "gecko", parse(aliases = "antialiased"))]
+    Grayscale,
+    SubpixelAntialiased,
+}
+
+/// https://drafts.csswg.org/css-fonts/#propdef-font-variant-position
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontVariantPosition {
+    Normal,
+    Sub,
+    Super,
+}
+
+fn font_variant_caps_all_values_enabled(_: &ParserContext) -> bool {
+    crate::pref!(
+        "layout.css.font-variant-caps.all-values.enabled",
+        gecko = true
+    )
+}
+
+/// https://drafts.csswg.org/css-fonts/#propdef-font-variant-caps
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontVariantCaps {
+    Normal,
+    SmallCaps,
+    #[parse(condition = "font_variant_caps_all_values_enabled")]
+    AllSmallCaps,
+    #[parse(condition = "font_variant_caps_all_values_enabled")]
+    PetiteCaps,
+    #[parse(condition = "font_variant_caps_all_values_enabled")]
+    AllPetiteCaps,
+    #[parse(condition = "font_variant_caps_all_values_enabled")]
+    Unicase,
+    #[parse(condition = "font_variant_caps_all_values_enabled")]
+    TitlingCaps,
 }

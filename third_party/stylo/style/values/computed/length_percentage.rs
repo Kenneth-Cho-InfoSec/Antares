@@ -8,7 +8,7 @@
 //! being non-zero if it is a non-calc value. See `tagged_numeric` for the
 //! shared implementation details.
 
-use super::{position::AnchorSide, Context, Length, Percentage, ToComputedValue};
+use super::{Context, Length, Percentage, ToComputedValue, position::AnchorSide};
 use crate::derives::*;
 #[cfg(feature = "gecko")]
 use crate::gecko_bindings::structs::{AnchorPosOffsetResolutionParams, GeckoFontMetrics};
@@ -19,18 +19,18 @@ use crate::values::animated::{
 };
 use crate::values::computed::position::TryTacticAdjustment;
 use crate::values::distance::{ComputeSquaredDistance, SquaredDistance};
+use crate::values::generics::Optional;
 use crate::values::generics::calc::GenericAnchorFunctionFallback;
 #[cfg(feature = "gecko")]
 use crate::values::generics::length::AnchorResolutionResult;
 use crate::values::generics::position::GenericAnchorSide;
-use crate::values::generics::Optional;
-use crate::values::generics::{calc, ClampToNonNegative, NonNegative};
+use crate::values::generics::{ClampToNonNegative, NonNegative, calc};
 use crate::values::resolved::{Context as ResolvedContext, ToResolvedValue};
 use crate::values::specified::length::{EqualsPercentage, FontBaseSize, LineHeightBase};
 use crate::values::specified::number::NoCalcNumber;
 use crate::values::specified::percentage::NoCalcPercentage;
 use crate::values::tagged_numeric::{self as tagged, NumericUnion};
-use crate::values::{specified, CSSFloat};
+use crate::values::{CSSFloat, specified};
 use crate::{Zero, ZeroNoPercent};
 use app_units::Au;
 use serde::{Deserialize, Serialize};
@@ -251,9 +251,9 @@ impl LengthPercentage {
                 },
                 ComputedLeaf::Angle(..) | ComputedLeaf::Time(..) | ComputedLeaf::Resolution(..) => {
                     debug_assert!(
-                            false,
-                            "The final result of a <length-percentage> should never be an angle, time, or resolution"
-                        );
+                        false,
+                        "The final result of a <length-percentage> should never be an angle, time, or resolution"
+                    );
                     Self::zero()
                 },
             },
@@ -630,7 +630,7 @@ impl From<&CalcAnchorSide> for AnchorSide {
             CalcAnchorSide::Keyword(k) => Self::Keyword(*k),
             CalcAnchorSide::Percentage(p) => {
                 if let CalcNode::Leaf(ComputedLeaf::Percentage(p)) = **p {
-                    Self::Percentage(p.value)
+                    Self::Percentage(Percentage(p.get()))
                 } else {
                     unreachable!("Should have parsed simplified percentage.");
                 }
@@ -657,7 +657,9 @@ impl CalcLengthPercentage {
         {
             Length::new(self.clamping_mode.clamp(px.px())).normalized()
         } else {
-            unreachable!("resolve_map should turn percentages to lengths, and parsing should ensure that we don't end up with a number");
+            unreachable!(
+                "resolve_map should turn percentages to lengths, and parsing should ensure that we don't end up with a number"
+            );
         }
     }
 
@@ -671,7 +673,7 @@ impl CalcLengthPercentage {
         params: &AnchorPosOffsetResolutionParams,
     ) -> Result<(CalcNode, AllowedNumericType), ()> {
         use crate::values::{
-            computed::{length::resolve_anchor_size, AnchorFunction},
+            computed::{AnchorFunction, length::resolve_anchor_size},
             generics::{length::GenericAnchorSizeFunction, position::GenericAnchorFunction},
         };
 
@@ -841,6 +843,7 @@ impl specified::CalcLengthPercentage {
             Leaf::TreeCountingFunction(t) => {
                 ComputedLeaf::Number(t.to_computed_value(context) as f32)
             },
+            Leaf::RandomKey(ref key) => ComputedLeaf::Number(*key.to_computed_value(context)),
         });
 
         LengthPercentage::new_calc(node, self.0.clamping_mode)
@@ -885,9 +888,7 @@ impl specified::CalcLengthPercentage {
 
         let mut resolvable = true;
         let node = self.0.node.map_leaves(|leaf| match *leaf {
-            Leaf::Percentage(p) => {
-                ComputedLeaf::Percentage(CalcPercentageLeaf::new(p.get(), p.hint))
-            },
+            Leaf::Percentage(p) => ComputedLeaf::Percentage(p),
             Leaf::Length(l) => {
                 ComputedLeaf::Length(match l.to_computed_pixel_length_without_context() {
                     Ok(px) => Length::new(px),
@@ -940,9 +941,7 @@ impl specified::CalcLengthPercentage {
     #[inline]
     fn from_computed_value(computed: &CalcLengthPercentage) -> Self {
         use crate::values::specified::angle::NoCalcAngle;
-        use crate::values::specified::calc::{
-            CalcPercentageLeaf as SpecifiedCalcPercentageLeaf, Leaf,
-        };
+        use crate::values::specified::calc::Leaf;
         use crate::values::specified::length::NoCalcLength;
         use crate::values::specified::resolution::NoCalcResolution;
         use crate::values::specified::time::NoCalcTime;
@@ -951,9 +950,7 @@ impl specified::CalcLengthPercentage {
             clamping_mode: computed.clamping_mode,
             node: computed.node.map_leaves(|l| match l {
                 ComputedLeaf::Length(l) => Leaf::Length(NoCalcLength::from_px(l.px())),
-                ComputedLeaf::Percentage(p) => {
-                    Leaf::Percentage(SpecifiedCalcPercentageLeaf::new(p.get(), p.hint))
-                },
+                ComputedLeaf::Percentage(p) => Leaf::Percentage(*p),
                 ComputedLeaf::Number(n) => Leaf::Number(NoCalcNumber::new(*n)),
                 ComputedLeaf::Angle(a) => Leaf::Angle(NoCalcAngle::from_degrees(a.degrees())),
                 ComputedLeaf::Time(t) => Leaf::Time(NoCalcTime::from_seconds(t.seconds())),

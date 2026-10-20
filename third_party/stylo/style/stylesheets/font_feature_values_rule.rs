@@ -6,6 +6,7 @@
 //!
 //! [font-feature-values]: https://drafts.csswg.org/css-fonts-3/#at-font-feature-values-rule
 
+use crate::Atom;
 use crate::derives::*;
 use crate::error_reporting::ContextualParseError;
 #[cfg(feature = "gecko")]
@@ -17,11 +18,10 @@ use crate::shared_lock::{SharedRwLockReadGuard, ToCssWithGuard};
 use crate::stylesheets::CssRuleType;
 use crate::values::computed::font::FamilyName;
 use crate::values::serialize_atom_identifier;
-use crate::Atom;
 use cssparser::{
-    match_ignore_ascii_case, AtRuleParser, BasicParseErrorKind, CowRcStr, DeclarationParser,
-    Parser, ParserState, QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, SourceLocation,
-    Token,
+    AtRuleParser, BasicParseErrorKind, CowRcStr, DeclarationParser, Parser, ParserState,
+    QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, SourceLocation, Token,
+    match_ignore_ascii_case,
 };
 use std::fmt::{self, Write};
 use style_traits::{CssStringWriter, CssWriter, ParseError, StyleParseErrorKind, ToCss};
@@ -375,19 +375,19 @@ macro_rules! font_feature_values_blocks {
         /// }
         /// <feature-type> = @stylistic | @historical-forms | @styleset |
         /// @character-variant | @swash | @ornaments | @annotation
-        struct FontFeatureValuesRuleParser<'a> {
-            context: &'a ParserContext<'a>,
-            rule: &'a mut FontFeatureValuesRule,
+        struct FontFeatureValuesRuleParser<'a, 'b> {
+            context: &'b ParserContext<'a>,
+            rule: &'b mut FontFeatureValuesRule,
         }
 
         /// Default methods reject all qualified rules.
-        impl<'a, 'i> QualifiedRuleParser<'i> for FontFeatureValuesRuleParser<'a> {
+        impl<'a, 'b, 'i> QualifiedRuleParser<'i> for FontFeatureValuesRuleParser<'a, 'b> {
             type Prelude = ();
             type QualifiedRule = ();
             type Error = StyleParseErrorKind;
         }
 
-        impl<'a, 'i> AtRuleParser<'i> for FontFeatureValuesRuleParser<'a> {
+        impl<'a, 'b, 'i> AtRuleParser<'i> for FontFeatureValuesRuleParser<'a, 'b> {
             type Prelude = FontFeatureValuesBlockType;
             type AtRule = ();
             type Error = StyleParseErrorKind;
@@ -433,12 +433,12 @@ macro_rules! font_feature_values_blocks {
             }
         }
 
-        impl<'a, 'i> DeclarationParser<'i> for FontFeatureValuesRuleParser<'a> {
+        impl<'a, 'b, 'i> DeclarationParser<'i> for FontFeatureValuesRuleParser<'a, 'b> {
             type Declaration = ();
             type Error = StyleParseErrorKind;
         }
 
-        impl<'a, 'i> RuleBodyItemParser<'i, (), StyleParseErrorKind> for FontFeatureValuesRuleParser<'a> {
+        impl<'a, 'b, 'i> RuleBodyItemParser<'i, (), StyleParseErrorKind> for FontFeatureValuesRuleParser<'a, 'b> {
             fn parse_declarations(&self) -> bool { false }
             fn parse_qualified(&self) -> bool { true }
         }

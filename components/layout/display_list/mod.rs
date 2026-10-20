@@ -1195,7 +1195,7 @@ impl Fragment {
         let parent_style = fragment.style();
         let color = parent_style.slow_clone_color();
         let text_fill_color =
-            parent_style.resolve_color(&parent_style.clone__webkit_text_fill_color());
+            parent_style.resolve_color(&parent_style.slow_clone__webkit_text_fill_color());
         let font_size = parent_style.get_font().font_size;
         let font_metrics = &fragment.font_metrics;
         let dppx = builder.device_pixel_ratio.get();
