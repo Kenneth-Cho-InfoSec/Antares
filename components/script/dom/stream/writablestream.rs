@@ -22,9 +22,11 @@ use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::MessagePortBinding::MessagePortMethods;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::structuredclone::StructuredData;
 use servo_base::id::{MessagePortId, MessagePortIndex};
 use servo_constellation_traits::MessagePortImpl;
 
+use crate::dom::bindings::callback::RootedCallback;
 use crate::dom::bindings::codegen::Bindings::QueuingStrategyBinding::{
     QueuingStrategy, QueuingStrategySize,
 };
@@ -34,7 +36,6 @@ use crate::dom::bindings::conversions::ConversionResult;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::domexception::{DOMErrorName, DOMException};
 use crate::dom::globalscope::GlobalScope;
@@ -44,7 +45,7 @@ use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::readablestream::{ReadableStream, get_type_and_value_from_message};
 use crate::dom::stream::countqueuingstrategy::{extract_high_water_mark, extract_size_algorithm};
 use crate::dom::stream::writablestreamdefaultcontroller::{
-    UnderlyingSinkType, WritableStreamDefaultController,
+    UnderlyingSinkTypeRef, WritableStreamDefaultController,
 };
 use crate::dom::stream::writablestreamdefaultwriter::WritableStreamDefaultWriter;
 use crate::realms::enter_auto_realm;
@@ -626,7 +627,7 @@ impl WritableStream {
         assert!(self.is_writable());
 
         // Let promise be a new promise.
-        let promise = Promise::new_rooted(cx, global);
+        let promise = Promise::new(cx, global);
 
         // Append promise to stream.[[writeRequests]].
         self.write_requests
@@ -652,7 +653,7 @@ impl WritableStream {
         // If stream.[[state]] is "closed" or "errored",
         if self.is_closed() || self.is_errored() {
             // return a promise resolved with undefined.
-            return Promise::new_resolved_rooted(cx, global, ());
+            return Promise::new_resolved(cx, global, ());
         }
 
         // Signal abort on stream.[[controller]].[[abortController]] with reason.
@@ -668,7 +669,7 @@ impl WritableStream {
             state,
             WritableStreamState::Closed | WritableStreamState::Errored
         ) {
-            return Promise::new_resolved_rooted(cx, global, ());
+            return Promise::new_resolved(cx, global, ());
         }
 
         // If stream.[[pendingAbortRequest]] is not undefined,
@@ -680,7 +681,7 @@ impl WritableStream {
                 .as_ref()
                 .expect("Pending abort request must be Some.")
                 .promise
-                .root();
+                .root(cx);
         }
 
         // Assert: state is "writable" or "erroring".
@@ -703,7 +704,7 @@ impl WritableStream {
         };
 
         // Let promise be a new promise.
-        let promise = Promise::new_rooted(cx, global);
+        let promise = Promise::new(cx, global);
 
         // Set stream.[[pendingAbortRequest]] to a new pending abort request
         // whose promise is promise,
@@ -731,7 +732,7 @@ impl WritableStream {
         // If state is "closed" or "errored",
         if self.is_closed() || self.is_errored() {
             // return a promise rejected with a TypeError exception.
-            let promise = Promise::new_rooted(cx, global);
+            let promise = Promise::new(cx, global);
             promise.reject_error(cx, Error::Type(c"Stream is closed or errored.".to_owned()));
             return promise;
         }
@@ -743,7 +744,7 @@ impl WritableStream {
         assert!(!self.close_queued_or_in_flight());
 
         // Let promise be a new promise.
-        let promise = Promise::new_rooted(cx, global);
+        let promise = Promise::new(cx, global);
 
         // Set stream.[[closeRequest]] to promise.
         *self.close_request.borrow_mut() = Some(promise.to_traced());
@@ -830,7 +831,7 @@ impl WritableStream {
                 // and backpressure is not stream.[[backpressure]],
                 if backpressure {
                     // If backpressure is true, set writer.[[readyPromise]] to a new promise.
-                    let promise = Promise::new_rooted(cx, global);
+                    let promise = Promise::new(cx, global);
                     writer.set_ready_promise(&promise);
                 } else {
                     // Otherwise,
@@ -865,16 +866,16 @@ impl WritableStream {
         // Note: other algorithms defined in the controller at call site.
 
         // Let backpressurePromise be a new promise.
-        let backpressure_promise = Promise::new_rooted(cx, &global);
+        let backpressure_promise = Promise::new(cx, &global);
         rooted!(&in(cx) let backpressure_promise = RcHolder(Rc::new(RefCell::new(Some(backpressure_promise.to_traced())))));
 
         // Let controller be a new WritableStreamDefaultController.
         let controller = WritableStreamDefaultController::new(
             cx,
             &global,
-            UnderlyingSinkType::Transfer {
-                backpressure_promise: backpressure_promise.0.clone(),
-                port: Dom::from_ref(port),
+            UnderlyingSinkTypeRef::Transfer {
+                backpressure_promise: &backpressure_promise.0,
+                port,
             },
             1.0,
             size_algorithm,
@@ -906,7 +907,7 @@ impl WritableStream {
         underlying_sink_obj: SafeHandleObject,
         underlying_sink: &UnderlyingSink,
         strategy_hwm: f64,
-        strategy_size: Rc<QueuingStrategySize>,
+        strategy_size: RootedCallback<QueuingStrategySize>,
     ) -> Result<(), Error> {
         // Let controller be a new WritableStreamDefaultController.
 
@@ -936,11 +937,11 @@ impl WritableStream {
         let controller = WritableStreamDefaultController::new(
             cx,
             global,
-            UnderlyingSinkType::new_js(
-                underlying_sink.abort.clone(),
-                underlying_sink.start.clone(),
-                underlying_sink.close.clone(),
-                underlying_sink.write.clone(),
+            UnderlyingSinkTypeRef::new_js(
+                underlying_sink.abort.as_ref(),
+                underlying_sink.start.as_ref(),
+                underlying_sink.close.as_ref(),
+                underlying_sink.write.as_ref(),
             ),
             strategy_hwm,
             strategy_size,
@@ -956,13 +957,12 @@ impl WritableStream {
 }
 
 /// <https://streams.spec.whatwg.org/#create-writable-stream>
-#[cfg_attr(crown, expect(crown::unrooted_must_root))]
 pub(crate) fn create_writable_stream(
     cx: &mut JSContext,
     global: &GlobalScope,
     writable_high_water_mark: f64,
-    writable_size_algorithm: Rc<QueuingStrategySize>,
-    underlying_sink_type: UnderlyingSinkType,
+    writable_size_algorithm: RootedCallback<QueuingStrategySize>,
+    underlying_sink_type: UnderlyingSinkTypeRef<'_>,
 ) -> Fallible<DomRoot<WritableStream>> {
     // Assert: ! IsNonNegativeNumber(highWaterMark) is true.
     assert!(writable_high_water_mark >= 0.0);
@@ -1017,7 +1017,7 @@ impl WritableStreamMethods<crate::DomTypeHolder> for WritableStream {
             UnderlyingSink::empty()
         };
 
-        if !underlying_sink_dict.type_.handle().is_undefined() {
+        if !underlying_sink_dict.type_.get().is_undefined() {
             // If underlyingSinkDict["type"] exists, throw a RangeError exception.
             return Err(Error::Range(c"type is set".to_owned()));
         }
@@ -1059,7 +1059,7 @@ impl WritableStreamMethods<crate::DomTypeHolder> for WritableStream {
         // If ! IsWritableStreamLocked(this) is true,
         if self.is_locked() {
             // return a promise rejected with a TypeError exception.
-            let promise = Promise::new_rooted(cx, &global);
+            let promise = Promise::new(cx, &global);
             promise.reject_error(cx, Error::Type(c"Stream is locked.".to_owned()));
             return promise;
         }
@@ -1075,7 +1075,7 @@ impl WritableStreamMethods<crate::DomTypeHolder> for WritableStream {
         // If ! IsWritableStreamLocked(this) is true,
         if self.is_locked() {
             // return a promise rejected with a TypeError exception.
-            let promise = Promise::new_rooted(cx, &global);
+            let promise = Promise::new(cx, &global);
             promise.reject_error(cx, Error::Type(c"Stream is locked.".to_owned()));
             return promise;
         }
@@ -1083,7 +1083,7 @@ impl WritableStreamMethods<crate::DomTypeHolder> for WritableStream {
         // If ! WritableStreamCloseQueuedOrInFlight(this) is true
         if self.close_queued_or_in_flight() {
             // return a promise rejected with a TypeError exception.
-            let promise = Promise::new_rooted(cx, &global);
+            let promise = Promise::new(cx, &global);
             promise.reject_error(
                 cx,
                 Error::Type(c"Stream has closed queued or in-flight".to_owned()),

@@ -9,17 +9,19 @@ use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use script_bindings::domstring::DOMString;
 use script_bindings::root::DomRoot;
 use stylo_atoms::Atom;
+use stylo_dom::ElementState;
 
+use crate::dom::Element;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::GetRootNodeOptions;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::element::AttributeMutation;
 use crate::dom::element::attributes::storage::AttrRef;
-use crate::dom::event::{Event, EventBubbles, EventCancelable, EventComposed};
+use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::form_controls::htmlinputelement::{HTMLInputElement, InputActivationState};
 use crate::dom::html::form_controls::input_type::text_value_widget::TextValueWidget;
 use crate::dom::html::form_controls::input_type::{
-    InputType, SpecificInputActivationType, SpecificInputType,
+    InputType, SpecificInputActivationType, SpecificInputType, ValueChangeEvents,
 };
 use crate::dom::htmlformelement::{FormControl, HTMLFormElement};
 use crate::dom::input_type::text_input_widget::TextInputWidget;
@@ -171,6 +173,34 @@ impl SpecificInputType for RadioInputType {
                 .perform_validation_and_update(cx, ValidationFlags::all());
         }
     }
+
+    fn form_owner_changed(&self, cx: &mut JSContext, input: &HTMLInputElement) {
+        radio_group_updated(cx, input, input.radio_group_name().as_ref());
+    }
+
+    fn update_checkedness(
+        &self,
+        cx: &mut JSContext,
+        input: &HTMLInputElement,
+        checked: bool,
+        previously_checked: bool,
+    ) {
+        let group = input.radio_group_name();
+        if checked {
+            broadcast_radio_checked(cx, input, group.as_ref());
+        } else if previously_checked {
+            // Only one radio button in a group is checked and if that one gets unchecked, the group becomes indeterminate
+            let form = input.form_owner();
+            let root = input
+                .upcast::<Node>()
+                .GetRootNode(&GetRootNodeOptions::empty());
+            for radio in radio_group_iter(input, group.as_ref(), form.as_deref(), &root) {
+                radio
+                    .upcast::<Element>()
+                    .set_state(ElementState::INDETERMINATE, true);
+            }
+        }
+    }
 }
 
 impl SpecificInputActivationType for RadioInputActivation {
@@ -187,27 +217,23 @@ impl SpecificInputActivationType for RadioInputActivation {
             return;
         }
 
-        let target = input.upcast::<EventTarget>();
-
         // Step 2: Fire an event named input at the element with the bubbles and composed
         // attributes initialized to true.
-        target.fire_event_with_params(
-            cx,
-            atom!("input"),
-            EventBubbles::Bubbles,
-            EventCancelable::NotCancelable,
-            EventComposed::Composed,
-        );
-
         // Step 3: Fire an event named change at the element with the bubbles attribute
         // initialized to true.
-        target.fire_bubbling_event(cx, atom!("change"));
+        input.fire_value_change_events(cx, ValueChangeEvents::Input | ValueChangeEvents::Change);
     }
 }
 
-fn radio_group_updated(cx: &mut JSContext, input: &HTMLInputElement, group: Option<&Atom>) {
+pub(crate) fn radio_group_updated(
+    cx: &mut JSContext,
+    input: &HTMLInputElement,
+    group: Option<&Atom>,
+) {
     if input.Checked() {
         broadcast_radio_checked(cx, input, group);
+    } else {
+        input.update_indeterminate_state();
     }
 }
 
@@ -246,10 +272,15 @@ pub(crate) fn broadcast_radio_checked(
         .upcast::<Node>()
         .GetRootNode(&GetRootNodeOptions::empty());
     let form = broadcaster.form_owner();
-    for r in radio_group_iter(broadcaster, group, form.as_deref(), &root) {
-        if broadcaster != &*r && r.Checked() {
-            r.SetChecked(cx, false);
+    for radio in radio_group_iter(broadcaster, group, form.as_deref(), &root) {
+        if broadcaster != &*radio && radio.Checked() {
+            radio.SetChecked(cx, false);
         }
+
+        // The radio button triggering the broadcast is checked, so the group is not indeterminate
+        radio
+            .upcast::<Element>()
+            .set_state(ElementState::INDETERMINATE, false);
     }
 }
 

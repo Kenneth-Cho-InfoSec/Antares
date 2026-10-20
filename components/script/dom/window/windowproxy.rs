@@ -30,9 +30,8 @@ use js::jsapi::{
 use js::jsval::{NullValue, PrivateValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
 use js::rust::wrappers2::{
-    AppendToIdVector, GetPropertyKeys, JS_ForwardGetPropertyTo, JS_GetOwnPropertyDescriptorById,
-    JS_HasOwnPropertyById, JS_HasPropertyById, JS_TransplantObject, NewWindowProxy, SetWindowProxy,
-    int_to_jsid,
+    AppendToIdVector, JS_ForwardGetPropertyTo, JS_HasOwnPropertyById, JS_HasPropertyById,
+    JS_TransplantObject, NewWindowProxy, SetWindowProxy, int_to_jsid,
 };
 use js::rust::{Handle, MutableHandle, MutableHandleValue, get_object_class};
 use js::typedarray::JSObjectStorage;
@@ -48,15 +47,18 @@ use script_bindings::codegen::GenericBindings::WindowBinding::{
     self, GetProtoObject, WindowMethods,
 };
 use script_bindings::conversions::jsid_to_string;
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::js::{GetPropertyKeys, JS_GetOwnPropertyDescriptorById};
 use script_bindings::proxyhandler::{
-    self, CrossOriginProperties, cross_origin_get_own_property_helper,
-    cross_origin_own_property_keys, cross_origin_property_fallback, cross_origin_set,
-    is_extensible, is_platform_object_same_origin, maybe_cross_origin_get_prototype,
+    self, CROSS_ORIGIN_PROPERTY_HOLDER_WEAK_MAP_SLOT, CrossOriginProperties,
+    cross_origin_get_own_property_helper, cross_origin_own_property_keys,
+    cross_origin_property_fallback, cross_origin_set, is_extensible,
+    is_platform_object_same_origin, maybe_cross_origin_get_prototype,
     maybe_cross_origin_set_prototype_rawcx, prevent_extensions, report_cross_origin_denial,
     set_property_descriptor,
 };
 use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
-use script_traits::NewPipelineInfo;
+use script_traits::{NewPipelineInfo, WebViewState};
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel;
 use servo_base::generic_channel::GenericSend;
@@ -118,7 +120,7 @@ pub(crate) struct WindowProxy {
 
     /// The name of the browsing context (sometimes, but not always,
     /// equal to the name of a container element)
-    name: DomRefCell<DOMString>,
+    name: DomRefCell<TracedDOMString>,
     /// The pipeline id of the currently active document.
     /// May be None, when the currently active document is in another script thread.
     /// We do not try to keep the pipeline id for documents in other threads,
@@ -177,7 +179,7 @@ impl WindowProxy {
             reflector: Reflector::new(),
             browsing_context_id,
             webview_id,
-            name: DomRefCell::new(name),
+            name: DomRefCell::new(name.traced()),
             currently_active: Cell::new(currently_active),
             discarded: Cell::new(false),
             disowned: Cell::new(false),
@@ -386,17 +388,21 @@ impl WindowProxy {
         let response = response_receiver.recv().unwrap()?;
         let new_browsing_context_id = BrowsingContextId::from(response.new_webview_id);
         let new_pipeline_info = NewPipelineInfo {
+            webview_state: WebViewState {
+                id: response.new_webview_id,
+                // Use the current `WebView`'s theme initially, but the embedder may change
+                // this later.
+                theme: Cell::new(window.webview_theme()),
+                // WebViews start focused by default for now.
+                has_system_focus: Cell::new(true),
+            },
             parent_info: None,
             new_pipeline_id: response.new_pipeline_id,
             browsing_context_id: new_browsing_context_id,
-            webview_id: response.new_webview_id,
             opener: Some(self.browsing_context_id),
             load_data,
             viewport_details: window.viewport_details(),
             user_content_manager_id: response.user_content_manager_id,
-            // Use the current `WebView`'s theme initially, but the embedder may
-            // change this later.
-            embedder_theme: window.embedder_theme(),
             target_snapshot_params: TargetSnapshotParams {
                 sandboxing_flags: sandboxing_flag_set,
                 iframe_element_referrer_policy: ReferrerPolicy::EmptyString,
@@ -444,7 +450,7 @@ impl WindowProxy {
         self.delaying_load_events_mode.set(false);
     }
 
-    // https://html.spec.whatwg.org/multipage/#disowned-its-opener
+    /// <https://html.spec.whatwg.org/multipage/#disowned-its-opener>
     pub(crate) fn disown(&self) {
         self.disowned.set(true);
     }
@@ -460,7 +466,7 @@ impl WindowProxy {
         self.is_closing.get()
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-opener
+    /// <https://html.spec.whatwg.org/multipage/#dom-opener>
     pub(crate) fn opener(&self, cx: &mut CurrentRealm, mut retval: MutableHandleValue) {
         if self.disowned.get() {
             return retval.set(NullValue());
@@ -503,7 +509,7 @@ impl WindowProxy {
         opener_proxy.to_jsval(cx, retval);
     }
 
-    // https://html.spec.whatwg.org/multipage/#window-open-steps
+    /// <https://html.spec.whatwg.org/multipage/#window-open-steps>
     pub(crate) fn open(
         &self,
         cx: &mut JSContext,
@@ -900,30 +906,17 @@ impl WindowProxy {
         result
     }
 
-    pub(crate) fn document_origin(&self) -> Option<OriginSnapshot> {
+    pub(crate) fn document_origin_and_internal_ancestor_origin_objects_list(
+        &self,
+    ) -> Option<(OriginSnapshot, Vec<ImmutableOrigin>)> {
         let pipeline_id = self.currently_active()?;
         let (result_sender, result_receiver) = generic_channel::channel().unwrap();
         self.global()
             .script_to_constellation_chan()
-            .send(ScriptToConstellationMessage::GetDocumentOrigin(
+            .send(ScriptToConstellationMessage::GetDocumentOriginDetails(
                 pipeline_id,
                 result_sender,
             ))
-            .ok()?;
-        result_receiver.recv().ok()?
-    }
-
-    pub(crate) fn internal_ancestor_origin_objects_list(&self) -> Option<Vec<ImmutableOrigin>> {
-        let pipeline_id = self.currently_active()?;
-        let (result_sender, result_receiver) = generic_channel::channel().unwrap();
-        self.global()
-            .script_to_constellation_chan()
-            .send(
-                ScriptToConstellationMessage::GetInternalAncestorOriginObjectsList(
-                    pipeline_id,
-                    result_sender,
-                ),
-            )
             .ok()?;
         result_receiver.recv().ok()?
     }
@@ -949,14 +942,7 @@ impl WindowProxy {
         } else if let Some(parent_proxy) = self.parent() {
             // Step 4. Assert: parentDoc is fully active.
             assert!(parent_proxy.currently_active().is_some());
-
-            let origin = parent_proxy
-                .document_origin()
-                .expect("Must always be active");
-            let list = parent_proxy
-                .internal_ancestor_origin_objects_list()
-                .expect("Must always be active");
-            Some((origin, list))
+            parent_proxy.document_origin_and_internal_ancestor_origin_objects_list()
         } else {
             None
         }
@@ -983,6 +969,12 @@ impl WindowProxy {
 
             // The old window proxy no longer owns this browsing context.
             SetProxyReservedSlot(old_js_proxy.get(), 0, &PrivateValue(ptr::null_mut()));
+            // Also drop any cached cross-origin property holders.
+            SetProxyReservedSlot(
+                old_js_proxy.get(),
+                CROSS_ORIGIN_PROPERTY_HOLDER_WEAK_MAP_SLOT,
+                &UndefinedValue(),
+            );
 
             // Brain transplant the window proxy. Brain transplantation is
             // usually done to move a window proxy between compartments, but
@@ -1055,11 +1047,11 @@ impl WindowProxy {
     }
 
     pub(crate) fn get_name(&self) -> DOMString {
-        self.name.borrow().clone()
+        self.name.borrow().clone().root()
     }
 
     pub(crate) fn set_name(&self, name: DOMString) {
-        *self.name.borrow_mut() = name;
+        *self.name.borrow_mut() = name.traced();
     }
 }
 
@@ -1263,9 +1255,13 @@ unsafe extern "C" fn get_own_property_descriptor(
 
     // Step 3. If IsPlatformObjectSameOrigin(W) is true, then return ! OrdinaryGetOwnProperty(W, P).
     if is_platform_object_same_origin(cx, proxy) {
-        return unsafe {
-            JS_GetOwnPropertyDescriptorById(cx, target.handle(), id, property_descriptor, is_none)
-        };
+        return JS_GetOwnPropertyDescriptorById(
+            cx,
+            target.handle(),
+            id,
+            property_descriptor,
+            is_none,
+        );
     }
 
     // Step 4. Let property be CrossOriginGetOwnPropertyHelper(W, P).
@@ -1649,11 +1645,7 @@ unsafe extern "C" fn own_property_keys(
     rooted!(&in(cx) let target = window_proxy_target(proxy));
     let window = WindowOrDissimilarOriginWindow::new(cx, target.handle());
 
-    // Step 2. Let maxProperties be W's associated Document's document-tree child navigables's
-    // size.
-    //
-    // TODO: DissimilarOriginWindow currently always returns 0 for the length,
-    // so this has the effect of not exposing any indexable attributes.
+    // Step 2. Let maxProperties be W's associated Document's document-tree child navigables's size.
     let max_properties = window.iframe_count();
 
     // Step 3. Let keys be the range 0 to maxProperties, exclusive.
@@ -1666,18 +1658,72 @@ unsafe extern "C" fn own_property_keys(
     if is_platform_object_same_origin(cx, proxy) {
         // Step 4. If IsPlatformObjectSameOrigin(W) is true, then return the concatenation of keys and
         // OrdinaryOwnPropertyKeys(W).
-        return unsafe {
-            GetPropertyKeys(
-                cx,
-                target.handle(),
-                JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS,
-                property_keys,
-            )
-        };
+        return GetPropertyKeys(
+            cx,
+            target.handle(),
+            JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS,
+            property_keys,
+        );
     }
 
     // Step 5. Return the concatenation of keys and ! CrossOriginOwnPropertyKeys(W).
     cross_origin_own_property_keys(cx, proxy, window.cross_origin_properties(), property_keys)
+}
+
+/// A version of <https://html.spec.whatwg.org/multipage#windowproxy-ownpropertykeys>
+/// that hands back only the enumerable properties. This is necessary because the
+/// default implementation of this method returns all enumerable properties which
+/// isn't correct in the cross-origin case.
+#[expect(unsafe_code)]
+unsafe extern "C" fn get_own_enumerable_property_keys(
+    cx: *mut RawJSContext,
+    proxy: RawHandleObject,
+    property_keys: RawMutableHandleIdVector,
+) -> bool {
+    let mut cx = unsafe { JSContext::from_ptr(ptr::NonNull::new(cx).unwrap()) };
+    let mut cx = CurrentRealm::assert(&mut cx);
+    let cx = &mut cx;
+    let proxy = unsafe { Handle::from_raw(proxy) };
+
+    // Step 1. Let W be the value of the [[Window]] internal slot of this.
+    rooted!(&in(cx) let target = window_proxy_target(proxy));
+    let window = WindowOrDissimilarOriginWindow::new(cx, target.handle());
+
+    // Step 2. Let maxProperties be W's associated Document's document-tree child navigables's size.
+    let max_properties = window.iframe_count();
+
+    // Step 3. Let keys be the range 0 to maxProperties, exclusive.
+    rooted!(&in(cx) let mut rooted_index_jsid: jsid);
+    for index in 0..max_properties {
+        unsafe { int_to_jsid(index as i32, rooted_index_jsid.handle_mut()) };
+        unsafe { AppendToIdVector(property_keys, rooted_index_jsid.handle()) };
+    }
+
+    if is_platform_object_same_origin(cx, proxy) {
+        // Step 4. If IsPlatformObjectSameOrigin(W) is true, then return the concatenation of keys and
+        // OrdinaryOwnPropertyKeys(W).
+        return GetPropertyKeys(cx, target.handle(), JSITER_OWNONLY, property_keys);
+    }
+
+    // There are no other enumerable property keys for cross-origin WindowProxy other than
+    // the child navigable indices.
+    true
+}
+
+#[expect(unsafe_code)]
+unsafe extern "C" fn enumerate(
+    cx: *mut RawJSContext,
+    proxy: RawHandleObject,
+    property_keys: RawMutableHandleIdVector,
+) -> bool {
+    // Just get the property keys from ourselves, in whatever Realm we happen to
+    // be in. It's important to not enter the Realm of "proxy" here, because that
+    // would affect the list of keys we claim to have.
+    let mut cx = unsafe { JSContext::from_ptr(ptr::NonNull::new(cx).unwrap()) };
+    let cx = &mut cx;
+    let proxy = unsafe { Handle::from_raw(proxy) };
+
+    GetPropertyKeys(cx, proxy, 0, property_keys)
 }
 
 static PROXY_TRAPS: ProxyTraps = ProxyTraps {
@@ -1686,7 +1732,7 @@ static PROXY_TRAPS: ProxyTraps = ProxyTraps {
     defineProperty: Some(define_property),
     ownPropertyKeys: Some(own_property_keys),
     delete_: Some(delete),
-    enumerate: None,
+    enumerate: Some(enumerate),
     getPrototypeIfOrdinary: Some(get_prototype_if_ordinary),
     getPrototype: Some(get_prototype),
     setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
@@ -1699,7 +1745,7 @@ static PROXY_TRAPS: ProxyTraps = ProxyTraps {
     call: None,
     construct: None,
     hasOwn: Some(has_own),
-    getOwnEnumerablePropertyKeys: None,
+    getOwnEnumerablePropertyKeys: Some(get_own_enumerable_property_keys),
     nativeCall: None,
     objectClassIs: None,
     className: None,
@@ -1867,20 +1913,22 @@ impl WindowOrDissimilarOriginWindow {
         &self,
         index: u32,
     ) -> Option<DomRoot<WindowProxy>> {
-        let browsing_context_id = self.window_proxy().browsing_context_id();
-        let (result_sender, result_receiver) = generic_channel::channel().unwrap();
-        let _ = self.global_scope().script_to_constellation_chan().send(
-            ScriptToConstellationMessage::GetChildBrowsingContextId(
-                browsing_context_id,
-                index as usize,
-                result_sender,
-            ),
-        );
-        result_receiver
-            .recv()
-            .ok()
-            .flatten()
-            .and_then(|id| ScriptThread::window_proxies().find_window_proxy(id))
+        let window_proxy = self.window_proxy();
+        let browsing_context_id = if let Some(document) = window_proxy.document() {
+            document.iframes().at_insertion_index(index as usize)?
+        } else {
+            let parent_browsing_context_id = window_proxy.browsing_context_id();
+            let (result_sender, result_receiver) = generic_channel::channel().unwrap();
+            let _ = self.global_scope().script_to_constellation_chan().send(
+                ScriptToConstellationMessage::GetChildBrowsingContextId(
+                    parent_browsing_context_id,
+                    index as usize,
+                    result_sender,
+                ),
+            );
+            result_receiver.recv().ok().flatten()?
+        };
+        ScriptThread::window_proxies().find_window_proxy(browsing_context_id)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#document-tree-child-navigable-target-name-property-set>

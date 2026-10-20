@@ -92,18 +92,14 @@ impl VertexArrayObject {
         .ok()
     }
 
-    pub(crate) fn set_vertex_attrib_type(&self, index: u32, type_: u32) {
-        self.vertex_attribs.borrow_mut()[index as usize].type_ = type_;
-    }
-
     pub(crate) fn vertex_attrib_pointer(
         &self,
         index: u32,
         size: i32,
         type_: u32,
-        normalized: bool,
         stride: i32,
         offset: i64,
+        kind: VertexAttribPointerKind,
     ) -> WebGLResult<()> {
         let mut attribs = self.vertex_attribs.borrow_mut();
         let data = attribs
@@ -153,14 +149,19 @@ impl VertexArrayObject {
             },
             _ => {},
         }
-        context.send_command(WebGLCommand::VertexAttribPointer(
-            index,
-            size,
-            type_,
-            normalized,
-            stride,
-            offset as u32,
-        ));
+        context.send_command(match kind {
+            VertexAttribPointerKind::Float { normalized } => WebGLCommand::VertexAttribPointer(
+                index,
+                size,
+                type_,
+                normalized,
+                stride,
+                offset as u32,
+            ),
+            VertexAttribPointerKind::Integer => {
+                WebGLCommand::VertexAttribIPointer(index, size, type_, stride, offset as u32)
+            },
+        });
         if let Some(old) = data.buffer() {
             old.decrement_attached_counter(Operation::Infallible);
         }
@@ -170,7 +171,7 @@ impl VertexArrayObject {
             size: size as u8,
             type_,
             bytes_per_vertex: size as u8 * bytes_per_component as u8,
-            normalized,
+            kind,
             stride: stride as u8,
             offset: offset as u32,
             buffer: buffer.map(|b| Dom::from_ref(&*b)),
@@ -267,6 +268,25 @@ impl Drop for VertexArrayObject {
     }
 }
 
+/// How a `vertexAttrib*Pointer` call delivers attribute values to the shader.
+#[derive(Clone, Copy, JSTraceable, MallocSizeOf)]
+pub(crate) enum VertexAttribPointerKind {
+    /// `vertexAttribPointer`: converted to float.
+    Float { normalized: bool },
+    /// `vertexAttribIPointer`: kept as int/uint.
+    Integer,
+}
+
+impl VertexAttribPointerKind {
+    pub(crate) fn is_normalized(self) -> bool {
+        matches!(self, Self::Float { normalized: true })
+    }
+
+    pub(crate) fn is_integer(self) -> bool {
+        matches!(self, Self::Integer)
+    }
+}
+
 #[derive(Clone, JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct VertexAttribData {
@@ -274,7 +294,7 @@ pub(crate) struct VertexAttribData {
     pub(crate) size: u8,
     pub(crate) type_: u32,
     bytes_per_vertex: u8,
-    pub(crate) normalized: bool,
+    pub(crate) kind: VertexAttribPointerKind,
     pub(crate) stride: u8,
     pub(crate) offset: u32,
     pub(crate) buffer: Option<Dom<WebGLBuffer>>,
@@ -288,7 +308,7 @@ impl Default for VertexAttribData {
             size: 4,
             type_: constants::FLOAT,
             bytes_per_vertex: 16,
-            normalized: false,
+            kind: VertexAttribPointerKind::Float { normalized: false },
             stride: 0,
             offset: 0,
             buffer: None,

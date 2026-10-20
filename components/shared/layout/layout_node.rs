@@ -11,6 +11,7 @@ use atomic_refcell::AtomicRef;
 use net_traits::image_cache::Image;
 use pixels::ImageMetadata;
 use servo_arc::Arc;
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_base::text::{RangeAny, Utf32CodeUnits};
 use servo_url::ServoUrl;
@@ -79,8 +80,7 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
     unsafe fn dangerous_dom_parent(self) -> Option<Self>;
 
     /// Returns access to the flat tree parent node of this node. This takes
-    /// into account shadow tree children and slottables. For that use
-    /// [`Self::dangerous_flat_tree_parent`].
+    /// into account shadow tree children and slottables.
     ///
     /// # Safety
     ///
@@ -88,6 +88,17 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
     /// okay to explicitly access the parent node while any layout worker threads
     /// are running.
     unsafe fn dangerous_flat_tree_parent(self) -> Option<Self>;
+
+    /// Returns access to the flat tree parent node of this node considering pseudo
+    /// elements. The parent of a pseudo-element is found by removing the innermost
+    /// pseudo-element from its pseudo-element chain.
+    ///
+    /// # Safety
+    ///
+    /// This should only ever be called from the main script thread. It is never
+    /// okay to explicitly access the parent node while any layout worker threads
+    /// are running.
+    unsafe fn dangerous_flat_tree_parent_considering_pseudos(self) -> Option<Self>;
 
     /// Get the layout data of this node, attempting to downcast it to the desired type.
     /// Returns None if there is no layout data or it isn't of the desired type.
@@ -154,7 +165,7 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
 
     /// Returns the computed `:selected` style for the given node, properly handling
     /// pseudo-elements. For elements this returns their style and for other nodes, this
-    /// returns the style of the parent element, if one exists.
+    /// returns the selected style of the parent element, if one exists.
     ///
     /// # Panics
     ///
@@ -179,14 +190,27 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
     /// (start == end)
     fn text_node_paints_caret(&self) -> bool;
 
+    /// For a text node, whether a caret placeholder should be inserted in the box tree.
+    /// Caret placeholders are used as a place to draw text carets in otherwise empty
+    /// elements (such as `<input>` fields). In addition, this forces the creation of an
+    /// inline formatting context for empty text nodes and the allocation of the line
+    /// strut height during layout to ensure that empty `<input>` fields render properly.
+    fn text_node_needs_caret_placeholder(&self) -> bool;
+
     /// If this is an image element, returns its URL. If this is not an image element, fails.
     fn image_url(&self) -> Option<ServoUrl>;
+
+    /// If this is an image element, returns the time when image request finished loading.
+    fn load_time(&self) -> Option<CrossProcessInstant>;
 
     /// If this is an image element, returns its current-pixel-density. If this is not an image element, fails.
     fn image_density(&self) -> Option<f64>;
 
     /// If this is an image element, returns its image data. Otherwise, returns `None`.
     fn image_data(&self) -> Option<(Option<Image>, Option<ImageMetadata>)>;
+
+    /// Whether or not this node is selected when it is interpreted as a replaced element.
+    fn replaced_is_selected(&self) -> bool;
 
     /// Whether or not this is an image element that is showing a broken image icon.
     fn showing_broken_image_icon(&self) -> bool;

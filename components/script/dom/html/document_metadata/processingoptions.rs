@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use cssparser::match_ignore_ascii_case;
@@ -24,8 +25,6 @@ use servo_url::{ImmutableOrigin, ServoUrl};
 use strum::IntoStaticStr;
 
 use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::DomRoot;
 use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::document::Document;
 use crate::dom::globalscope::GlobalScope;
@@ -78,7 +77,7 @@ pub(crate) struct LinkProcessingOptions {
     /// <https://html.spec.whatwg.org/multipage/#link-options-referrer-policy>
     pub(crate) referrer_policy: ReferrerPolicy,
     /// <https://html.spec.whatwg.org/multipage/#link-options-policy-container>
-    pub(crate) policy_container: PolicyContainer,
+    pub(crate) policy_container: Arc<PolicyContainer>,
     /// <https://html.spec.whatwg.org/multipage/#link-options-source-set>
     pub(crate) source_set: Option<SourceSet>,
     /// <https://html.spec.whatwg.org/multipage/#link-options-base-url>
@@ -315,7 +314,6 @@ impl LinkProcessingOptions {
         let fetch_context = LinkFetchContext {
             url,
             link,
-            global: Trusted::new(&document.global()),
             type_: LinkFetchContextType::Preload,
             response_body: BytesMut::new(),
         };
@@ -412,7 +410,7 @@ pub(crate) fn process_link_headers(
             cryptographic_nonce_metadata: String::new(),
             cross_origin: None,
             referrer_policy: ReferrerPolicy::EmptyString,
-            policy_container: document.policy_container().to_owned(),
+            policy_container: document.policy_container().clone(),
             source_set: None,
             origin: document.origin().immutable().to_owned(),
             base_url: document.base_url(),
@@ -452,15 +450,13 @@ pub(crate) enum LinkFetchContextType {
 impl From<LinkFetchContextType> for InitiatorType {
     fn from(other: LinkFetchContextType) -> Self {
         let name: &'static str = other.into();
-        InitiatorType::LocalName(name.to_owned())
+        InitiatorType::LocalName(name.into())
     }
 }
 
 pub(crate) struct LinkFetchContext {
     /// The `<link>` element (if any) that caused this fetch
     pub(crate) link: Option<Trusted<HTMLLinkElement>>,
-
-    pub(crate) global: Trusted<GlobalScope>,
 
     /// The url being prefetched
     pub(crate) url: ServoUrl,
@@ -472,11 +468,12 @@ pub(crate) struct LinkFetchContext {
 }
 
 impl FetchResponseListener for LinkFetchContext {
-    fn process_request_body(&mut self, _: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         _: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -486,6 +483,7 @@ impl FetchResponseListener for LinkFetchContext {
     fn process_response_chunk(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         _: RequestId,
         chunk: Bytes,
     ) {
@@ -499,11 +497,12 @@ impl FetchResponseListener for LinkFetchContext {
     fn process_response_eof(
         self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _: RequestId,
         response_result: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
-        submit_timing(cx, &self, &response_result, &timing);
+        submit_timing(cx, global, &self, &response_result, &timing);
 
         // Step 11.6. If processResponse is given, then call processResponse with response.
         //
@@ -520,10 +519,10 @@ impl FetchResponseListener for LinkFetchContext {
     fn process_csp_violations(
         &mut self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 
@@ -536,9 +535,5 @@ impl FetchResponseListener for LinkFetchContext {
 impl ResourceTimingListener for LinkFetchContext {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (self.type_.clone().into(), self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.global.root()
     }
 }

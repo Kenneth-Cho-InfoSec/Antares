@@ -3,9 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::rc::Rc;
 
-use devtools_traits::WorkerId;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use net_traits::request::Referrer;
@@ -13,18 +11,19 @@ use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::NavigatorBinding::NavigatorMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::reflector::reflect_dom_object;
-use servo_base::id::ServiceWorkerRegistrationId;
+use servo_base::id::{ServiceWorkerRegistrationId, WorkerId};
 use servo_constellation_traits::{ScopeThings, WorkerScriptLoadOrigin};
 use servo_url::ServoUrl;
 use uuid::Uuid;
 
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerRegistrationBinding::{
     ServiceWorkerRegistrationMethods, ServiceWorkerUpdateViaCache,
 };
 use crate::dom::bindings::error::Error;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{ByteString, USVString};
 use crate::dom::cookiestoremanager::CookieStoreManager;
 use crate::dom::eventtarget::EventTarget;
@@ -38,17 +37,19 @@ use crate::dom::workerglobalscope::prepare_workerscope_init;
 #[dom_struct]
 pub(crate) struct ServiceWorkerRegistration {
     eventtarget: EventTarget,
-    active: DomRefCell<Option<Dom<ServiceWorker>>>,
-    installing: DomRefCell<Option<Dom<ServiceWorker>>>,
-    waiting: DomRefCell<Option<Dom<ServiceWorker>>>,
+    active: MutNullableDom<ServiceWorker>,
+    installing: MutNullableDom<ServiceWorker>,
+    waiting: MutNullableDom<ServiceWorker>,
     navigation_preload: MutNullableDom<NavigationPreloadManager>,
     // Each ServiceWorkerRegistration has an associated CookieStoreManager object.
     // https://cookiestore.spec.whatwg.org/#dom-serviceworkerregistration-cookies
     cookie_manager: MutNullableDom<CookieStoreManager>,
     #[no_trace]
     scope: ServoUrl,
+    /// <https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-enabled>
     navigation_preload_enabled: Cell<bool>,
-    navigation_preload_header_value: DomRefCell<Option<ByteString>>,
+    /// <https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-header-value>
+    navigation_preload_header_value: DomRefCell<ByteString>,
     update_via_cache: ServiceWorkerUpdateViaCache,
     uninstalling: Cell<bool>,
     #[no_trace]
@@ -62,14 +63,20 @@ impl ServiceWorkerRegistration {
     ) -> ServiceWorkerRegistration {
         ServiceWorkerRegistration {
             eventtarget: EventTarget::new_inherited(),
-            active: DomRefCell::new(None),
-            installing: DomRefCell::new(None),
-            waiting: DomRefCell::new(None),
+            active: MutNullableDom::new(None),
+            installing: MutNullableDom::new(None),
+            waiting: MutNullableDom::new(None),
             navigation_preload: MutNullableDom::new(None),
             cookie_manager: MutNullableDom::new(None),
             scope,
+            // https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-enabled
+            // A service worker registration has an associated navigation preload enabled,
+            // which is a boolean. It is initially set to false.
             navigation_preload_enabled: Cell::new(false),
-            navigation_preload_header_value: DomRefCell::new(None),
+            // https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-header-value
+            // A service worker registration has an associated navigation preload header value,
+            // which is a byte sequence. It is initially set to `true`.
+            navigation_preload_header_value: DomRefCell::new(ByteString::new(b"true".to_vec())),
             update_via_cache: ServiceWorkerUpdateViaCache::Imports,
             uninstalling: Cell::new(false),
             registration_id,
@@ -100,20 +107,20 @@ impl ServiceWorkerRegistration {
 
     /// Does this registration have an active worker?
     pub(crate) fn is_active(&self) -> bool {
-        self.active.borrow().is_some()
+        self.active.get().is_some()
     }
 
     pub(crate) fn set_installing(&self, worker: &ServiceWorker) {
-        *self.installing.borrow_mut() = Some(Dom::from_ref(worker));
+        self.installing.set(Some(worker));
     }
 
-    pub(crate) fn get_navigation_preload_header_value(&self) -> Option<ByteString> {
+    pub(crate) fn get_navigation_preload_header_value(&self) -> ByteString {
         self.navigation_preload_header_value.borrow().clone()
     }
 
     pub(crate) fn set_navigation_preload_header_value(&self, value: ByteString) {
         let mut header_value = self.navigation_preload_header_value.borrow_mut();
-        *header_value = Some(value);
+        *header_value = value;
     }
 
     pub(crate) fn get_navigation_preload_enabled(&self) -> bool {
@@ -140,9 +147,11 @@ impl ServiceWorkerRegistration {
             .downcast::<Window>()
             .and_then(|window| window.webgl_chan_value());
         let worker_id = WorkerId(Uuid::new_v4());
+        #[cfg(feature = "devtools")]
         let devtools_chan = global.devtools_chan().cloned();
         let init = prepare_workerscope_init(
             global,
+            #[cfg(feature = "devtools")]
             None,
             Some(worker_id),
             #[cfg(feature = "webgl")]
@@ -159,23 +168,21 @@ impl ServiceWorkerRegistration {
             script_url,
             init,
             worker_load_origin,
+            #[cfg(feature = "devtools")]
             devtools_chan,
+            #[cfg(feature = "devtools")]
             worker_id,
             browsing_context_id,
             webview_id,
         }
     }
 
-    // https://w3c.github.io/ServiceWorker/#get-newest-worker-algorithm
+    /// <https://w3c.github.io/ServiceWorker/#get-newest-worker-algorithm>
     pub(crate) fn get_newest_worker(&self) -> Option<DomRoot<ServiceWorker>> {
-        let installing = self.installing.borrow();
-        let waiting = self.waiting.borrow();
-        let active = self.active.borrow();
-        installing
-            .as_ref()
-            .map(|sw| DomRoot::from_ref(&**sw))
-            .or_else(|| waiting.as_ref().map(|sw| DomRoot::from_ref(&**sw)))
-            .or_else(|| active.as_ref().map(|sw| DomRoot::from_ref(&**sw)))
+        self.installing
+            .get()
+            .or_else(|| self.waiting.get())
+            .or_else(|| self.active.get())
     }
 }
 
@@ -199,14 +206,11 @@ pub(crate) fn longest_prefix_match(stored_scope: &ServoUrl, potential_match: &Se
 impl ServiceWorkerRegistrationMethods<crate::DomTypeHolder> for ServiceWorkerRegistration {
     /// <https://w3c.github.io/ServiceWorker/#service-worker-registration-installing-attribute>
     fn GetInstalling(&self) -> Option<DomRoot<ServiceWorker>> {
-        self.installing
-            .borrow()
-            .as_ref()
-            .map(|sw| DomRoot::from_ref(&**sw))
+        self.installing.get()
     }
 
     /// <https://w3c.github.io/ServiceWorker/#dom-serviceworkerregistration-unregister>
-    fn Unregister(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn Unregister(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 1: Let registration be the service worker registration.
         // Note: `self` is the registration.
 
@@ -243,14 +247,14 @@ impl ServiceWorkerRegistrationMethods<crate::DomTypeHolder> for ServiceWorkerReg
             storage_key,
             self.scope.clone(),
             worker.get_script_url(),
-            promise.clone(),
+            &promise,
         );
 
         // Set all workers to none.
         // Note: not clear where the spec does this.
-        *self.installing.borrow_mut() = None;
-        *self.waiting.borrow_mut() = None;
-        *self.active.borrow_mut() = None;
+        self.installing.set(None);
+        self.waiting.set(None);
+        self.active.set(None);
 
         // Step 5: Return promise.
         promise
@@ -258,18 +262,12 @@ impl ServiceWorkerRegistrationMethods<crate::DomTypeHolder> for ServiceWorkerReg
 
     /// <https://w3c.github.io/ServiceWorker/#service-worker-registration-active-attribute>
     fn GetActive(&self) -> Option<DomRoot<ServiceWorker>> {
-        self.active
-            .borrow()
-            .as_ref()
-            .map(|sw| DomRoot::from_ref(&**sw))
+        self.active.get()
     }
 
     /// <https://w3c.github.io/ServiceWorker/#service-worker-registration-waiting-attribute>
     fn GetWaiting(&self) -> Option<DomRoot<ServiceWorker>> {
-        self.waiting
-            .borrow()
-            .as_ref()
-            .map(|sw| DomRoot::from_ref(&**sw))
+        self.waiting.get()
     }
 
     /// <https://w3c.github.io/ServiceWorker/#service-worker-registration-scope-attribute>

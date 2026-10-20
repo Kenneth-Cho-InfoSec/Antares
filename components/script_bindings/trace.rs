@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
+use atomic_refcell::AtomicRefCell;
 use crossbeam_channel::Sender;
 use html5ever::interface::{Tracer as HtmlTracer, TreeSink};
 use html5ever::tokenizer::{TokenSink, Tokenizer};
@@ -37,6 +38,7 @@ use crate::JSTraceable;
 use crate::error::Error;
 use crate::reflector::Reflector;
 use crate::str::USVString;
+use crate::tasks::TaskBox;
 
 /// Trace the `JSObject` held by `reflector`.
 ///
@@ -88,6 +90,7 @@ macro_rules! unsafe_no_jsmanaged_fields(
 
 unsafe_no_jsmanaged_fields!(USVString);
 unsafe_no_jsmanaged_fields!(Error);
+unsafe_no_jsmanaged_fields!(Box<dyn TaskBox>);
 
 /// A trait to allow tracing only DOM sub-objects.
 ///
@@ -137,6 +140,12 @@ unsafe impl<T: JSTraceable> CustomTraceable for RwLock<T> {
     }
 }
 
+unsafe impl<T: JSTraceable> CustomTraceable for AtomicRefCell<T> {
+    unsafe fn trace(&self, trc: *mut JSTracer) {
+        unsafe { self.borrow().trace(trc) }
+    }
+}
+
 unsafe impl<T: JSTraceable + Eq + Hash> CustomTraceable for indexmap::IndexSet<T> {
     #[inline]
     unsafe fn trace(&self, trc: *mut JSTracer) {
@@ -148,7 +157,7 @@ unsafe impl<T: JSTraceable + Eq + Hash> CustomTraceable for indexmap::IndexSet<T
 
 // XXXManishearth Check if the following three are optimized to no-ops
 // if e.trace() is a no-op (e.g it is an unsafe_no_jsmanaged_fields type)
-unsafe impl<T: JSTraceable + 'static> CustomTraceable for SmallVec<[T; 1]> {
+unsafe impl<T: JSTraceable + 'static, const N: usize> CustomTraceable for SmallVec<[T; N]> {
     #[inline]
     unsafe fn trace(&self, trc: *mut JSTracer) {
         for e in self.iter() {

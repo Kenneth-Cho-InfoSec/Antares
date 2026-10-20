@@ -4,7 +4,7 @@
 
 use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name};
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 
@@ -66,7 +66,7 @@ impl HTMLOutputElement {
 
     pub(crate) fn reset(&self, cx: &mut JSContext) {
         Node::string_replace_all(cx, self.DefaultValue(), self.upcast::<Node>());
-        *self.default_value_override.borrow_mut() = None;
+        *self.default_value_override.safe_borrow_mut(cx.no_gc()) = None;
     }
 }
 
@@ -96,7 +96,7 @@ impl HTMLOutputElementMethods<crate::DomTypeHolder> for HTMLOutputElement {
             Node::string_replace_all(cx, value, self.upcast::<Node>());
         } else {
             // Step 2, if not returned from step 1
-            *self.default_value_override.borrow_mut() = Some(value);
+            *self.default_value_override.safe_borrow_mut(cx.no_gc()) = Some(value);
         }
     }
 
@@ -107,7 +107,7 @@ impl HTMLOutputElementMethods<crate::DomTypeHolder> for HTMLOutputElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-output-value>
     fn SetValue(&self, cx: &mut JSContext, value: DOMString) {
-        *self.default_value_override.borrow_mut() = Some(self.DefaultValue());
+        *self.default_value_override.safe_borrow_mut(cx.no_gc()) = Some(self.DefaultValue());
         Node::string_replace_all(cx, value, self.upcast::<Node>());
     }
 
@@ -123,8 +123,8 @@ impl HTMLOutputElementMethods<crate::DomTypeHolder> for HTMLOutputElement {
     make_getter!(Name, "name");
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-willvalidate>
-    fn WillValidate(&self) -> bool {
-        self.is_instance_validatable()
+    fn WillValidate(&self, no_gc: &NoGC) -> bool {
+        self.is_instance_validatable(no_gc)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-validity>
@@ -197,7 +197,7 @@ impl Validatable for HTMLOutputElement {
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
     }
 
-    fn is_instance_validatable(&self) -> bool {
+    fn is_instance_validatable(&self, _no_gc: &NoGC) -> bool {
         // output is not a submittable element (https://html.spec.whatwg.org/multipage/#category-submit)
         false
     }

@@ -17,16 +17,18 @@ use js::glue::UnwrapObjectStatic;
 use js::jsapi::{HandleValueArray, Heap, IsCallable, IsConstructor, JSObject};
 use js::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
-use js::rust::wrappers2::{Construct1, JS_GetProperty, SameValue};
+use js::rust::wrappers2::{Construct1, SameValue};
 use js::rust::{HandleObject, MutableHandleValue};
-use rustc_hash::FxBuildHasher;
+use rustc_hash::{FxBuildHasher, FxHashSet};
+use script_bindings::callback::HasCallbackHolder;
 use script_bindings::cell::DomRefCell;
+use script_bindings::js::JS_GetProperty;
 use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
 use script_bindings::settings_stack::{run_a_callback, run_a_script};
 use style::attr::AttrValue;
 
 use crate::DomTypeHolder;
-use crate::dom::bindings::callback::{CallbackContainer, ExceptionHandling};
+use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::CustomElementRegistryBinding::{
     CustomElementConstructor, CustomElementRegistryMethods, ElementDefinitionOptions,
 };
@@ -51,8 +53,9 @@ use crate::dom::html::htmlformelement::{FormControl, HTMLFormElement};
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::promise::Promise;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::window::Window;
+use crate::dom::{RootedPromise, TracedPromise};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::realms::enter_auto_realm;
 use crate::runtime::job_queue::CustomElementReactionMicrotask;
@@ -75,11 +78,10 @@ pub(crate) struct CustomElementRegistry {
 
     window: Dom<Window>,
 
-    #[conditional_malloc_size_of]
     /// It is safe to use FxBuildHasher here as `LocalName` is an `Atom` in the string_cache.
     /// These get a u32 hashed instead of a string.
     /// <https://html.spec.whatwg.org/multipage/#when-defined-promise-map>
-    when_defined: DomRefCell<HashMapTracedValues<LocalName, Rc<Promise>, FxBuildHasher>>,
+    when_defined: DomRefCell<HashMapTracedValues<LocalName, TracedPromise, FxBuildHasher>>,
 
     /// <https://html.spec.whatwg.org/multipage/#element-definition-is-running>
     element_definition_is_running: Cell<bool>,
@@ -88,7 +90,7 @@ pub(crate) struct CustomElementRegistry {
     is_scoped: Cell<bool>,
 
     /// <https://html.spec.whatwg.org/multipage/#scoped-document-set>
-    scoped_document_set: DomRefCell<Vec<Dom<Document>>>,
+    scoped_document_set: DomRefCell<FxHashSet<Dom<Document>>>,
 
     #[conditional_malloc_size_of]
     /// <https://html.spec.whatwg.org/multipage/#custom-element-definition-set>
@@ -104,7 +106,7 @@ impl CustomElementRegistry {
             when_defined: DomRefCell::new(HashMapTracedValues::new_fx()),
             element_definition_is_running: Cell::new(false),
             is_scoped: Cell::new(false),
-            scoped_document_set: DomRefCell::new(Vec::new()),
+            scoped_document_set: Default::default(),
             definitions: DomRefCell::new(HashMapTracedValues::new_fx()),
         }
     }
@@ -220,25 +222,22 @@ impl CustomElementRegistry {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-define>
     /// Steps 10.1, 10.2
-    #[expect(unsafe_code)]
     fn check_prototype(
         &self,
         cx: &mut JSContext,
         constructor: HandleObject,
         mut prototype: MutableHandleValue,
     ) -> ErrorResult {
-        unsafe {
-            // Step 10.1
-            if !JS_GetProperty(cx, constructor, c"prototype".as_ptr(), prototype.reborrow()) {
-                return Err(Error::JSFailed);
-            }
+        // Step 10.1
+        if !JS_GetProperty(cx, constructor, c"prototype", prototype.reborrow()) {
+            return Err(Error::JSFailed);
+        }
 
-            // Step 10.2
-            if !prototype.is_object() {
-                return Err(Error::Type(
-                    c"constructor.prototype is not an object".to_owned(),
-                ));
-            }
+        // Step 10.2
+        if !prototype.is_object() {
+            return Err(Error::Type(
+                c"constructor.prototype is not an object".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -250,9 +249,9 @@ impl CustomElementRegistry {
         &self,
         cx: &mut JSContext,
         prototype: HandleObject,
-    ) -> Fallible<LifecycleCallbacks> {
+    ) -> Fallible<RootedLifecycleCallbacks> {
         // Step 4
-        Ok(LifecycleCallbacks {
+        Ok(RootedLifecycleCallbacks {
             connected_callback: get_callback(cx, prototype, c"connectedCallback")?,
             disconnected_callback: get_callback(cx, prototype, c"disconnectedCallback")?,
             connected_move_callback: get_callback(cx, prototype, c"connectedMoveCallback")?,
@@ -273,7 +272,7 @@ impl CustomElementRegistry {
         &self,
         cx: &mut JSContext,
         prototype: HandleObject,
-        callbacks: &mut LifecycleCallbacks,
+        callbacks: &mut RootedLifecycleCallbacks,
     ) -> ErrorResult {
         callbacks.form_associated_callback =
             get_callback(cx, prototype, c"formAssociatedCallback")?;
@@ -301,7 +300,7 @@ impl CustomElementRegistry {
         // only include elements whose is value is equal to name.
         for candidate in document
             .upcast::<Node>()
-            .traverse_preorder_non_rooting(cx, ShadowIncluding::Yes)
+            .traverse_preorder_unrooted(cx, ShadowIncluding::Yes)
             .filter_map(UnrootedDom::downcast::<Element>)
         {
             // Note: If the registry is scoped, only include elements whose custom
@@ -332,7 +331,7 @@ impl CustomElementRegistry {
     pub(crate) fn add_scoped_document(&self, document: &Document) {
         self.scoped_document_set
             .borrow_mut()
-            .push(Dom::from_ref(document));
+            .insert(Dom::from_ref(document));
     }
 }
 
@@ -343,11 +342,11 @@ fn get_callback(
     cx: &mut JSContext,
     prototype: HandleObject,
     name: &CStr,
-) -> Fallible<Option<Rc<Function>>> {
+) -> Fallible<Option<RootedCallback<Function>>> {
     rooted!(&in(cx) let mut callback = UndefinedValue());
     unsafe {
         // Step 10.4.1
-        if !JS_GetProperty(cx, prototype, name.as_ptr(), callback.handle_mut()) {
+        if !JS_GetProperty(cx, prototype, name, callback.handle_mut()) {
             return Err(Error::JSFailed);
         }
 
@@ -385,7 +384,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
         &self,
         cx: &mut JSContext,
         name: DOMString,
-        constructor_: Rc<CustomElementConstructor>,
+        constructor_: RootedCallback<CustomElementConstructor>,
         options: &ElementDefinitionOptions,
     ) -> ErrorResult {
         rooted!(&in(cx) let constructor = constructor_.callback());
@@ -429,7 +428,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
             .definitions
             .borrow()
             .iter()
-            .any(|(_, def)| def.constructor == constructor_)
+            .any(|(_, def)| def.constructor.callback() == constructor_.callback())
         {
             return Err(Error::NotSupported(None));
         }
@@ -628,7 +627,11 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
 
         // Step 19: If this's when-defined promise map[name] exists:
         // Step 19.2: Remove this's when-defined promise map[name].
-        let promise = self.when_defined.borrow_mut().remove(&name);
+        let promise = self
+            .when_defined
+            .borrow_mut()
+            .remove(&name)
+            .map(|promise| promise.root(cx));
         if let Some(promise) = promise {
             rooted!(&in(cx) let mut constructor = UndefinedValue());
             definition
@@ -649,17 +652,17 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-getname>
-    fn GetName(&self, constructor: Rc<CustomElementConstructor>) -> Option<DOMString> {
+    fn GetName(&self, constructor: RootedCallback<CustomElementConstructor>) -> Option<DOMString> {
         self.definitions
             .borrow()
             .0
             .values()
-            .find(|definition| definition.constructor == constructor)
+            .find(|definition| definition.constructor.callback() == constructor.callback())
             .map(|definition| DOMString::from(definition.name.to_string()))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-whendefined>
-    fn WhenDefined(&self, realm: &mut CurrentRealm, name: DOMString) -> Rc<Promise> {
+    fn WhenDefined(&self, realm: &mut CurrentRealm, name: DOMString) -> RootedPromise {
         let name = LocalName::from(name);
 
         // Step 1
@@ -686,10 +689,16 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
         }
 
         // Steps 3, 4, 5, 6
-        let existing_promise = self.when_defined.borrow().get(&name).cloned();
+        let existing_promise = self
+            .when_defined
+            .borrow()
+            .get(&name)
+            .map(|promise| promise.root(realm));
         existing_promise.unwrap_or_else(|| {
             let promise = Promise::new_in_realm(realm);
-            self.when_defined.borrow_mut().insert(name, promise.clone());
+            self.when_defined
+                .borrow_mut()
+                .insert(name, promise.to_traced());
             promise
         })
     }
@@ -698,7 +707,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
     fn Upgrade(&self, cx: &JSContext, node: &Node) {
         // Step 1. For each shadow-including inclusive descendant candidate of
         // root, in shadow-including tree order:
-        for node in node.traverse_preorder_non_rooting(cx, ShadowIncluding::Yes) {
+        for node in node.traverse_preorder_unrooted(cx, ShadowIncluding::Yes) {
             // Step 1.1. If candidate is not an Element node, then continue.
             let Some(element) = node.downcast::<Element>() else {
                 continue;
@@ -772,7 +781,7 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
                     let document = element.upcast::<Node>().owner_doc();
                     self.scoped_document_set
                         .borrow_mut()
-                        .push(Dom::from_ref(&document));
+                        .insert(Dom::from_ref(&document));
                 }
             // Step 4.3. If inclusiveDescendant's custom element registry is not this, then continue.
             } else if element
@@ -790,43 +799,79 @@ impl CustomElementRegistryMethods<crate::DomTypeHolder> for CustomElementRegistr
 }
 
 #[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct LifecycleCallbacks {
-    #[conditional_malloc_size_of]
-    connected_callback: Option<Rc<Function>>,
+    connected_callback: Option<TracedCallback<Function>>,
+    connected_move_callback: Option<TracedCallback<Function>>,
+    disconnected_callback: Option<TracedCallback<Function>>,
+    adopted_callback: Option<TracedCallback<Function>>,
+    attribute_changed_callback: Option<TracedCallback<Function>>,
+    form_associated_callback: Option<TracedCallback<Function>>,
+    form_reset_callback: Option<TracedCallback<Function>>,
+    form_disabled_callback: Option<TracedCallback<Function>>,
+    form_state_restore_callback: Option<TracedCallback<Function>>,
+}
 
-    #[conditional_malloc_size_of]
-    connected_move_callback: Option<Rc<Function>>,
+struct RootedLifecycleCallbacks {
+    connected_callback: Option<RootedCallback<Function>>,
+    connected_move_callback: Option<RootedCallback<Function>>,
+    disconnected_callback: Option<RootedCallback<Function>>,
+    adopted_callback: Option<RootedCallback<Function>>,
+    attribute_changed_callback: Option<RootedCallback<Function>>,
+    form_associated_callback: Option<RootedCallback<Function>>,
+    form_reset_callback: Option<RootedCallback<Function>>,
+    form_disabled_callback: Option<RootedCallback<Function>>,
+    form_state_restore_callback: Option<RootedCallback<Function>>,
+}
 
-    #[conditional_malloc_size_of]
-    disconnected_callback: Option<Rc<Function>>,
-
-    #[conditional_malloc_size_of]
-    adopted_callback: Option<Rc<Function>>,
-
-    #[conditional_malloc_size_of]
-    attribute_changed_callback: Option<Rc<Function>>,
-
-    #[conditional_malloc_size_of]
-    form_associated_callback: Option<Rc<Function>>,
-
-    #[conditional_malloc_size_of]
-    form_reset_callback: Option<Rc<Function>>,
-
-    #[conditional_malloc_size_of]
-    form_disabled_callback: Option<Rc<Function>>,
-
-    #[conditional_malloc_size_of]
-    form_state_restore_callback: Option<Rc<Function>>,
+impl From<RootedLifecycleCallbacks> for LifecycleCallbacks {
+    fn from(callbacks: RootedLifecycleCallbacks) -> Self {
+        Self {
+            connected_callback: callbacks
+                .connected_callback
+                .map(|callback| callback.to_traced()),
+            connected_move_callback: callbacks
+                .connected_move_callback
+                .map(|callback| callback.to_traced()),
+            disconnected_callback: callbacks
+                .disconnected_callback
+                .map(|callback| callback.to_traced()),
+            adopted_callback: callbacks
+                .adopted_callback
+                .map(|callback| callback.to_traced()),
+            attribute_changed_callback: callbacks
+                .attribute_changed_callback
+                .map(|callback| callback.to_traced()),
+            form_associated_callback: callbacks
+                .form_associated_callback
+                .map(|callback| callback.to_traced()),
+            form_reset_callback: callbacks
+                .form_reset_callback
+                .map(|callback| callback.to_traced()),
+            form_disabled_callback: callbacks
+                .form_disabled_callback
+                .map(|callback| callback.to_traced()),
+            form_state_restore_callback: callbacks
+                .form_state_restore_callback
+                .map(|callback| callback.to_traced()),
+        }
+    }
 }
 
 #[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) enum ConstructionStackEntry {
-    Element(DomRoot<Element>),
+    Element(Dom<Element>),
     AlreadyConstructedMarker,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#custom-element-definition>
+/// # Safety
+/// This can be shared inside an Rc because every Rc copy is reachable from a
+/// CustomElementRegistry's definitions map, which the GC traces.
 #[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::allow_unrooted_in_rc)]
 pub(crate) struct CustomElementDefinition {
     /// <https://html.spec.whatwg.org/multipage/#concept-custom-element-definition-name>
     #[no_trace]
@@ -837,8 +882,7 @@ pub(crate) struct CustomElementDefinition {
     pub(crate) local_name: LocalName,
 
     /// <https://html.spec.whatwg.org/multipage/#concept-custom-element-definition-constructor>
-    #[conditional_malloc_size_of]
-    pub(crate) constructor: Rc<CustomElementConstructor>,
+    pub(crate) constructor: TracedCallback<CustomElementConstructor>,
 
     /// <https://html.spec.whatwg.org/multipage/#concept-custom-element-definition-observed-attributes>
     pub(crate) observed_attributes: Vec<DOMString>,
@@ -864,9 +908,9 @@ impl CustomElementDefinition {
     fn new(
         name: LocalName,
         local_name: LocalName,
-        constructor: Rc<CustomElementConstructor>,
+        constructor: RootedCallback<CustomElementConstructor>,
         observed_attributes: Vec<DOMString>,
-        callbacks: LifecycleCallbacks,
+        callbacks: RootedLifecycleCallbacks,
         form_associated: bool,
         disable_internals: bool,
         disable_shadow: bool,
@@ -874,9 +918,9 @@ impl CustomElementDefinition {
         CustomElementDefinition {
             name,
             local_name,
-            constructor,
+            constructor: constructor.to_traced(),
             observed_attributes,
-            callbacks,
+            callbacks: callbacks.into(),
             construction_stack: Default::default(),
             form_associated,
             disable_internals,
@@ -1022,7 +1066,7 @@ pub(crate) fn upgrade_element(
     definition
         .construction_stack
         .borrow_mut()
-        .push(ConstructionStackEntry::Element(DomRoot::from_ref(element)));
+        .push(ConstructionStackEntry::Element(Dom::from_ref(element)));
 
     // Steps 7-8, successful case
     let result = run_upgrade_constructor(cx, &definition, element);
@@ -1074,7 +1118,7 @@ pub(crate) fn upgrade_element(
         // not a flag that belongs to the node and is updated,
         // so it doesn't describe this check as an action.)
         element.check_disabled_attribute();
-        element.check_ancestors_disabled_state_for_form_control();
+        element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
         element.update_read_write_state_from_readonly_attribute();
 
         // Step 9.2: If element is disabled, then enqueue a custom element callback reaction
@@ -1179,7 +1223,9 @@ pub(crate) fn try_upgrade_element(cx: &JSContext, element: &Element) {
         {
             registry
         } else {
-            element.owner_document().custom_element_registry()
+            element
+                .owner_document_unrooted(cx.no_gc())
+                .custom_element_registry()
         }
     };
     if let Some(definition) = CustomElementRegistry::lookup_custom_element_definition(
@@ -1199,7 +1245,7 @@ pub(crate) fn try_upgrade_element(cx: &JSContext, element: &Element) {
 pub(crate) enum CustomElementReaction {
     Upgrade(#[conditional_malloc_size_of] Rc<CustomElementDefinition>),
     Callback(
-        #[conditional_malloc_size_of] Rc<Function>,
+        TracedCallback<Function>,
         #[ignore_malloc_size_of = "mozjs"] Box<[Heap<JSVal>]>,
     ),
 }
@@ -1448,7 +1494,7 @@ impl CustomElementReactionStack {
                     // disconnectedCallback with no arguments.
                     if let Some(disconnected_callback) = disconnected_callback {
                         element.push_callback_reaction(
-                            disconnected_callback,
+                            disconnected_callback.root(cx),
                             Box::new([]),
                             cx.no_gc(),
                         );
@@ -1457,7 +1503,7 @@ impl CustomElementReactionStack {
                     // connectedCallback with no arguments.
                     if let Some(connected_callback) = connected_callback {
                         element.push_callback_reaction(
-                            connected_callback,
+                            connected_callback.root(cx),
                             Box::new([]),
                             cx.no_gc(),
                         );
@@ -1479,7 +1525,7 @@ impl CustomElementReactionStack {
 
         // Step 6. Add a new callback reaction to element's custom element reaction queue, with
         // callback function callback and arguments args.
-        element.push_callback_reaction(callback, args.into_boxed_slice(), cx.no_gc());
+        element.push_callback_reaction(callback.root(cx), args.into_boxed_slice(), cx.no_gc());
 
         // Step 7. Enqueue an element on the appropriate element queue given element.
         self.enqueue_element(cx, element);

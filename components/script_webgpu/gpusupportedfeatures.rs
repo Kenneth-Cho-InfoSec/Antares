@@ -18,7 +18,7 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
 };
 use script_bindings::like::Setlike;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_wrap};
-use wgpu_types::Features;
+use webgpu_traits::Features;
 
 use crate::JSTraceable;
 use crate::dom::bindings::error::Fallible;
@@ -100,6 +100,7 @@ impl<D: Equivalence> GPUSupportedFeatures<D> {
         */
 
         reflect_dom_object_with_proto_and_wrap::<D, _, _>(
+            cx,
             Box::new(GPUSupportedFeatures {
                 reflector: Reflector::new(),
                 internal: DomRefCell::new(set),
@@ -108,13 +109,12 @@ impl<D: Equivalence> GPUSupportedFeatures<D> {
             }),
             global,
             proto,
-            cx,
             GPUSupportedFeaturesWrap::<D>,
         )
     }
 
     #[expect(non_snake_case)]
-    pub fn Constructor(
+    pub(crate) fn Constructor(
         cx: &mut JSContext,
         global: &D::GlobalScope,
         proto: Option<HandleObject>,
@@ -125,7 +125,7 @@ impl<D: Equivalence> GPUSupportedFeatures<D> {
 }
 
 impl<D: DomTypes> GPUSupportedFeatures<D> {
-    pub fn wgpu_features(&self) -> &Features {
+    pub(crate) fn wgpu_features(&self) -> &Features {
         &self.features
     }
 }

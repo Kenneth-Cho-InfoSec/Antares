@@ -119,7 +119,6 @@ WEBIDL_STANDARDS = [
     b"//developer.mozilla.org/en-US/docs/Web/API",
     b"//dev.w3.org/2006/webapi",
     b"//dev.w3.org/csswg",
-    b"//dev.w3.org/fxtf",
     b"//dvcs.w3.org/hg",
     b"//www.w3.org/TR/trusted-types/",
     b"//www.w3.org/TR/credential-management",
@@ -127,7 +126,6 @@ WEBIDL_STANDARDS = [
     b"//dom.spec.whatwg.org",
     b"//drafts.csswg.org",
     b"//drafts.css-houdini.org",
-    b"//drafts.fxtf.org",
     b"//console.spec.whatwg.org",
     b"//encoding.spec.whatwg.org",
     b"//fetch.spec.whatwg.org",
@@ -582,8 +580,13 @@ def check_toml(file_name: str, lines: list[bytes]) -> Iterator[tuple[int, str]]:
             lints_inherited = True
     if not ok_licensed:
         yield (0, ".toml file should contain a valid license.")
-    # TODO(47512): Check for `./components/` here
-    if "lints-configuration" in file_name and not lints_inherited:
+    if (
+        not any(file_name.startswith(folder) for folder in ["./support/crown/", "./ffi/capi/"])
+        # Required for the tests of tidy itself, where we don't want to lint any of the `Cargo.toml`
+        # except for the `Cargo.toml` for this specific check, which are in `lints-configuration/`.
+        and ("/tests/" not in file_name or "lints-configuration" in file_name)
+        and not lints_inherited
+    ):
         yield (0, ".toml file should turn on lints from workspace.")
 
     normalized_file_name = os.path.abspath(file_name)

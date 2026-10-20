@@ -5,12 +5,13 @@
 use std::borrow::Cow;
 use std::cell::LazyCell;
 use std::ops::Range;
+use std::sync::{Arc, OnceLock};
 
 use atomic_refcell::AtomicRefCell;
 use icu_properties::CodePointMapData;
 use icu_properties::props::BidiClass;
 use layout_api::LayoutNode;
-use servo_base::text::{RangeAny, Utf32CodeUnits};
+use servo_base::text::{AssumeUnder4GB, RangeAny, Utf8CodeUnits, Utf32CodeUnits};
 use style::computed_values::direction::T as Direction;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::dom::NodeInfo;
@@ -47,14 +48,18 @@ pub(crate) struct InlineFormattingContextBuilder {
     /// construction.
     pub text_segments: Vec<String>,
 
+    /// A slot used to share the full text string of the [`InlineFormattingContext`] this
+    /// builder will ultimately build.
+    pub text_content_slot: Arc<OnceLock<String>>,
+
     /// The current offset in the final text string of this [`InlineFormattingContext`],
     /// used to properly set the text range of new [`InlineItem::TextRun`]s.
-    current_text_offset: usize,
+    current_text_offset: Utf8CodeUnits,
 
     /// The current character offset in the final text string of this [`InlineFormattingContext`],
     /// used to properly set the text range of new [`InlineItem::TextRun`]s. Note that this is
     /// different from the UTF-8 code point offset.
-    current_character_offset: usize,
+    current_character_offset: Utf32CodeUnits,
 
     /// Whether the last processed node ended with whitespace. This is used to
     /// implement rule 4 of <https://www.w3.org/TR/css-text-3/#collapse>:
@@ -95,9 +100,11 @@ pub(crate) struct InlineFormattingContextBuilder {
     /// completely collapsible whitespace. When that happens it can be ignored completely.
     pub is_empty: bool,
 
-    /// Whether or not the `::first-letter` pseudo-element of this inline formatting context
-    /// has been processed yet.
-    has_processed_first_letter: bool,
+    /// Whether this inline formatting context should process the `::first-letter` pseudo-element.
+    /// This typically starts as true, and then is set to false after processing `::first-letter`
+    /// or encountering an atomic. But it can also be false from the very beginning if this inline
+    /// formatting context doesn't contain the first formatted line.
+    should_process_first_letter: bool,
 
     /// Whether or not the inline formatting context under construction has any kind of
     /// right-to-left content such as a character with an RTL character class or a `dir`
@@ -126,7 +133,11 @@ impl InlineFormattingContextBuilder {
         character.is_ascii_whitespace()
     }
 
-    pub(crate) fn new(info: &NodeAndStyleInfo, context: &LayoutContext) -> Self {
+    pub(crate) fn new(
+        info: &NodeAndStyleInfo,
+        context: &LayoutContext,
+        should_process_first_letter: bool,
+    ) -> Self {
         let has_right_to_left_content = info.style.get_inherited_box().direction == Direction::Rtl;
         Self {
             // For the purposes of `text-transform: capitalize` the start of the IFC is a word boundary.
@@ -136,6 +147,7 @@ impl InlineFormattingContextBuilder {
                 info, context,
             )],
             has_right_to_left_content,
+            should_process_first_letter,
             ..Default::default()
         }
     }
@@ -146,10 +158,11 @@ impl InlineFormattingContextBuilder {
 
     fn push_control_character_string(&mut self, string_to_push: &str) {
         self.text_segments.push(string_to_push.to_owned());
-        self.current_text_offset += string_to_push.len();
+        // string_to_push is always small
+        self.current_text_offset += Utf8CodeUnits::length_of(AssumeUnder4GB, string_to_push);
 
-        let new_characters = Utf32CodeUnits::length_of(string_to_push);
-        self.current_character_offset += new_characters.0;
+        let new_characters = Utf32CodeUnits::length_of(AssumeUnder4GB, string_to_push);
+        self.current_character_offset += new_characters;
         self.offset_map
             .borrow_mut()
             .push_range(new_characters, new_characters);
@@ -192,7 +205,7 @@ impl InlineFormattingContextBuilder {
         self.on_word_boundary = true;
 
         // Atomics such as images should prevent any following text as being interpreted as the first letter.
-        self.has_processed_first_letter = true;
+        self.should_process_first_letter = false;
 
         inline_level_box
     }
@@ -318,7 +331,7 @@ impl InlineFormattingContextBuilder {
         layout_context: &LayoutContext,
     ) -> bool {
         let selection = info.node.text_node_selection();
-        if self.has_processed_first_letter || !container_info.pseudo_element_chain().is_empty() {
+        if !self.should_process_first_letter || !container_info.pseudo_element_chain().is_empty() {
             self.push_text(text, info, selection);
             return false;
         }
@@ -337,16 +350,15 @@ impl InlineFormattingContextBuilder {
 
         // Push any leading white space first.
         let first_letter_range_u32 = LazyCell::new(|| {
-            Utf32CodeUnits::length_of(&text[..first_letter_range.start])..
-                Utf32CodeUnits::length_of(&text[..first_letter_range.end])
+            // TODO: ensure layout doesn’t handle more than 4 GiB at a time?
+            Utf32CodeUnits::length_of(AssumeUnder4GB, &text[..first_letter_range.start])..
+                Utf32CodeUnits::length_of(AssumeUnder4GB, &text[..first_letter_range.end])
         });
         if first_letter_range.start != 0 {
             let leading_whitespace_range = 0..first_letter_range.start;
             let leading_whitespace_selection_range = selection.and_then(|range| {
-                let leading_whitespace_range_u32 = RangeAny {
-                    start: None,
-                    end: Some(first_letter_range_u32.start),
-                };
+                let leading_whitespace_range_u32 =
+                    RangeAny::from_start_to(first_letter_range_u32.start);
                 range.intersect(leading_whitespace_range_u32)
             });
 
@@ -377,14 +389,12 @@ impl InlineFormattingContextBuilder {
             first_letter_selection_range,
         );
         self.end_inline_box();
-        self.has_processed_first_letter = true;
+        self.should_process_first_letter = false;
 
         // Now push the non-first-letter text.
         let remaining_selection_range = selection.and_then(|range| {
-            let remaining_text_range_u32 = RangeAny {
-                start: Some(first_letter_range_u32.end),
-                end: range.end,
-            };
+            let remaining_text_range_u32 =
+                RangeAny::new(Some(first_letter_range_u32.end), range.end());
             range
                 .intersect(remaining_text_range_u32)
                 .map(|range| range.map(|offset| offset - first_letter_range_u32.end))
@@ -408,8 +418,8 @@ impl InlineFormattingContextBuilder {
         let original_size_before = offset_map.total_original_size();
 
         let bidi_class_map = CodePointMapData::<BidiClass>::new();
-        let white_space_collapse = info.style.clone_white_space_collapse();
-        let mut character_count = 0;
+        let white_space_collapse = info.style.get_white_space_collapse();
+        let mut character_count = Utf32CodeUnits(0);
         let mut new_text = String::with_capacity(text.len());
         for iteration in TextTransformationIterator::new(
             &text,
@@ -419,7 +429,7 @@ impl InlineFormattingContextBuilder {
         ) {
             offset_map.push_iteration(&iteration);
             for &character in iteration.characters() {
-                character_count += 1;
+                character_count.0 += 1;
 
                 // If this character has a strong right-to-left class the new inline formatting context will
                 // need to be BiDi-aware. This match is derived from the list of strong right-to-left classes
@@ -441,23 +451,30 @@ impl InlineFormattingContextBuilder {
                             Self::is_document_white_space(character) && character != '\n'
                         },
                         WhiteSpaceCollapse::Preserve | WhiteSpaceCollapse::BreakSpaces => false,
+                        // preserve-spaces is pref-gated (layout.css.white-space-collapse.preserve-spaces.enabled)
+                        // which Servo does not enable, so it is never parsed.
+                        WhiteSpaceCollapse::PreserveSpaces => unreachable!(),
                     };
 
                 new_text.push(character)
             }
         }
 
-        if new_text.is_empty() {
+        let needs_caret_placeholder = info.node.text_node_needs_caret_placeholder();
+        self.is_empty &= !needs_caret_placeholder;
+        if new_text.is_empty() && !needs_caret_placeholder {
             return;
         }
 
         if let Some(last_character) = new_text.chars().next_back() {
             self.on_word_boundary = last_character.is_whitespace();
             self.last_inline_box_ended_with_collapsible_white_space =
-                self.on_word_boundary && white_space_collapse != WhiteSpaceCollapse::Preserve;
+                self.on_word_boundary && white_space_collapse != &WhiteSpaceCollapse::Preserve;
         }
 
-        let new_utf8_range = self.current_text_offset..self.current_text_offset + new_text.len();
+        // TODO: ensure layout doesn’t handle more than 4 GiB at a time?
+        let new_text_len = Utf8CodeUnits::length_of(AssumeUnder4GB, &new_text);
+        let new_utf8_range = self.current_text_offset..self.current_text_offset + new_text_len;
         self.current_text_offset = new_utf8_range.end;
 
         let new_character_range =
@@ -471,11 +488,13 @@ impl InlineFormattingContextBuilder {
         let text_run = ArcRefCell::new(TextRun::new(
             info.into(),
             SharedTextRunData {
+                text_content: self.text_content_slot.clone(),
                 inline_styles: current_inline_styles,
                 character_range_in_ifc_text: new_character_range,
                 original_offset: original_size_before,
                 selection: AtomicRefCell::new(selection),
-                paint_caret: info.node.text_node_paints_caret(),
+                paints_caret: info.node.text_node_paints_caret(),
+                needs_caret_placeholder,
                 offset_map: self.offset_map.clone(),
             }
             .into(),
@@ -514,7 +533,7 @@ impl InlineFormattingContextBuilder {
 
         assert!(self.inline_box_stack.is_empty());
         debug_assert_eq!(
-            self.offset_map.borrow().total_final_size().0,
+            self.offset_map.borrow().total_final_size(),
             self.current_character_offset
         );
 
@@ -525,6 +544,12 @@ impl InlineFormattingContextBuilder {
             is_single_line_text_input,
             default_bidi_level,
         ))
+    }
+
+    /// Push a soft wrap opportunity to this [`InlineFormattingContextBuilder`] which pushes
+    /// a zero-width space to the text content.
+    pub(crate) fn push_soft_wrap_opportunity(&mut self) {
+        self.push_control_character_string("\u{200B}");
     }
 }
 

@@ -5,7 +5,7 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use webxr_api::{InputId, InputSource};
 
 use crate::dom::bindings::codegen::Bindings::XRInputSourceArrayBinding::XRInputSourceArrayMethods;
@@ -33,7 +33,7 @@ impl XRInputSourceArray {
     }
 
     pub(crate) fn new(cx: &mut JSContext, window: &Window) -> DomRoot<XRInputSourceArray> {
-        reflect_dom_object_with_cx(Box::new(XRInputSourceArray::new_inherited()), window, cx)
+        reflect_dom_object(cx, Box::new(XRInputSourceArray::new_inherited()), window)
     }
 
     pub(crate) fn add_input_sources(
@@ -58,7 +58,9 @@ impl XRInputSourceArray {
                 "Should never add a duplicate input id!"
             );
             let input = XRInputSource::new(cx, window, session, info.clone());
-            self.input_sources.borrow_mut().push(Dom::from_ref(&input));
+            self.input_sources
+                .safe_borrow_mut(cx.no_gc())
+                .push(Dom::from_ref(&input));
             added.push(input);
         }
 
@@ -95,7 +97,9 @@ impl XRInputSourceArray {
             &[],
             &removed,
         );
-        self.input_sources.borrow_mut().retain(|i| i.id() != id);
+        self.input_sources
+            .safe_borrow_mut(cx.no_gc())
+            .retain(|i| i.id() != id);
         event.upcast::<Event>().fire(cx, session.upcast());
     }
 
@@ -117,9 +121,13 @@ impl XRInputSourceArray {
             warn!("Could not find removed input source with id {:?}", id);
             &[]
         };
-        self.input_sources.borrow_mut().retain(|i| i.id() != id);
+        self.input_sources
+            .safe_borrow_mut(cx.no_gc())
+            .retain(|i| i.id() != id);
         let input = XRInputSource::new(cx, window, session, info);
-        self.input_sources.borrow_mut().push(Dom::from_ref(&input));
+        self.input_sources
+            .safe_borrow_mut(cx.no_gc())
+            .push(Dom::from_ref(&input));
 
         let added = [input];
 

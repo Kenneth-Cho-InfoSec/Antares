@@ -71,11 +71,14 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'tools platform-tools platforms;android-34'
+          packages: 'platform-tools platforms;android-34'
       - name: Install Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
+          # When updating this version, be sure to update the README instructions as well
+          # as the corresponding page in the book:
+          # https://book.servo.org/building/android.html.
           ndk-version: r29
       - name: Setup Gradle caches
         uses: gradle/actions/setup-gradle@v4
@@ -99,6 +102,7 @@ jobs:
           APK_SIGNING_KEY_STORE_PASS: ${{ secrets.APK_SIGNING_KEY_STORE_PASS }}
           APK_SIGNING_KEY_ALIAS: ${{ secrets.APK_SIGNING_KEY_ALIAS }}
           APK_SIGNING_KEY_PASS: ${{ secrets.APK_SIGNING_KEY_PASS }}
+          RUSTFLAGS: ${{ inputs.profile == 'checked-release' && '-D warnings' || '' }}
         run: |
           ./mach build --use-crown --locked --target ${{ matrix.target }} --profile ${{ inputs.profile }}
           mv target/cargo-timings target/cargo-timings-android-${{ matrix.target }}

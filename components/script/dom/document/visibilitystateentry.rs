@@ -35,7 +35,7 @@ impl VisibilityStateEntry {
         };
         VisibilityStateEntry {
             entry: PerformanceEntry::new_inherited(
-                name,
+                name.into(),
                 EntryType::VisibilityState,
                 Some(timestamp),
                 Duration::ZERO,
@@ -74,7 +74,7 @@ impl VisibilityStateEntryMethods<crate::DomTypeHolder> for VisibilityStateEntry 
     }
 
     /// <https://html.spec.whatwg.org/multipage/#visibilitystateentry-duration>
-    fn Duration(&self) -> u32 {
-        *self.entry.Duration().deref() as u32
+    fn Duration(&self, cx: &mut JSContext) -> u32 {
+        *self.entry.Duration(cx).deref() as u32
     }
 }

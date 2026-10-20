@@ -91,6 +91,7 @@ impl EventLoop {
             script_to_constellation_sender: constellation.script_sender.clone(),
             script_to_embedder_sender,
             namespace_request_sender: constellation.namespace_ipc_sender.clone(),
+            #[cfg(feature = "devtools")]
             devtools_server_sender: constellation.script_to_devtools_callback(),
             #[cfg(feature = "bluetooth")]
             bluetooth_sender: constellation.bluetooth_ipc_sender.clone(),
@@ -112,6 +113,7 @@ impl EventLoop {
             player_context: WindowGLContext::get(),
             privileged_urls: constellation.privileged_urls.clone(),
             user_contents_for_manager_id: constellation.user_contents_for_manager_id.clone(),
+            online: constellation.online(),
         };
 
         #[cfg(feature = "multiprocess")]

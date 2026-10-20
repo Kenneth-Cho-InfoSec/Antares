@@ -356,10 +356,10 @@ impl DocumentOrShadowRoot {
 
         match insertion_point {
             Some(ip) => {
-                stylesheets.insert_stylesheet_before(None, sheet, ip, &guard);
+                stylesheets.insert_stylesheet_before(sheet, ip, &guard);
             },
             None => {
-                stylesheets.append_stylesheet(None, sheet, &guard);
+                stylesheets.append_stylesheet(sheet, &guard);
             },
         }
     }
@@ -394,7 +394,10 @@ impl DocumentOrShadowRoot {
             // > If value’s constructed flag is not set, or its constructor document is not equal
             // > to this DocumentOrShadowRoot’s node document, throw a "NotAllowedError" DOMException.
             if !sheet.constructor_document_matches(owner_doc) {
-                return Err(Error::NotAllowed(None));
+                return Err(Error::NotAllowed(Some(
+                    "Stylesheet is not constructed or its constructor document does not match"
+                        .into(),
+                )));
             }
         }
 

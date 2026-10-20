@@ -14,8 +14,8 @@ description.workspace = true
 name = "script_webgpu"
 path = "lib.rs"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crown)'] }
+[lints]
+workspace = true
 
 [dependencies]
 stylo_atoms = { workspace = true }
@@ -33,8 +33,8 @@ malloc_size_of = { workspace = true }
 malloc_size_of_derive = { workspace = true }
 num-traits = { workspace = true }
 pixels = { workspace = true }
+serde_core = { workspace = true }
+servo-url = { workspace = true }
 servo-base = { workspace = true }
 trait-set = { workspace = true }
 webgpu_traits = { workspace = true }
-wgpu-core = { workspace = true }
-wgpu-types = { workspace = true }

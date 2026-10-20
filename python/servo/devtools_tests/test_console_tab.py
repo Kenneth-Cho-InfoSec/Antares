@@ -75,6 +75,67 @@ class TestConsoleTab:
             "writable": True,
         }
 
+    def test_console_log_object_prototype_does_not_repeat(self, run_servoshell):
+        run_servoshell(url="data:text/html,")
+
+        with Devtools.connect() as devtools:
+            devtools.watcher.watch_resources([Resources.CONSOLE_MESSAGE])
+            console = WebConsoleActor(devtools.client, devtools.targets[0]["consoleActor"])
+            evaluation_result = Future()
+
+            async def on_resource_available(data):
+                for resource in data["array"]:
+                    if resource[0] == "console-message":
+                        evaluation_result.set_result(resource[1][0])
+                        return
+
+            devtools.client.add_event_listener(
+                devtools.targets[0]["actor"], Events.Watcher.RESOURCES_AVAILABLE_ARRAY, on_resource_available
+            )
+            console.evaluate_js_async(
+                """
+                const personPrototype = {
+                    greet() {
+                        console.log("hello!");
+                    },
+                };
+                const carl = Object.create(personPrototype);
+                console.log(carl);
+                """
+            )
+
+            result = evaluation_result.result(1)
+            object_grip = result["arguments"][0]
+            prototype = devtools.client.send_receive({"to": object_grip["actor"], "type": "prototype"})["prototype"]
+
+            assert prototype["actor"] != object_grip["actor"]
+            assert prototype["class"] == "Object"
+            assert prototype["preview"]["ownPropertiesLength"] == 1
+            assert prototype["preview"]["ownProperties"]["greet"]["value"]["class"] == "Function"
+
+            object_prototype = devtools.client.send_receive({"to": prototype["actor"], "type": "prototype"})[
+                "prototype"
+            ]
+            assert devtools.client.send_receive({"to": object_prototype["actor"], "type": "prototype"})[
+                "prototype"
+            ] == {"type": "null"}
+
+    def test_console_log_object_prototype_failure(self, run_servoshell):
+        run_servoshell(url="data:text/html,")
+
+        result = evaluate_and_capture_console_log_output(
+            """
+            const broken = new Proxy({}, {
+                getPrototypeOf() {
+                    throw new Error("prototype lookup failed");
+                },
+            });
+            console.log(broken);
+            """
+        )
+
+        assert result["arguments"] == ["<error>"]
+
     def test_console_log_booleans(self, run_servoshell):
         script_tag = "<script>let log_booleans = () => console.log(true, false, !false, !true);</script>"
         run_servoshell(url=f"data:text/html,{script_tag}")
@@ -154,6 +215,14 @@ class TestConsoleTab:
 
         result = evaluate_and_capture_console_log_output("log_sprintf();")
         assert result["arguments"] == ["String string Int 32 Int 46 Float 3.141592653589793"]
+
+    def test_console_unhandled_promise_rejection(self, run_servoshell):
+        run_servoshell(url="data:text/html,")
+
+        result = evaluate_and_capture_console_log_output("Promise.reject(5);")
+
+        assert result["level"] == "error"
+        assert result["arguments"] == ["Unhandled promise rejection: 5"]
 
     def test_console_actor_can_handle_self_referential_objects(self, run_servoshell, web_server_urls):
         run_servoshell(url="data:text/html,")
@@ -237,6 +306,33 @@ class TestConsoleTab:
             assert not result2["exception"]
             assert result3["result"]["type"] == "undefined"
             assert not result3["exception"]
+
+    def test_console_throw_primitives(self, run_servoshell):
+        run_servoshell(url="data:text/html,")
+        testCases = [
+            {"input": "throw 0;", "exceptionMessage": "Uncaught 0"},
+            {"input": 'throw "";', "exceptionMessage": "Uncaught "},
+            {"input": "throw {};", "exceptionMessage": "Uncaught [object Object]"},
+            {"input": "throw true;", "exceptionMessage": "Uncaught true"},
+            {"input": "const fn=()=>{};throw fn;", "exceptionMessage": "Uncaught [object Object]"},
+            {"input": "throw NaN;", "exceptionMessage": "Uncaught NaN"},
+            {"input": "throw Infinity;", "exceptionMessage": "Uncaught Infinity"},
+        ]
+        queue = Queue()
+
+        with Devtools.connect() as devtools:
+            console = WebConsoleActor(devtools.client, devtools.targets[0]["consoleActor"])
+
+            def on_evaluation(data):
+                queue.put_nowait(data)
+
+            devtools.client.add_event_listener(console.actor_id, Events.WebConsole.EVALUATION_RESULT, on_evaluation)
+            for testCase in testCases:
+                console.evaluate_js_async(testCase["input"])
+                data = queue.get(timeout=1)
+                assert not data["result"]
+                assert data["hasException"]
+                assert testCase["exceptionMessage"] in data["exceptionMessage"]
 
     def test_global_autocomplete(self, run_servoshell):
         script_tag = "<script>console_test_value = 5;</script>"

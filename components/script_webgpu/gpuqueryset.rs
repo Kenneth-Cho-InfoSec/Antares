@@ -13,14 +13,15 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
     GPUDeviceMethods, GPUQuerySetDescriptor, GPUQuerySetMethods, GPUQuerySetWrap, GPUQueryType,
 };
 use script_bindings::error::{Error, Fallible};
+use script_bindings::interfaces::PromiseHelpers;
 use script_bindings::reflector::{DomGlobalGeneric, Reflector, reflect_dom_object_with_wrap};
 use script_bindings::root::DomRoot;
-use webgpu_traits::{WebGPU, WebGPUQuerySet, WebGPURequest};
+use webgpu_traits::{Features, WebGPU, WebGPUQuerySet, WebGPURequest};
 
 use crate::JSTraceable;
 use crate::dom::bindings::str::USVString;
 use crate::gpuconvert::WebGPUConvert;
-use crate::traits::{Equivalence, GPUDeviceTrait, WebGPUGlobalTrait};
+use crate::traits::{Equivalence, WebGPUGlobalTrait, WebGPUPromise};
 
 #[derive(MallocSizeOf)]
 struct DroppableGPUQuerySet {
@@ -58,7 +59,7 @@ pub struct GPUQuerySet<D: DomTypes> {
 impl<D> GPUQuerySet<D>
 where
     D: Equivalence,
-    D::GPUDevice: GPUDeviceTrait<D>,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     pub(crate) fn new_inherited(
         label: USVString,
@@ -87,17 +88,17 @@ where
         count: u32,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_wrap::<D, _, _>(
+            cx,
             Box::new(GPUQuerySet::new_inherited(
                 label, channel, query_set, r#type, count,
             )),
             global,
-            cx,
             GPUQuerySetWrap::<D>,
         )
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-createqueryset>
-    pub fn create(
+    pub(crate) fn create(
         cx: &mut JSContext,
         device: &D::GPUDevice,
         descriptor: &GPUQuerySetDescriptor,
@@ -107,7 +108,7 @@ where
             !device
                 .Features()
                 .wgpu_features()
-                .contains(wgpu_types::Features::TIMESTAMP_QUERY)
+                .contains(Features::TIMESTAMP_QUERY)
         {
             // Throw a TypeError.
             return Err(Error::Type(
@@ -150,7 +151,7 @@ where
 impl<D> GPUQuerySetMethods<D> for GPUQuerySet<D>
 where
     D: Equivalence,
-    D::GPUDevice: GPUDeviceTrait<D>,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuqueryset-destroy>
     fn Destroy(&self) {

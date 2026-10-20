@@ -3,23 +3,28 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
+use std::cmp::Ordering;
 
 use dom_struct::dom_struct;
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 
 use crate::dom::bindings::codegen::Bindings::TextTrackCueBinding::TextTrackCueMethods;
 use crate::dom::bindings::num::Finite;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::eventtarget::EventTarget;
+use crate::dom::node::Node;
 use crate::dom::texttrack::TextTrack;
+use crate::dom::webvtt::rules_for_rendering::RulesForUpdatingTheTextTrackRendering;
 
 #[dom_struct]
 pub(crate) struct TextTrackCue {
     eventtarget: EventTarget,
     /// <https://html.spec.whatwg.org/multipage/#text-track-cue-identifier>
-    id: DomRefCell<DOMString>,
-    track: Option<Dom<TextTrack>>,
+    id: DomRefCell<TracedDOMString>,
+    /// <https://html.spec.whatwg.org/multipage/#dom-texttrackcue-track>
+    text_track: MutNullableDom<TextTrack>,
     /// <https://html.spec.whatwg.org/multipage/#text-track-cue-start-time>
     start_time: Cell<f64>,
     /// <https://html.spec.whatwg.org/multipage/#text-track-cue-end-time>
@@ -28,6 +33,14 @@ pub(crate) struct TextTrackCue {
     pause_on_exit: Cell<bool>,
     /// <https://html.spec.whatwg.org/multipage/#text-track-cue-active-flag>
     active: Cell<bool>,
+    /// <https://html.spec.whatwg.org/multipage/#text-track-cue-order>
+    /// > in the order they were last added to their respective
+    /// > text track list of cues, oldest first
+    initial_index_in_list: Cell<usize>,
+    /// <https://html.spec.whatwg.org/multipage/#rules-for-updating-the-text-track-rendering>
+    rules_for_updating_the_text_track_rendering: RulesForUpdatingTheTextTrackRendering,
+    /// <https://html.spec.whatwg.org/multipage/#text-track-cue-display-state>
+    display_state: MutNullableDom<Node>,
 }
 
 impl TextTrackCue {
@@ -35,25 +48,33 @@ impl TextTrackCue {
         id: DOMString,
         start_time: f64,
         end_time: f64,
-        track: Option<&TextTrack>,
+        text_track: Option<&TextTrack>,
+        rules_for_updating_the_text_track_rendering: RulesForUpdatingTheTextTrackRendering,
     ) -> TextTrackCue {
         TextTrackCue {
             eventtarget: EventTarget::new_inherited(),
-            id: DomRefCell::new(id),
-            track: track.map(Dom::from_ref),
+            id: DomRefCell::new(id.traced()),
+            text_track: MutNullableDom::new(text_track),
             start_time: Cell::new(start_time),
             end_time: Cell::new(end_time),
             pause_on_exit: Cell::new(false),
             active: Default::default(),
+            initial_index_in_list: Default::default(),
+            rules_for_updating_the_text_track_rendering,
+            display_state: Default::default(),
         }
     }
 
     pub(crate) fn id(&self) -> DOMString {
-        self.id.borrow().clone()
+        self.id.borrow().clone().root()
     }
 
-    pub(crate) fn get_track(&self) -> Option<DomRoot<TextTrack>> {
-        self.track.as_ref().map(|t| DomRoot::from_ref(&**t))
+    pub(crate) fn get_text_track(&self) -> Option<DomRoot<TextTrack>> {
+        self.text_track.get()
+    }
+
+    pub(crate) fn set_text_track(&self, text_track: Option<&TextTrack>) {
+        self.text_track.set(text_track);
     }
 
     pub(crate) fn start_time(&self) -> f64 {
@@ -71,6 +92,30 @@ impl TextTrackCue {
     pub(crate) fn set_active(&self, active: bool) {
         self.active.set(active)
     }
+
+    pub(crate) fn set_initial_index_in_list(&self, initial_index_in_list: usize) {
+        self.initial_index_in_list.set(initial_index_in_list);
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#rules-for-updating-the-text-track-rendering>
+    pub(crate) fn rules_for_updating_the_text_track_rendering(
+        &self,
+    ) -> RulesForUpdatingTheTextTrackRendering {
+        // https://html.spec.whatwg.org/multipage/#text-track-model:rules-for-updating-the-text-track-rendering
+        // > A text track cue is associated with rules for updating the text track rendering,
+        // > as defined by the specification for the specific kind of text track cue.
+        // > These rules are used specifically when the object representing the cue
+        // > is added to a TextTrack object using the addCue() method.
+        self.rules_for_updating_the_text_track_rendering
+    }
+
+    pub(crate) fn display_state(&self) -> Option<DomRoot<Node>> {
+        self.display_state.get()
+    }
+
+    pub(crate) fn set_display_state(&self, display_state: Option<&Node>) {
+        self.display_state.set(display_state)
+    }
 }
 
 impl TextTrackCueMethods<crate::DomTypeHolder> for TextTrackCue {
@@ -81,12 +126,12 @@ impl TextTrackCueMethods<crate::DomTypeHolder> for TextTrackCue {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrackcue-id>
     fn SetId(&self, value: DOMString) {
-        *self.id.borrow_mut() = value;
+        *self.id.borrow_mut() = value.traced();
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrackcue-track>
     fn GetTrack(&self) -> Option<DomRoot<TextTrack>> {
-        self.get_track()
+        self.get_text_track()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrackcue-starttime>
@@ -97,6 +142,9 @@ impl TextTrackCueMethods<crate::DomTypeHolder> for TextTrackCue {
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrackcue-starttime>
     fn SetStartTime(&self, value: Finite<f64>) {
         self.start_time.set(*value);
+        if let Some(text_track) = self.text_track.get() {
+            text_track.sort_cue_list();
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrackcue-endtime>
@@ -107,6 +155,9 @@ impl TextTrackCueMethods<crate::DomTypeHolder> for TextTrackCue {
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrackcue-endtime>
     fn SetEndTime(&self, value: Finite<f64>) {
         self.end_time.set(*value);
+        if let Some(text_track) = self.text_track.get() {
+            text_track.sort_cue_list();
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-texttrackcue-pauseonexit>
@@ -124,4 +175,37 @@ impl TextTrackCueMethods<crate::DomTypeHolder> for TextTrackCue {
 
     // https://html.spec.whatwg.org/multipage/#handler-texttrackcue-onexit
     event_handler!(exit, GetOnexit, SetOnexit);
+}
+
+impl PartialOrd for TextTrackCue {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TextTrackCue {
+    /// <https://html.spec.whatwg.org/multipage/#text-track-cue-order>
+    fn cmp(&self, other: &TextTrackCue) -> Ordering {
+        // > cues must be sorted by their start time, earliest first;
+        self.start_time
+            .get()
+            .total_cmp(&other.start_time.get())
+            .then_with(|| {
+                // > then, any cues with the same start time must be sorted by their end time, latest first;
+                self.end_time
+                    .get()
+                    .total_cmp(&other.end_time.get())
+                    .reverse()
+                    .then_with(|| {
+                        // > and finally, any cues with identical end times must be sorted in the order
+                        // > they were last added to their respective text track list of cues,
+                        // > oldest first (so e.g. for cues from a WebVTT file,
+                        // > that would initially be the order in which the cues were listed in the file).
+                        self.initial_index_in_list
+                            .get()
+                            .cmp(&other.initial_index_in_list.get())
+                    })
+            })
+    }
 }

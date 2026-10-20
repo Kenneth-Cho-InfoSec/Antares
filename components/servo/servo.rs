@@ -8,6 +8,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
+use accesskit::ActionRequest;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 pub use embedder_traits::*;
 use env_logger::Builder as EnvLoggerBuilder;
@@ -113,7 +114,10 @@ use crate::webview_delegate::{
     FilePicker, NavigationRequest, PermissionRequest, ProtocolHandlerRegistration, WebResourceLoad,
 };
 
-#[cfg(feature = "media-gstreamer")]
+#[cfg(all(
+    feature = "media-gstreamer",
+    not(any(target_os = "android", target_env = "ohos"))
+))]
 mod media_platform {
     use servo_media_gstreamer::GStreamerBackend;
 
@@ -122,6 +126,8 @@ mod media_platform {
     #[cfg(any(windows, target_os = "macos"))]
     pub fn init() {
         ServoMedia::init_with_backend(|| {
+            use servo_media::BackendInit;
+
             let mut plugin_dir = std::env::current_exe().unwrap();
             plugin_dir.pop();
 
@@ -131,12 +137,16 @@ mod media_platform {
 
             let plugin_list = crate::gstreamer_plugins::gstreamer_plugins();
             match GStreamerBackend::init_with_plugins(plugin_dir, &plugin_list) {
-                Ok(b) => b,
-                Err(e) => {
-                    log::error!("Error initializing GStreamer: {:?}", e);
-                    std::process::exit(1);
+                Ok(backend) => return backend,
+                Err(error) => {
+                    log::warn!(
+                        "Error initializing GStreamer: {error:?}. \
+                        Trying fallback initialization."
+                    );
                 },
             }
+
+            GStreamerBackend::init()
         });
     }
 
@@ -146,7 +156,7 @@ mod media_platform {
     }
 }
 
-#[cfg(all(not(feature = "media-gstreamer"), target_env = "ohos"))]
+#[cfg(target_env = "ohos")]
 mod media_platform {
     use servo_media_ohos::OhosBackend;
 
@@ -156,7 +166,10 @@ mod media_platform {
     }
 }
 
-#[cfg(all(not(feature = "media-gstreamer"), not(target_env = "ohos")))]
+#[cfg(all(
+    not(target_env = "ohos"),
+    not(all(feature = "media-gstreamer", not(target_os = "android")))
+))]
 mod media_platform {
     use super::ServoMedia;
     pub fn init() {
@@ -815,23 +828,6 @@ impl ServoInner {
                     webview.delegate().notify_closed(webview);
                 }
             },
-            ConstellationToEmbedderMsg::WebViewFocused(webview_id, focus_result) => {
-                if focus_result {
-                    for id in self.webviews.borrow().keys() {
-                        if let Some(webview) = self.get_webview_handle(*id) {
-                            let focused = webview.id() == webview_id;
-                            webview.set_focused(focused);
-                        }
-                    }
-                }
-            },
-            ConstellationToEmbedderMsg::WebViewBlurred => {
-                for id in self.webviews.borrow().keys() {
-                    if let Some(webview) = self.get_webview_handle(*id) {
-                        webview.set_focused(false);
-                    }
-                }
-            },
             ConstellationToEmbedderMsg::FinishJavaScriptEvaluation(evaluation_id, result) => {
                 self.javascript_evaluator
                     .borrow_mut()
@@ -903,6 +899,12 @@ impl Drop for ServoInner {
     }
 }
 
+#[cfg(feature = "devtools")]
+type DevtoolsMessage = devtools_traits::DevtoolsControlMsg;
+
+#[cfg(not(feature = "devtools"))]
+type DevtoolsMessage = ();
+
 /// An in-process handle to a `Servo` instance. Cloning the handle does not create a new instance
 /// of `Servo`.
 ///
@@ -964,14 +966,14 @@ impl Servo {
         );
         let mem_profiler_chan = profile_mem::Profiler::create();
 
-        let devtools_sender = if pref!(devtools_server_enabled) {
-            Some(devtools::start_server(
+        let mut devtools_sender: Option<Sender<DevtoolsMessage>> = None;
+        #[cfg(feature = "devtools")]
+        if pref!(devtools_server_enabled) {
+            devtools_sender = Some(devtools::start_server(
                 embedder_proxy.clone(),
                 mem_profiler_chan.clone(),
             ))
-        } else {
-            None
-        };
+        }
 
         // Important that this call is done in a single-threaded fashion, we
         // can't defer it after `create_constellation` has started.
@@ -1026,6 +1028,7 @@ impl Servo {
             paint_proxy,
             time_profiler_chan,
             mem_profiler_chan,
+            #[cfg(feature = "devtools")]
             devtools_sender,
             protocols,
             public_resource_threads.clone(),
@@ -1048,6 +1051,7 @@ impl Servo {
             network_manager: Rc::new(RefCell::new(NetworkManager::new(
                 public_resource_threads.clone(),
                 private_resource_threads.clone(),
+                constellation_proxy.clone(),
             ))),
             site_data_manager: SiteDataManager::new(
                 public_resource_threads,
@@ -1131,6 +1135,19 @@ impl Servo {
 
     pub fn site_data_manager(&self) -> &SiteDataManager {
         &self.0.site_data_manager
+    }
+
+    /// When an [`ActionRequest`] is received from AccessKit, forward it to the appropriate document
+    /// to fulfill the action in the request.
+    ///
+    /// For example, if an AccessKit adapter sends a request for an [`accesskit::Action::Click`]
+    /// with a particular [`accesskit::TreeId`] and [`accesskit::NodeId`], determine which document
+    /// contains the tree matching the [`accesskit::TreeId`] and forward the [`ActionRequest`]
+    /// there, so that it can find the appropriate node to take the click action on.
+    pub fn forward_accessibility_action(&self, action_request: ActionRequest) {
+        self.0.constellation_proxy.send(
+            EmbedderToConstellationMessage::ForwardAccessibilityAction(action_request),
+        );
     }
 
     pub(crate) fn paint<'a>(&'a self) -> Ref<'a, Paint> {
@@ -1234,7 +1251,9 @@ fn create_constellation(
     paint_proxy: PaintProxy,
     time_profiler_chan: time::ProfilerChan,
     mem_profiler_chan: mem::ProfilerChan,
-    devtools_sender: Option<Sender<devtools_traits::DevtoolsControlMsg>>,
+    #[cfg(feature = "devtools")] devtools_sender: Option<
+        Sender<devtools_traits::DevtoolsControlMsg>,
+    >,
     protocols: Arc<ProtocolRegistry>,
     public_resource_threads: ResourceThreads,
     private_resource_threads: ResourceThreads,
@@ -1263,6 +1282,7 @@ fn create_constellation(
         paint_proxy,
         embedder_proxy,
         constellation_to_embedder_proxy,
+        #[cfg(feature = "devtools")]
         devtools_sender,
         #[cfg(feature = "bluetooth")]
         bluetooth_thread,

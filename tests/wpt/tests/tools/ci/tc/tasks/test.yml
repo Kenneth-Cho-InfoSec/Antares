@@ -1,7 +1,7 @@
 components:
   wpt-base:
     provisionerId: proj-wpt
-    workerType: ci
+    workerType: ci-gw
     schedulerId: taskcluster-github
     deadline: "24 hours"
     image: ghcr.io/web-platform-tests/wpt:3
@@ -20,36 +20,43 @@ components:
     maxRunTime: 14400
     vars:
       test-type: testharness
+      extra_args: "--run-by-dir=3"
 
   wpt-reftest:
     chunks: 6
     vars:
       test-type: reftest
+      extra_args: "--run-by-dir=3"
 
   wpt-print-reftest:
     chunks: 1
     vars:
       test-type: print-reftest
+      extra_args: "--run-by-dir=3"
 
   wpt-wdspec:
     chunks: 2
     vars:
       test-type: wdspec
+      extra_args: ""
 
   wpt-crashtest:
     chunks: 1
     vars:
       test-type: crashtest
+      extra_args: "--run-by-dir=3"
 
   wpt-test262:
     chunks: 8
     vars:
       test-type: test262
+      extra_args: ""
 
   wpt-aamtest:
     chunks: 1
     vars:
       test-type: aamtest
+      extra_args: ""
 
   run-options:
     options:
@@ -77,6 +84,7 @@ components:
       --this-chunk=${chunks.id}
       --total-chunks=${chunks.total}
       --test-type=${vars.suite}
+      ${vars.extra_args}
 
   trigger-master:
     trigger:
@@ -127,6 +135,8 @@ components:
       - "docker-worker:capability:privileged"
     chunks-override:
       testharness: 30
+      reftest: 12
+      test262: 16
 
   tox-python3_9:
     env:
@@ -164,6 +174,8 @@ tasks:
       for:
         - vars:
             suite: testharness
+        - vars:
+            suite: reftest
         - vars:
             suite: wdspec
         - vars:
@@ -273,119 +285,6 @@ tasks:
             - vars:
                 browser: firefox_android
                 channel: stable
-              use:
-                - trigger-daily
-                - trigger-push
-          do:
-            - ${vars.browser}-${vars.channel}-${vars.suite}:
-                use:
-                  - wpt-base
-                  - run-options
-                  - wpt-run
-                  - browser-${vars.browser}
-                  - wpt-${vars.suite}
-                description: >-
-                  A subset of WPT's "${vars.suite}" tests (chunk number ${chunks.id}
-                  of ${chunks.total}), run in the ${vars.channel} release of
-                  ${vars.browser}.
-
-  # Reftests are currently broken on firefox_android; this should otherwise be identical
-  # to the section above
-  - $map:
-      for:
-        - vars:
-            suite: reftest
-      do:
-        $map:
-          for:
-            - vars:
-                browser: firefox
-                channel: nightly
-              use:
-                - trigger-master
-                - trigger-push
-            - vars:
-                browser: firefox
-                channel: beta
-              use:
-                - trigger-daily
-                - trigger-push
-            - vars:
-                browser: firefox
-                channel: stable
-              use:
-                - trigger-daily
-                - trigger-push
-            - vars:
-                # Chromium ToT
-                browser: chromium
-                channel: nightly
-              use:
-                - trigger-daily
-                - trigger-push
-            - vars:
-                browser: chrome
-                channel: canary
-              use:
-                - trigger-master
-                - trigger-push
-            - vars:
-                browser: chrome
-                channel: dev
-              use:
-                - trigger-weekly
-                - trigger-push
-            - vars:
-                browser: chrome
-                channel: beta
-              use:
-                - trigger-weekly
-                - trigger-push
-            - vars:
-                browser: chrome
-                channel: stable
-              use:
-                - trigger-daily
-                - trigger-push
-            - vars:
-                browser: webkitgtk_minibrowser
-                channel: nightly
-              use:
-                - trigger-daily
-                - trigger-push
-            - vars:
-                browser: webkitgtk_minibrowser
-                channel: stable
-              use:
-                - trigger-weekly
-                - trigger-push
-            - vars:
-                browser: webkitgtk_minibrowser
-                channel: beta
-              use:
-                - trigger-weekly
-                - trigger-push
-            - vars:
-                browser: wpewebkit_minibrowser
-                channel: nightly
-              use:
-                - trigger-daily
-                - trigger-push
-            - vars:
-                browser: wpewebkit_minibrowser
-                channel: stable
-              use:
-                - trigger-weekly
-                - trigger-push
-            - vars:
-                browser: wpewebkit_minibrowser
-                channel: beta
-              use:
-                - trigger-weekly
-                - trigger-push
-            - vars:
-                browser: servo
-                channel: nightly
               use:
                 - trigger-daily
                 - trigger-push

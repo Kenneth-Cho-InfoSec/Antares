@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use dom_struct::dom_struct;
-use html5ever::{LocalName, Prefix, QualName, local_name, ns};
+use html5ever::{LocalName, Prefix, local_name, ns};
 use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
@@ -25,7 +25,7 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::document::Document;
 use crate::dom::element::attributes::storage::AttrRef;
-use crate::dom::element::{AttributeMutation, CustomElementCreationMode, Element, ElementCreator};
+use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::htmlelement::HTMLElement;
@@ -35,11 +35,13 @@ use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
     BindContext, ChildrenMutation, IsShadowTree, Node, NodeDamage, NodeTraits, UnbindContext,
 };
+use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::ua_shadowroot::{CreateUAShadowRootForSelf, UAShadowRoot};
 use crate::dom::text::Text;
 use crate::dom::toggleevent::ToggleEvent;
 
 /// The summary that should be presented if no `<summary>` element is present
-const DEFAULT_SUMMARY: &str = "Details";
+static DEFAULT_SUMMARY: &str = "Details";
 
 /// Holds handles to all slots in the UA shadow tree
 ///
@@ -52,6 +54,47 @@ struct ShadowTree {
     details_content: Dom<HTMLSlotElement>,
     /// The summary that is displayed if no other summary exists
     implicit_summary: Dom<HTMLElement>,
+}
+
+impl UAShadowRoot<ShadowTree> for HTMLDetailsElement {
+    fn store_for_shadow_tree(&self, cx: &mut JSContext, shadow_root: DomRoot<ShadowRoot>) {
+        let root = shadow_root.upcast::<Node>();
+
+        let summary = self.create_element_in_ua_shadowroot(cx, local_name!("slot"));
+        let summary = DomRoot::downcast::<HTMLSlotElement>(summary).unwrap();
+        root.AppendChild(cx, summary.upcast::<Node>()).unwrap();
+
+        let fallback_summary = self.create_element_in_ua_shadowroot(cx, local_name!("summary"));
+        let fallback_summary = DomRoot::downcast::<HTMLElement>(fallback_summary).unwrap();
+        fallback_summary
+            .upcast::<Node>()
+            .set_text_content_for_element(cx, Some(DOMString::from_static(DEFAULT_SUMMARY)));
+        summary
+            .upcast::<Node>()
+            .AppendChild(cx, fallback_summary.upcast::<Node>())
+            .unwrap();
+
+        let details_content = self.create_element_in_ua_shadowroot(cx, local_name!("slot"));
+        let details_content = DomRoot::downcast::<HTMLSlotElement>(details_content).unwrap();
+        root.AppendChild(cx, details_content.upcast::<Node>())
+            .unwrap();
+        details_content
+            .upcast::<Node>()
+            .set_implemented_pseudo_element(PseudoElement::DetailsContent);
+
+        let _ = self
+            .shadow_tree
+            .safe_borrow_mut(cx.no_gc())
+            .insert(ShadowTree {
+                summary: summary.as_traced(),
+                details_content: details_content.as_traced(),
+                implicit_summary: fallback_summary.as_traced(),
+            });
+    }
+
+    fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<ShadowTree>> {
+        self.shadow_tree.borrow()
+    }
 }
 
 #[dom_struct]
@@ -160,81 +203,6 @@ impl HTMLDetailsElement {
 
     pub(crate) fn toggle(&self, cx: &mut JSContext) {
         self.SetOpen(cx, !self.Open());
-    }
-
-    fn shadow_tree(&self, cx: &mut JSContext) -> Ref<'_, ShadowTree> {
-        if !self.upcast::<Element>().is_shadow_host() {
-            self.create_shadow_tree(cx);
-        }
-
-        Ref::filter_map(self.shadow_tree.borrow(), Option::as_ref)
-            .ok()
-            .expect("UA shadow tree was not created")
-    }
-
-    fn create_shadow_tree(&self, cx: &mut JSContext) {
-        let document = self.owner_document();
-        // TODO(stevennovaryo): Reimplement details styling so that it would not
-        //                      mess the cascading and require some reparsing.
-        let root = self.upcast::<Element>().attach_ua_shadow_root(cx, true);
-
-        let summary = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("slot")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-        let summary = DomRoot::downcast::<HTMLSlotElement>(summary).unwrap();
-        root.upcast::<Node>()
-            .AppendChild(cx, summary.upcast::<Node>())
-            .unwrap();
-
-        let fallback_summary = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("summary")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-        let fallback_summary = DomRoot::downcast::<HTMLElement>(fallback_summary).unwrap();
-        fallback_summary
-            .upcast::<Node>()
-            .set_text_content_for_element(cx, Some(DEFAULT_SUMMARY.into()));
-        summary
-            .upcast::<Node>()
-            .AppendChild(cx, fallback_summary.upcast::<Node>())
-            .unwrap();
-
-        let details_content = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("slot")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-        let details_content = DomRoot::downcast::<HTMLSlotElement>(details_content).unwrap();
-
-        root.upcast::<Node>()
-            .AppendChild(cx, details_content.upcast::<Node>())
-            .unwrap();
-        details_content
-            .upcast::<Node>()
-            .set_implemented_pseudo_element(PseudoElement::DetailsContent);
-
-        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {
-            summary: summary.as_traced(),
-            details_content: details_content.as_traced(),
-            implicit_summary: fallback_summary.as_traced(),
-        });
-        self.upcast::<Node>()
-            .dirty(cx.no_gc(), crate::dom::node::NodeDamage::Other);
     }
 
     pub(crate) fn find_corresponding_summary_element(&self) -> Option<DomRoot<HTMLElement>> {
@@ -421,7 +389,7 @@ impl VirtualMethods for HTMLDetailsElement {
                         .details_name_groups(cx.no_gc())
                         .unregister_details_element(old_name, self);
                 }
-                if matches!(mutation, AttributeMutation::Set(..)) {
+                if matches!(mutation, AttributeMutation::Set(_)) {
                     shadow_root
                         .details_name_groups(cx.no_gc())
                         .register_details_element(self);
@@ -433,7 +401,7 @@ impl VirtualMethods for HTMLDetailsElement {
                         .details_name_groups(cx.no_gc())
                         .unregister_details_element(old_name, self);
                 }
-                if matches!(mutation, AttributeMutation::Set(..)) {
+                if matches!(mutation, AttributeMutation::Set(_)) {
                     document
                         .details_name_groups(cx.no_gc())
                         .register_details_element(self);
@@ -480,7 +448,7 @@ impl VirtualMethods for HTMLDetailsElement {
             // Step 3.2. If oldValue is null and value is not null, then ensure details exclusivity
             // by closing other elements if needed given element.
             let was_previously_closed = match mutation {
-                AttributeMutation::Set(old, _) => old.is_none(),
+                AttributeMutation::Set(old) => old.is_none(),
                 AttributeMutation::Removed => false,
             };
             if was_previously_closed && self.Open() {

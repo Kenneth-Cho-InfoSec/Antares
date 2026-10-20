@@ -2,16 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::sync::LazyLock;
-
 use app_units::Au;
 use cssparser::Parser;
-use regex::Regex;
-use rustc_hash::FxHashSet;
+use js::context::NoGC;
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
+use script_bindings::dom::UnrootedDom;
+use script_bindings::domstring::is_valid_floating_point_number_string;
 use script_bindings::inheritance::Castable;
-use script_bindings::root::DomRoot;
 use script_bindings::str::USVString;
+use smallvec::{SmallVec, smallvec};
 use style::attr::parse_unsigned_integer;
 use style::stylesheets::CssRuleType;
 use style::values::specified::source_size_list::SourceSizeList;
@@ -48,7 +48,7 @@ const SUPPORTED_IMAGE_MIME_TYPES: &[&str] = &[
 /// <https://html.spec.whatwg.org/multipage/#source-set>
 #[derive(Clone, Debug, MallocSizeOf)]
 pub(crate) struct SourceSet {
-    pub image_sources: Vec<ImageSource>,
+    pub image_sources: SmallVec<[ImageSource; 1]>,
     pub source_size: SourceSizeList,
 }
 
@@ -77,7 +77,7 @@ enum ParseState {
 impl SourceSet {
     pub fn new() -> SourceSet {
         SourceSet {
-            image_sources: Vec::new(),
+            image_sources: SmallVec::new(),
             source_size: SourceSizeList::empty(),
         }
     }
@@ -90,32 +90,32 @@ impl SourceSet {
         document: &Document,
     ) -> SourceSet {
         // Step 1. Let source set be an empty source set.
-        let mut source_set = SourceSet::new();
-
         // Step 2. If srcset is not an empty string, then set source set to the result of parsing
         // srcset.
-        if !srcset.is_empty() {
-            source_set.image_sources = parse_a_srcset_attribute(srcset);
-        }
+        let mut image_sources = if !srcset.is_empty() {
+            parse_a_srcset_attribute(srcset)
+        } else {
+            smallvec![]
+        };
 
         // Step 3. Set source set's source size to the result of parsing sizes with img.
-        if !sizes.is_empty() {
-            source_set.source_size = parse_a_sizes_attribute(sizes);
-        }
+        let source_size = if !sizes.is_empty() {
+            parse_a_sizes_attribute(sizes)
+        } else {
+            SourceSizeList::empty()
+        };
 
         // Step 4. If default source is not the empty string and source set does not contain an
         // image source with a pixel density descriptor value of 1, and no image source with a width
         // descriptor, append default source to source set.
-        let no_density_source_of_1 = source_set
-            .image_sources
+        let no_density_source_of_1 = image_sources
             .iter()
             .all(|source| source.descriptor.density != Some(1.));
-        let no_width_descriptor = source_set
-            .image_sources
+        let no_width_descriptor = image_sources
             .iter()
             .all(|source| source.descriptor.width.is_none());
         if !default_source.is_empty() && no_density_source_of_1 && no_width_descriptor {
-            source_set.image_sources.push(ImageSource {
+            image_sources.push(ImageSource {
                 url: String::from(default_source),
                 descriptor: Descriptor {
                     width: None,
@@ -123,7 +123,10 @@ impl SourceSet {
                 },
             })
         }
-
+        let mut source_set = SourceSet {
+            image_sources,
+            source_size,
+        };
         // Step 5. Normalize the source densities of source set.
         source_set.normalise_source_densities(document);
 
@@ -132,77 +135,86 @@ impl SourceSet {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-source-set>
-    pub fn update_source_set(&mut self, el: &Element) {
+    pub fn update_source_set(&mut self, no_gc: &NoGC, el: &Element) {
         // Step 1. Set el's source set to an empty source set.
-        *self = SourceSet::new();
-
-        // Step 2. Let elements be « el ».
-        // Step 3. If el is an img element whose parent node is a picture element, then replace the
-        // contents of elements with el's parent node's child elements, retaining relative order.
-        // Step 4. Let img be el if el is an img element, otherwise null.
+        // Step 3. Let img be null.
+        // Step 4.1. Set img to el.
         let img = el.downcast::<HTMLImageElement>();
+        // Step 4. If el is an img element:
+        if let Some(image) = img {
+            // Step 4.2. Set el's dimension attribute source to el.
+            image.set_dimension_attribute_source(no_gc, Some(el));
+        }
         let parent = el.upcast::<Node>().GetParentElement();
+        // Step 2. Let elements be « el ».
         let elements = match parent.as_ref() {
             Some(p) => {
+                // Step 4.3. If el's parent node is a picture element:
                 if p.is::<HTMLPictureElement>() {
+                    debug_assert!(img.is_some());
+                    // Step 4.3.1. Replace the contents of elements with el's parent
+                    // node's child elements, retaining relative order.
                     p.upcast::<Node>()
-                        .children()
-                        .filter_map(DomRoot::downcast::<Element>)
-                        .map(|n| DomRoot::from_ref(&*n))
+                        .children_unrooted(no_gc)
+                        .filter_map(UnrootedDom::downcast::<Element>)
                         .collect()
                 } else {
-                    vec![DomRoot::from_ref(el)]
+                    vec![UnrootedDom::from_ref(el, no_gc)]
                 }
             },
-            None => vec![DomRoot::from_ref(el)],
+            None => vec![UnrootedDom::from_ref(el, no_gc)],
         };
 
         // Step 5. For each child in elements:
         for child in &elements {
             // Step 5.1. If child is el:
-            if *child == DomRoot::from_ref(el) {
+            if child == el {
                 let (default_source, srcset, sizes) = if el.is::<HTMLImageElement>() {
                     // Step 5.1.4: If el is an img element that has a srcset attribute, then
                     // set srcset to that attribute's value.
                     let srcset = el
-                        .get_attribute_string_value(&local_name!("srcset"))
+                        .get_attribute_string_ref(&local_name!("srcset"))
                         .unwrap_or_default();
                     // Step 5.1.6: If el is an img element that has a sizes attribute, then set sizes to that attribute's value.
                     let sizes = el
-                        .get_attribute_string_value(&local_name!("sizes"))
+                        .get_attribute_string_ref(&local_name!("sizes"))
                         .unwrap_or_default();
                     // Step 5.1.8: If el is an img element that has a src attribute, then set default source to that attribute's value.
                     let default_source = el
-                        .get_attribute_string_value(&local_name!("src"))
+                        .get_attribute_string_ref(&local_name!("src"))
                         .unwrap_or_default();
                     (default_source, srcset, sizes)
                 } else if el.is::<HTMLLinkElement>() {
                     // Step 5.1.5: Otherwise, if el is a link element that has an imagesrcset attribute, then set srcset to that attribute's value.
                     let srcset = el
-                        .get_attribute_string_value(&local_name!("imagesrcset"))
+                        .get_attribute_string_ref(&local_name!("imagesrcset"))
                         .unwrap_or_default();
                     // Step 5.1.7: Otherwise, if el is a link element that has an imagesizes attribute, then set sizes to that attribute's value.
                     let sizes = el
-                        .get_attribute_string_value(&local_name!("imagesizes"))
+                        .get_attribute_string_ref(&local_name!("imagesizes"))
                         .unwrap_or_default();
                     // Step 5.1.9: Otherwise, if el is a link element that has an href attribute, then set default source to that attribute's value.
                     let default_source = el
-                        .get_attribute_string_value(&local_name!("href"))
+                        .get_attribute_string_ref(&local_name!("href"))
                         .unwrap_or_default();
                     (default_source, srcset, sizes)
                 } else {
                     // Step 5.1.1: Let default source be the empty string.
                     // Step 5.1.2: Let srcset be the empty string.
                     // Step 5.1.3: Let sizes be the empty string.
-                    (String::new(), String::new(), String::new())
+                    Default::default()
                 };
+
+                let default_source = default_source.as_attr_ref();
+                let srcset = srcset.as_attr_ref();
+                let sizes = sizes.as_attr_ref();
 
                 // Step 5.1.10. Set el's source set to the result of creating a source set given
                 // default source, srcset, sizes, and img.
                 *self = SourceSet::create_source_set(
-                    &default_source,
-                    &srcset,
-                    &sizes,
+                    &default_source.value(),
+                    &srcset.value(),
+                    &sizes.value(),
                     &el.owner_document(),
                 );
 
@@ -217,20 +229,16 @@ impl SourceSet {
                 continue;
             }
 
-            let mut source_set = SourceSet::new();
-
             // Step 5.3. If child does not have a srcset attribute, continue to the next child.
             // Step 5.4. Parse child's srcset attribute and let source set be the returned source
             // set.
-            match child.get_attribute_string_value(&local_name!("srcset")) {
-                Some(srcset) => {
-                    source_set.image_sources = parse_a_srcset_attribute(&srcset);
-                },
+            let image_sources = match child.get_attribute_string_value(&local_name!("srcset")) {
+                Some(srcset) => parse_a_srcset_attribute(&srcset),
                 _ => continue,
-            }
+            };
 
             // Step 5.5. If source set has zero image sources, continue to the next child.
-            if source_set.image_sources.is_empty() {
+            if image_sources.is_empty() {
                 continue;
             }
 
@@ -244,9 +252,12 @@ impl SourceSet {
 
             // Step 5.7. Parse child's sizes attribute with img, and let source set's source size be
             // the returned value.
-            if let Some(sizes) = child.get_attribute_string_value(&local_name!("sizes")) {
-                source_set.source_size = parse_a_sizes_attribute(&sizes);
-            }
+            let source_size =
+                if let Some(sizes) = child.get_attribute_string_value(&local_name!("sizes")) {
+                    parse_a_sizes_attribute(&sizes)
+                } else {
+                    SourceSizeList::empty()
+                };
 
             // Step 5.8. If child has a type attribute, and its value is an unknown or unsupported
             // MIME type, continue to the next child.
@@ -256,18 +267,19 @@ impl SourceSet {
                 continue;
             }
 
-            // Step 5.9. If child has width or height attributes, set el's dimension attribute
-            // source to child. Otherwise, set el's dimension attribute source to el.
-            if let Some(image) = img {
-                if child.has_attribute(&local_name!("width")) ||
-                    child.has_attribute(&local_name!("height"))
-                {
-                    image.set_dimension_attribute_source(Some(child));
-                } else {
-                    image.set_dimension_attribute_source(Some(el));
-                }
+            // Step 5.9. If child has width or height attributes,
+            // set el's dimension attribute source to child.
+            if let Some(image) = img &&
+                (child.has_attribute(&local_name!("width")) ||
+                    child.has_attribute(&local_name!("height")))
+            {
+                image.set_dimension_attribute_source(no_gc, Some(child));
             }
 
+            let mut source_set = SourceSet {
+                image_sources,
+                source_size,
+            };
             // Step 5.10. Normalize the source densities of source set.
             source_set.normalise_source_densities(&el.owner_document());
 
@@ -311,9 +323,13 @@ impl SourceSet {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#select-an-image-source>
-    pub fn select_image_source(&mut self, element: &Element) -> Option<(USVString, f64)> {
+    pub fn select_image_source(
+        &mut self,
+        no_gc: &NoGC,
+        element: &Element,
+    ) -> Option<(USVString, f64)> {
         // Step 1. Update the source set for el.
-        self.update_source_set(element);
+        self.update_source_set(no_gc, element);
 
         // Step 2. If el's source set is empty, return null as the URL and undefined as the pixel
         // density.
@@ -337,7 +353,8 @@ impl SourceSet {
         let len = self.image_sources.len();
 
         // Using FxHash is ok here as the indices are just 0..len
-        let mut repeat_indices = FxHashSet::default();
+        let mut repeat_indices = FxHashSet::with_capacity_and_hasher(len, FxBuildHasher);
+
         for outer_index in 0..len {
             if repeat_indices.contains(&outer_index) {
                 continue;
@@ -353,7 +370,7 @@ impl SourceSet {
         }
 
         let mut max = (0f64, 0);
-        let img_sources = &mut vec![];
+        let mut img_sources = Vec::with_capacity(len);
         for (index, image_source) in self.image_sources.iter().enumerate() {
             if repeat_indices.contains(&index) {
                 continue;
@@ -379,11 +396,11 @@ impl SourceSet {
                 best_candidate = (current_den, index);
             }
         }
-        let selected_source = img_sources.remove(best_candidate.1).clone();
+        let selected_source = img_sources.remove(best_candidate.1);
 
         // Step 3. Return selectedSource and its associated pixel density.
         Some((
-            USVString(selected_source.url),
+            USVString(selected_source.url.clone()),
             selected_source.descriptor.density.unwrap(),
         ))
     }
@@ -418,24 +435,15 @@ fn is_valid_non_negative_integer_string(s: &str) -> bool {
     s.chars().all(|c| c.is_ascii_digit())
 }
 
-/// <https://html.spec.whatwg.org/multipage/#valid-floating-point-number>
-/// TODO(#39315): Use the validation rule from Stylo
-fn is_valid_floating_point_number_string(s: &str) -> bool {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^-?(?:\d+\.\d+|\d+|\.\d+)(?:(e|E)(\+|\-)?\d+)?$").unwrap());
-
-    RE.is_match(s)
-}
-
 /// Parse an `srcset` attribute:
 /// <https://html.spec.whatwg.org/multipage/#parsing-a-srcset-attribute>.
-pub fn parse_a_srcset_attribute(input: &str) -> Vec<ImageSource> {
+pub fn parse_a_srcset_attribute(input: &str) -> SmallVec<[ImageSource; 1]> {
     // > 1. Let input be the value passed to this algorithm.
     // > 2. Let position be a pointer into input, initially pointing at the start of the string.
     let mut current_index = 0;
 
     // > 3. Let candidates be an initially empty source set.
-    let mut candidates = vec![];
+    let mut candidates = smallvec![];
     while current_index < input.len() {
         let remaining_string = &input[current_index..];
 

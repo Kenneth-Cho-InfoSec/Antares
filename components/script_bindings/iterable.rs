@@ -25,7 +25,7 @@ use crate::error::Fallible;
 use crate::interfaces::{DomHelpers, GlobalScopeHelpers};
 use crate::reflector::{DomGlobalGeneric, DomObjectIteratorWrap, DomObjectWrap, Reflector};
 use crate::root::{Dom, DomRoot, Root};
-use crate::trace::{NoTrace, RootedTraceableBox};
+use crate::trace::NoTrace;
 use crate::utils::DOMClass;
 use crate::{DomTypes, JSTraceable};
 
@@ -89,6 +89,8 @@ impl<
     fn derives(class: &'static DOMClass) -> bool {
         <T as IteratorDerives>::derives(class)
     }
+
+    const PROTO_ID: crate::codegen::PrototypeList::ID = crate::codegen::PrototypeList::ID::Last;
 }
 
 impl<D: DomTypes, T: DomObjectIteratorWrap<D> + JSTraceable + Iterable + DomGlobalGeneric<D>>
@@ -108,7 +110,7 @@ impl<D: DomTypes, T: DomObjectIteratorWrap<D> + JSTraceable + Iterable + DomGlob
             _marker: NoTrace(PhantomData),
         });
         let global = D::GlobalScope::from_current_realm(realm);
-        <D as DomHelpers<D>>::reflect_dom_object_with_cx(realm, iterator, &*global)
+        <D as DomHelpers<D>>::reflect_dom_object(realm, iterator, &*global)
     }
 
     /// Return the next value from the iterable object.
@@ -186,7 +188,7 @@ fn key_and_value_return(
     dict.value = Some(
         vec![key, value]
             .into_iter()
-            .map(|handle| RootedTraceableBox::from_box(Heap::boxed(handle.get())))
+            .map(|handle| Heap::boxed(handle.get()))
             .collect(),
     );
 

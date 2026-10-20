@@ -6,11 +6,11 @@ use std::cell::Cell;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 
 use crate::dom::bindings::codegen::Bindings::VideoTrackBinding::VideoTrackMethods;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::videotracklist::VideoTrackList;
 use crate::dom::window::Window;
@@ -18,12 +18,12 @@ use crate::dom::window::Window;
 #[dom_struct]
 pub(crate) struct VideoTrack {
     reflector_: Reflector,
-    id: DOMString,
-    kind: DOMString,
-    label: DOMString,
-    language: DOMString,
+    id: TracedDOMString,
+    kind: TracedDOMString,
+    label: TracedDOMString,
+    language: TracedDOMString,
     selected: Cell<bool>,
-    track_list: DomRefCell<Option<Dom<VideoTrackList>>>,
+    track_list: MutNullableDom<VideoTrackList>,
 }
 
 impl VideoTrack {
@@ -36,12 +36,12 @@ impl VideoTrack {
     ) -> VideoTrack {
         VideoTrack {
             reflector_: Reflector::new(),
-            id,
-            kind,
-            label,
-            language,
+            id: id.traced(),
+            kind: kind.traced(),
+            label: label.traced(),
+            language: language.traced(),
             selected: Cell::new(false),
-            track_list: DomRefCell::new(track_list.map(Dom::from_ref)),
+            track_list: MutNullableDom::new(track_list),
         }
     }
 
@@ -64,11 +64,11 @@ impl VideoTrack {
     }
 
     pub(crate) fn id(&self) -> DOMString {
-        self.id.clone()
+        self.id.clone().root()
     }
 
     pub(crate) fn kind(&self) -> DOMString {
-        self.kind.clone()
+        self.kind.clone().root()
     }
 
     pub(crate) fn selected(&self) -> bool {
@@ -80,11 +80,11 @@ impl VideoTrack {
     }
 
     pub(crate) fn add_track_list(&self, track_list: &VideoTrackList) {
-        *self.track_list.borrow_mut() = Some(Dom::from_ref(track_list));
+        self.track_list.set(Some(track_list));
     }
 
     pub(crate) fn remove_track_list(&self) {
-        *self.track_list.borrow_mut() = None;
+        self.track_list.set(None);
     }
 }
 
@@ -101,12 +101,12 @@ impl VideoTrackMethods<crate::DomTypeHolder> for VideoTrack {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-label>
     fn Label(&self) -> DOMString {
-        self.label.clone()
+        self.label.clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-language>
     fn Language(&self) -> DOMString {
-        self.language.clone()
+        self.language.clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-selected>
@@ -116,7 +116,7 @@ impl VideoTrackMethods<crate::DomTypeHolder> for VideoTrack {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-videotrack-selected>
     fn SetSelected(&self, value: bool) {
-        if let Some(list) = self.track_list.borrow().as_ref() &&
+        if let Some(list) = self.track_list.get() &&
             let Some(idx) = list.find(self)
         {
             list.set_selected(idx, value);

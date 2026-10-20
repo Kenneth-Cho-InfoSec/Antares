@@ -6,7 +6,7 @@
 
 pub mod mem;
 #[cfg_attr(
-    any(all(target_os = "linux", target_env = "gnu"), target_os = "macos"),
+    not(any(target_os = "android", target_os = "windows")),
     expect(unsafe_code)
 )]
 pub mod system_reporter;

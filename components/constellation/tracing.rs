@@ -61,13 +61,12 @@ mod from_embedder {
                 Self::LogEntry(..) => target!("LogEntry"),
                 Self::NewWebView(..) => target!("NewWebView"),
                 Self::CloseWebView(..) => target!("CloseWebView"),
-                Self::FocusWebView(..) => target!("FocusWebView"),
-                Self::BlurWebView => target!("BlurWebView"),
+                Self::SetWebViewHasSystemFocus(..) => target!("SetWebViewHasSystemFocus"),
                 Self::ForwardInputEvent(_webview_id, event, ..) => event.log_target(),
                 Self::RefreshCursor(..) => target!("RefreshCursor"),
                 Self::ExitFullScreen(_) => target!("ExitFullScreen"),
                 Self::MediaSessionAction(_) => target!("MediaSessionAction"),
-                Self::SetWebViewThrottled(_, _) => target!("SetWebViewThrottled"),
+                Self::SetWebViewHidden(_, _) => target!("SetWebViewHidden"),
                 Self::SetScrollStates(..) => target!("SetScrollStates"),
                 Self::PaintMetric(..) => target!("PaintMetric"),
                 Self::EvaluateJavaScript(..) => target!("EvaluateJavaScript"),
@@ -82,7 +81,9 @@ mod from_embedder {
                 Self::UserContentManagerAction(..) => target!("UserContentManagerAction"),
                 Self::UpdatePinchZoomInfos(..) => target!("UpdatePinchZoomInfos"),
                 Self::SetAccessibilityActive(..) => target!("SetAccessibilityActive"),
+                Self::ForwardAccessibilityAction(..) => target!("ForwardAccessibilityAction"),
                 Self::ClearSessionHistory(..) => target!("ClearHistory"),
+                Self::SetNetworkOnlineState(..) => target!("SetNetworkOnlineState"),
             }
         }
     }
@@ -163,9 +164,10 @@ mod from_script {
                 Self::GetBrowsingContextInfo(..) => target!("GetBrowsingContextInfo"),
                 Self::GetDocumentOrigin(..) => target!("GetDocumentOrigin"),
                 Self::IsCurrentlyFullyActive(..) => target!("IsCurrentlyFullyActive"),
-                Self::GetInternalAncestorOriginObjectsList(..) => {
-                    target!("GetInternalAncestorOriginObjectsList")
+                Self::GetDocumentOriginDetails(..) => {
+                    target!("GetDocumentOriginDetails")
                 },
+                Self::GetChildBrowsingContextCount(..) => target!("GetChildBrowsingContextCount"),
                 Self::GetChildBrowsingContextId(..) => target!("GetChildBrowsingContextId"),
                 Self::LoadComplete => target!("LoadComplete"),
                 Self::LoadUrl(..) => target!("LoadUrl"),
@@ -177,7 +179,6 @@ mod from_script {
                 Self::ReplaceHistoryState(..) => target!("ReplaceHistoryState"),
                 Self::JointSessionHistoryLength(..) => target!("JointSessionHistoryLength"),
                 Self::RemoveIFrame(..) => target!("RemoveIFrame"),
-                Self::SetThrottledComplete(..) => target!("SetThrottledComplete"),
                 Self::ScriptLoadedURLInIFrame(..) => target!("ScriptLoadedURLInIFrame"),
                 Self::ScriptNewIFrame(..) => target!("ScriptNewIFrame"),
                 Self::CreateAuxiliaryWebView(..) => target!("ScriptNewAuxiliary"),

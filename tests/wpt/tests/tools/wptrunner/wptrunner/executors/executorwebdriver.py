@@ -404,6 +404,10 @@ class WebDriverBidiEmulationProtocolPart(BidiEmulationProtocolPart):
         return await self.webdriver.bidi_session.emulation.set_locale_override(
             locale=locale, contexts=contexts)
 
+    async def set_media_features_override(self, features, contexts):
+        return await self.webdriver.bidi_session.emulation.set_media_features_override(
+            features=features, contexts=contexts)
+
     async def set_screen_orientation_override(self, screen_orientation,
             contexts):
         return await self.webdriver.bidi_session.emulation.set_screen_orientation_override(
@@ -412,6 +416,10 @@ class WebDriverBidiEmulationProtocolPart(BidiEmulationProtocolPart):
     async def set_touch_override(self, max_touch_points, contexts):
         return await self.webdriver.bidi_session.emulation.set_touch_override(
             max_touch_points=max_touch_points, contexts=contexts)
+
+    async def set_viewport_meta_override(self, viewport_meta, contexts):
+        return await self.webdriver.bidi_session.emulation.set_viewport_meta_override(
+            viewport_meta=viewport_meta, contexts=contexts)
 
 
 class WebDriverBidiPermissionsProtocolPart(BidiPermissionsProtocolPart):
@@ -616,6 +624,10 @@ class WebDriverCookiesProtocolPart(CookiesProtocolPart):
 class WebDriverWindowProtocolPart(WindowProtocolPart):
     def setup(self):
         self.webdriver = self.parent.webdriver
+
+    def create(self, type_hint=None):
+        self.logger.debug(f"Creating new {type_hint}")
+        return self.webdriver.new_window(type_hint=type_hint)
 
     def minimize(self):
         self.logger.debug("Minimizing")

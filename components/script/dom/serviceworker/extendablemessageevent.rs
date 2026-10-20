@@ -7,19 +7,20 @@ use js::context::JSContext;
 use js::jsapi::Heap;
 use js::jsval::JSVal;
 use js::rust::{HandleObject, HandleValue, MutableHandleValue};
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use stylo_atoms::Atom;
 
-use crate::dom::bindings::codegen::Bindings::ExtendableEventBinding::ExtendableEvent_Binding::ExtendableEventMethods;
-use crate::dom::bindings::codegen::Bindings::ExtendableMessageEventBinding;
-use crate::dom::bindings::codegen::Bindings::ExtendableMessageEventBinding::ExtendableMessageEventMethods;
+use crate::dom::bindings::codegen::Bindings::ExtendableEventBinding::ExtendableEventMethods;
+use crate::dom::bindings::codegen::Bindings::ExtendableMessageEventBinding::{
+    ExtendableMessageEventInit, ExtendableMessageEventMethods,
+};
 use crate::dom::bindings::codegen::UnionTypes::ClientOrServiceWorkerOrMessagePort;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::frozenarray::CachedFrozenArray;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{AsHandleValue, Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::client::Client;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
@@ -79,9 +80,9 @@ pub(crate) struct ExtendableMessageEvent {
     #[ignore_malloc_size_of = "mozjs"]
     data: Heap<JSVal>,
     /// <https://w3c.github.io/ServiceWorker/#extendablemessage-event-origin>
-    origin: DOMString,
+    origin: TracedDOMString,
     /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-lasteventid>
-    lastEventId: DOMString,
+    lastEventId: TracedDOMString,
     /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-source>
     source: Option<MessageSource>,
     /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-ports>
@@ -101,8 +102,8 @@ impl ExtendableMessageEvent {
         ExtendableMessageEvent {
             event: ExtendableEvent::new_inherited(),
             data: Heap::default(),
-            origin,
-            lastEventId,
+            origin: origin.traced(),
+            lastEventId: lastEventId.traced(),
             source: source.map(Into::into),
             ports: ports
                 .into_iter()
@@ -217,7 +218,7 @@ impl ExtendableMessageEventMethods<crate::DomTypeHolder> for ExtendableMessageEv
         worker: &ServiceWorkerGlobalScope,
         proto: Option<HandleObject>,
         type_: DOMString,
-        init: RootedTraceableBox<ExtendableMessageEventBinding::ExtendableMessageEventInit>,
+        init: &ExtendableMessageEventInit,
     ) -> Fallible<DomRoot<ExtendableMessageEvent>> {
         let global = worker.upcast::<GlobalScope>();
         let ev = ExtendableMessageEvent::new_with_proto(
@@ -227,7 +228,7 @@ impl ExtendableMessageEventMethods<crate::DomTypeHolder> for ExtendableMessageEv
             Atom::from(type_),
             init.parent.parent.bubbles,
             init.parent.parent.cancelable,
-            init.data.handle(),
+            init.data.as_handle_value(),
             init.origin.clone(),
             init.lastEventId.clone(),
             init.source.as_ref().and_then(Option::as_ref),
@@ -243,12 +244,12 @@ impl ExtendableMessageEventMethods<crate::DomTypeHolder> for ExtendableMessageEv
 
     /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-origin>
     fn Origin(&self) -> DOMString {
-        self.origin.clone()
+        self.origin.clone().root()
     }
 
     /// <https://w3c.github.io/ServiceWorker/#dom-extendablemessageevent-lasteventid>
     fn LastEventId(&self) -> DOMString {
-        self.lastEventId.clone()
+        self.lastEventId.clone().root()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>

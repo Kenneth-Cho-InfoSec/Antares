@@ -27,7 +27,7 @@ use raw_window_handle::{
 pub use servo::MediaSessionPlaybackState;
 use servo::{
     self, DevicePixel, EventLoopWaker, InputMethodControl, LoadStatus, MediaSessionActionType,
-    MouseButton, SelectElement, WebViewId,
+    SelectElement, WebViewId,
 };
 
 use super::app::{App, AppInitOptions};
@@ -71,16 +71,6 @@ where
     });
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_org_servo_servoview_JNIServo_version<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-) -> JString<'local> {
-    let version = crate::VERSION;
-    env.with_env(|env| -> jni::errors::Result<_> { env.new_string(version) })
-        .resolve::<ThrowRuntimeExAndDefault>()
-}
-
 /// Initialize Servo. At that point, we need a valid GL context. In the future, this will
 /// be done in multiple steps.
 #[unsafe(no_mangle)]
@@ -90,14 +80,11 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
     context: JObject<'local>,
     args: JString<'local>,
     url: JString<'local>,
-    size: JObject<'local>,
-    density: jfloat,
     logStr: JString<'local>,
     experimental_mode: jboolean,
     user_agent: JString<'local>,
     dark_theme: jboolean,
     callbacks_obj: JObject<'local>,
-    surface: JObject<'local>,
 ) {
     env.with_env(|env| -> jni::errors::Result<_> {
         let args = JString::cast_local(env, args)?.try_to_string(env).ok();
@@ -106,8 +93,6 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         let user_agent = JString::cast_local(env, user_agent)?
             .try_to_string(env)
             .unwrap_or_default();
-
-        let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &size)?;
 
         let mut args: Vec<String> = args
             .and_then(|args| {
@@ -221,18 +206,6 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
 
         crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
 
-        let (display_handle, window_handle) = unsafe {
-            (
-                DisplayHandle::borrow_raw(display_handle),
-                WindowHandle::borrow_raw(window_handle),
-            )
-        };
-        let hidpi_scale_factor = Scale::new(
-            servoshell_preferences
-                .device_pixel_ratio_override
-                .unwrap_or(density),
-        );
-
         APP.with(|app| {
             let new_app = App::new(AppInitOptions {
                 host,
@@ -249,14 +222,46 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
                 #[cfg(feature = "webxr")]
                 xr_discovery: None,
             });
-            new_app.add_platform_window(
+            *app.borrow_mut() = Some(new_app);
+        });
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_addPlatformWindow<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+    size: JObject<'local>,
+    density: jfloat,
+    surface: JObject<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let viewport_rect = jni_coordinate_to_rust_viewport_rect(env, &size)?;
+
+        let (display_handle, window_handle) = display_and_window_handle(env, &surface);
+
+        let (display_handle, window_handle) = unsafe {
+            (
+                DisplayHandle::borrow_raw(display_handle),
+                WindowHandle::borrow_raw(window_handle),
+            )
+        };
+
+        call(env, |app| {
+            let hidpi_scale_factor = Scale::new(
+                app.servoshell_preferences()
+                    .device_pixel_ratio_override
+                    .unwrap_or(density),
+            );
+            app.add_platform_window(
                 display_handle,
                 window_handle,
                 viewport_rect,
                 hidpi_scale_factor,
                 None,
-            );
-            *app.borrow_mut() = Some(new_app);
+            )
         });
         Ok(())
     })
@@ -465,23 +470,6 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_goForward<'local>(
     env.with_env(|env| -> jni::errors::Result<_> {
         debug!("goForward");
         call(env, |s| s.go_forward());
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_org_servo_servoview_JNIServo_scroll<'local>(
-    mut env: EnvUnowned<'local>,
-    _: JClass<'local>,
-    dx: jint,
-    dy: jint,
-    x: jint,
-    y: jint,
-) {
-    env.with_env(|env| -> jni::errors::Result<_> {
-        debug!("scroll");
-        call(env, |s| s.scroll(dx as f32, dy as f32, x as f32, y as f32));
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()

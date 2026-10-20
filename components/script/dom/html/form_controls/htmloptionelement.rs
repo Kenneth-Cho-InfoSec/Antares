@@ -89,6 +89,8 @@ impl HTMLOptionElement {
 
     pub(crate) fn set_selectedness(&self, no_gc: &NoGC, selected: bool) {
         self.selectedness.set(selected);
+        self.upcast::<Element>()
+            .set_state(ElementState::CHECKED, selected);
         // Bump the tree version so that any live HTMLCollection (e.g. selectedOptions)
         // rooted at an ancestor invalidates its cached length and cursor.
         self.upcast::<Node>().rev_version(no_gc);
@@ -404,7 +406,7 @@ impl VirtualMethods for HTMLOptionElement {
             local_name!("disabled") => {
                 let el = self.upcast::<Element>();
                 match mutation {
-                    AttributeMutation::Set(..) => {
+                    AttributeMutation::Set(_) => {
                         el.set_disabled_state(true);
                         el.set_enabled_state(false);
                     },
@@ -419,7 +421,7 @@ impl VirtualMethods for HTMLOptionElement {
             local_name!("selected") => {
                 let mut selectedness_changed = false;
                 match mutation {
-                    AttributeMutation::Set(..) => {
+                    AttributeMutation::Set(_) => {
                         // https://html.spec.whatwg.org/multipage/#concept-option-selectedness
                         if !self.dirtiness.get() && !self.selectedness.get() {
                             self.set_selectedness(cx.no_gc(), true);

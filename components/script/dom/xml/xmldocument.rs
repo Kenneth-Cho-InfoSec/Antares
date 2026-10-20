@@ -11,7 +11,7 @@ use js::context::{JSContext, NoGC};
 use net_traits::image_cache::ImageCache;
 use net_traits::request::InsecureRequestsPolicy;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use script_traits::DocumentActivity;
 use servo_url::{MutableOrigin, ServoUrl};
 
@@ -68,7 +68,6 @@ impl XMLDocument {
                 doc_loader,
                 None,
                 None,
-                Default::default(),
                 false,
                 false,
                 inherited_insecure_requests_policy,
@@ -100,7 +99,8 @@ impl XMLDocument {
         image_cache: Arc<dyn ImageCache>,
     ) -> DomRoot<XMLDocument> {
         let timeline = DocumentTimeline::new(cx, window);
-        let doc = reflect_dom_object_with_cx(
+        let doc = reflect_dom_object(
+            cx,
             Box::new(XMLDocument::new_inherited(
                 window,
                 has_browsing_context,
@@ -118,7 +118,6 @@ impl XMLDocument {
                 image_cache,
             )),
             window,
-            cx,
         );
         {
             let node = doc.upcast::<Node>();

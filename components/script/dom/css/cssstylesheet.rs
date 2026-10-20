@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, Ref};
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
@@ -32,7 +31,7 @@ use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::GenericBindings::CSSRuleListBinding::CSSRuleList_Binding::CSSRuleListMethods;
 use crate::dom::bindings::codegen::UnionTypes::MediaListOrString;
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
-use crate::dom::bindings::refcounted::Trusted;
+use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
@@ -41,9 +40,9 @@ use crate::dom::element::Element;
 use crate::dom::html::htmlstyleelement::HTMLStyleElement;
 use crate::dom::medialist::MediaList;
 use crate::dom::node::NodeTraits;
+use crate::dom::promise::RootedPromise;
 use crate::dom::types::Promise;
 use crate::dom::window::Window;
-use crate::test::TrustedPromise;
 
 #[dom_struct]
 pub(crate) struct CSSStyleSheet {
@@ -90,12 +89,11 @@ impl CSSStyleSheet {
         owner: Option<&Element>,
         type_: DOMString,
         href: Option<DOMString>,
-        title: Option<DOMString>,
         stylesheet: Arc<StyleStyleSheet>,
         constructor_document: Option<&Document>,
     ) -> CSSStyleSheet {
         CSSStyleSheet {
-            stylesheet: StyleSheet::new_inherited(type_, href, title),
+            stylesheet: StyleSheet::new_inherited(type_, href),
             owner_node: MutNullableDom::new(owner),
             rule_list: MutNullableDom::new(None),
             style_shared_lock: stylesheet.shared_lock.clone(),
@@ -108,14 +106,12 @@ impl CSSStyleSheet {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         cx: &mut JSContext,
         window: &Window,
         owner: Option<&Element>,
         type_: DOMString,
         href: Option<DOMString>,
-        title: Option<DOMString>,
         stylesheet: Arc<StyleStyleSheet>,
         constructor_document: Option<&Document>,
     ) -> DomRoot<CSSStyleSheet> {
@@ -125,7 +121,6 @@ impl CSSStyleSheet {
                 owner,
                 type_,
                 href,
-                title,
                 stylesheet,
                 constructor_document,
             )),
@@ -133,7 +128,7 @@ impl CSSStyleSheet {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new_with_proto(
         cx: &mut JSContext,
         window: &Window,
@@ -141,7 +136,6 @@ impl CSSStyleSheet {
         owner: Option<&Element>,
         type_: DOMString,
         href: Option<DOMString>,
-        title: Option<DOMString>,
         stylesheet: Arc<StyleStyleSheet>,
         constructor_document: Option<&Document>,
     ) -> DomRoot<CSSStyleSheet> {
@@ -151,7 +145,6 @@ impl CSSStyleSheet {
                 owner,
                 type_,
                 href,
-                title,
                 stylesheet,
                 constructor_document,
             )),
@@ -392,7 +385,6 @@ impl CSSStyleSheetMethods<crate::DomTypeHolder> for CSSStyleSheet {
             None, // owner
             DOMString::from_static("text/css"),
             None, // href
-            None, // title
             stylesheet,
             Some(&window.Document()), // constructor_document
         );
@@ -500,7 +492,7 @@ impl CSSStyleSheetMethods<crate::DomTypeHolder> for CSSStyleSheet {
     }
 
     /// <https://drafts.csswg.org/cssom/#dom-cssstylesheet-replace>
-    fn Replace(&self, cx: &mut CurrentRealm, text: USVString) -> Fallible<Rc<Promise>> {
+    fn Replace(&self, cx: &mut CurrentRealm, text: USVString) -> Fallible<RootedPromise> {
         // Step 1. Let promise be a promise.
         let promise = Promise::new_in_realm(cx);
 
@@ -522,7 +514,7 @@ impl CSSStyleSheetMethods<crate::DomTypeHolder> for CSSStyleSheet {
 
         // Step 4. In parallel, do these steps:
         let trusted_sheet = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
 
         self.global()
             .task_manager()

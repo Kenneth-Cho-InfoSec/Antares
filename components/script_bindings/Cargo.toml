@@ -41,6 +41,7 @@ phf = { workspace = true }
 profile_traits = { workspace = true }
 regex = { workspace = true }
 rustc-hash = { workspace = true }
+serde = { workspace = true }
 servo-base = { workspace = true }
 servo-config = { workspace = true }
 servo-constellation-traits = { workspace = true }
@@ -50,6 +51,7 @@ smallvec = { workspace = true }
 strum = { workspace = true }
 stylo = { workspace = true }
 stylo_atoms = { workspace = true }
+stylo_static_prefs = { workspace = true }
 tendril = { workspace = true }
 tracing = { workspace = true, optional = true }
 webxr-api = { workspace = true, optional = true }
@@ -71,6 +73,7 @@ harness = false
 
 [features]
 bluetooth = []
+devtools = []
 gamepad = []
 testbinding = []
 tracing = ["dep:tracing"]
@@ -79,6 +82,5 @@ webgpu = []
 webgl = []
 webxr = ["gamepad", "webgl", "webxr-api"]
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crown)'] }
-unsafe_op_in_unsafe_fn = { level = "allow" }
+[lints]
+workspace = true

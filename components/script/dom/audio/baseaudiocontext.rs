@@ -5,17 +5,16 @@
 use std::cell::Cell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::jsapi::IsDetachedArrayBufferObject;
 use js::realm::CurrentRealm;
 use js::rust::CustomAutoRooterGuard;
-use js::typedarray::ArrayBuffer;
+use js::typedarray::{ArrayBuffer, ArrayBufferU8};
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
+use script_bindings::codegen::GenericBindings::DelayNodeBinding::{DelayNodeMethods, DelayOptions};
 use script_bindings::codegen::GenericBindings::PeriodicWaveBinding::PeriodicWaveMethods;
 use servo_base::id::PipelineId;
 use servo_media::audio::context::{
@@ -38,12 +37,15 @@ use crate::dom::audio::biquadfilternode::BiquadFilterNode;
 use crate::dom::audio::channelmergernode::ChannelMergerNode;
 use crate::dom::audio::channelsplitternode::ChannelSplitterNode;
 use crate::dom::audio::constantsourcenode::ConstantSourceNode;
+use crate::dom::audio::delaynode::DelayNode;
 use crate::dom::audio::gainnode::GainNode;
 use crate::dom::audio::iirfilternode::IIRFilterNode;
 use crate::dom::audio::oscillatornode::OscillatorNode;
 use crate::dom::audio::pannernode::PannerNode;
+use crate::dom::audio::periodicwave::PeriodicWave;
 use crate::dom::audio::stereopannernode::StereoPannerNode;
-use crate::dom::bindings::callback::ExceptionHandling;
+use crate::dom::bindings::buffer_source::HeapBufferSource;
+use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::AnalyserNodeBinding::AnalyserOptions;
 use crate::dom::bindings::codegen::Bindings::AudioBufferSourceNodeBinding::AudioBufferSourceOptions;
 use crate::dom::bindings::codegen::Bindings::AudioNodeBinding::{
@@ -74,7 +76,6 @@ use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::domexception::{DOMErrorName, DOMException};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
-use crate::dom::types::PeriodicWave;
 
 pub(crate) enum BaseAudioContextOptions {
     AudioContext(RealTimeAudioContextOptions),
@@ -85,11 +86,11 @@ pub(crate) enum BaseAudioContextOptions {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct DecodeResolver {
     pub(crate) promise: TracedPromise,
-    #[conditional_malloc_size_of]
-    pub(crate) success_callback: Option<Rc<DecodeSuccessCallback>>,
-    #[conditional_malloc_size_of]
-    pub(crate) error_callback: Option<Rc<DecodeErrorCallback>>,
+    pub(crate) success_callback: Option<TracedCallback<DecodeSuccessCallback>>,
+    pub(crate) error_callback: Option<TracedCallback<DecodeErrorCallback>>,
 }
+
+impl js::gc::Rootable for DecodeResolver {}
 
 type BoxedSliceOfPromises = Box<[TracedPromise]>;
 
@@ -172,12 +173,6 @@ impl BaseAudioContext {
         self.state.get() == AudioContextState::Suspended
     }
 
-    // Reads the JSObject pointer to check if the array buffer is detached.
-    #[expect(unsafe_code)]
-    fn is_detached_array_buffer(array_buffer: &ArrayBuffer) -> bool {
-        unsafe { IsDetachedArrayBufferObject(*array_buffer.underlying_object()) }
-    }
-
     fn push_pending_resume_promise(&self, promise: &RootedPromise) {
         self.pending_resume_promises
             .borrow_mut()
@@ -220,7 +215,8 @@ impl BaseAudioContext {
             .borrow_mut()
             .pop_front()
             .map(|(promises, result)| {
-                let promises: Vec<RootedPromise> = promises.iter().map(|p| p.root()).collect();
+                let promises: Vec<RootedPromise> =
+                    promises.iter().map(|promise| promise.root(cx)).collect();
                 (promises, result)
             })
             .expect("there should be at least one list of in flight resume promises");
@@ -304,7 +300,7 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-resume>
     fn Resume(&self, cx: &mut CurrentRealm) -> RootedPromise {
         // Step 1.
-        let promise = Promise::new_in_realm_rooted(cx);
+        let promise = Promise::new_in_realm(cx);
 
         // Step 2.
         if self.audio_context_impl.lock().unwrap().state() == ProcessingState::Closed {
@@ -368,6 +364,25 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-creategain>
     fn CreateGain(&self, cx: &mut JSContext) -> Fallible<DomRoot<GainNode>> {
         GainNode::new(cx, self.global().as_window(), self, &GainOptions::empty())
+    }
+
+    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createdelay>
+    fn CreateDelay(
+        &self,
+        cx: &mut JSContext,
+        max_delay_time: Finite<f64>,
+    ) -> Fallible<DomRoot<DelayNode>> {
+        // <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createdelay-maxdelaytime-maxdelaytime>
+        // Specifies the maximum delay time in seconds allowed for the delay line.
+        // If specified, this value MUST be greater than zero and less than three minutes.
+        if *max_delay_time <= 0. || *max_delay_time >= 180. {
+            return Err(Error::NotSupported(Some(String::from(
+                "maxDelayTime is not within 0 - 3 minutes",
+            ))));
+        }
+        let mut options = DelayOptions::empty();
+        options.maxDelayTime = max_delay_time;
+        DelayNode::Constructor(cx, self.global().as_window(), None, self, &options)
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createpanner>
@@ -499,13 +514,13 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
         &self,
         cx: &mut CurrentRealm,
         audio_data: CustomAutoRooterGuard<ArrayBuffer>,
-        decode_success_callback: Option<Option<Rc<DecodeSuccessCallback>>>,
-        decode_error_callback: Option<Option<Rc<DecodeErrorCallback>>>,
+        decode_success_callback: Option<Option<RootedCallback<DecodeSuccessCallback>>>,
+        decode_error_callback: Option<Option<RootedCallback<DecodeErrorCallback>>>,
     ) -> RootedPromise {
         // Step 1. If this's relevant global object's associated Document is NOT fully active,
         // return a promise rejected with "InvalidStateError".
         if !self.global().as_window().Document().is_fully_active() {
-            let promise = Promise::new_in_realm_rooted(cx);
+            let promise = Promise::new_in_realm(cx);
             promise.reject_error(
                 cx,
                 Error::InvalidState(Some("Audio context's document is not fully active.".into())),
@@ -514,132 +529,132 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
         }
 
         // Step 2. Let promise be a new promise.
-        let promise = Promise::new_in_realm_rooted(cx);
+        let promise = Promise::new_in_realm(cx);
 
         // flatten the optionally nullable callbacks
         let decode_success_callback = decode_success_callback.flatten();
         let decode_error_callback = decode_error_callback.flatten();
 
+        let audio_data = HeapBufferSource::<ArrayBufferU8>::from_view(cx, audio_data);
+
         // Step 3. If audio_data is NOT detached, execute the following steps:
         // - Append promise to [[pending promises]].
         // - Detach the audio_data ArrayBuffer. If this operation throws, jump to step 4.1.
         // - Queue a decoding operation to be performed on another thread.
-        if !Self::is_detached_array_buffer(&audio_data) {
-            if let Some(audio_data) = audio_data.to_vec() {
-                // XXX detach array buffer.
-                let uuid = Uuid::new_v4().simple().to_string();
-                let uuid_ = uuid.clone();
-                self.decode_resolvers.safe_borrow_mut(cx.no_gc()).insert(
-                    uuid.clone(),
-                    DecodeResolver {
-                        promise: promise.to_traced(),
-                        success_callback: decode_success_callback,
-                        error_callback: decode_error_callback,
-                    },
-                );
-                let decoded_audio = Arc::new(Mutex::new(Vec::new()));
-                let decoded_audio_ = decoded_audio.clone();
-                let decoded_audio__ = decoded_audio.clone();
-                // servo-media returns an audio channel position along
-                // with the AudioDecoderCallback progress callback, which
-                // may not be the same as the index of the decoded_audio
-                // Vec.
-                let channels = Arc::new(Mutex::new(HashMap::new()));
-                let this = Trusted::new(self);
-                let this_ = this.clone();
-                let task_source = self
-                    .global()
-                    .task_manager()
-                    .dom_manipulation_task_source()
-                    .to_sendable();
-                let task_source_clone = task_source.clone();
-                let callbacks = AudioDecoderCallbacksBuilder::default()
-                    .ready(move |channel_count| {
-                        decoded_audio
-                            .lock()
-                            .unwrap()
-                            .resize(channel_count as usize, Vec::new());
-                    })
-                    .progress(move |buffer, channel_pos_mask| {
-                        let mut decoded_audio = decoded_audio_.lock().unwrap();
-                        let mut channels = channels.lock().unwrap();
-                        let channel = match channels.entry(channel_pos_mask) {
-                            Entry::Occupied(entry) => *entry.get(),
-                            Entry::Vacant(entry) => {
-                                let x = (channel_pos_mask as f32).log2() as usize;
-                                *entry.insert(x)
-                            },
+        let audio_data = if !audio_data.is_detached_buffer(cx) {
+            audio_data
+                .get_typed_array()
+                .ok()
+                .and_then(|buffer| buffer.to_vec())
+                .filter(|_| audio_data.detach_buffer(cx))
+        } else {
+            None
+        };
+
+        if let Some(audio_data) = audio_data {
+            let uuid = Uuid::new_v4().simple().to_string();
+            let uuid_ = uuid.clone();
+            self.decode_resolvers.safe_borrow_mut(cx.no_gc()).insert(
+                uuid.clone(),
+                DecodeResolver {
+                    promise: promise.to_traced(),
+                    success_callback: decode_success_callback.map(|callback| callback.to_traced()),
+                    error_callback: decode_error_callback.map(|callback| callback.to_traced()),
+                },
+            );
+            let decoded_audio = Arc::new(Mutex::new(Vec::new()));
+            let decoded_audio_ = decoded_audio.clone();
+            let decoded_audio__ = decoded_audio.clone();
+            // servo-media returns an audio channel position along
+            // with the AudioDecoderCallback progress callback, which
+            // may not be the same as the index of the decoded_audio
+            // Vec.
+            let channels = Arc::new(Mutex::new(HashMap::new()));
+            let this = Trusted::new(self);
+            let this_ = this.clone();
+            let task_source = self
+                .global()
+                .task_manager()
+                .dom_manipulation_task_source()
+                .to_sendable();
+            let task_source_clone = task_source.clone();
+            let callbacks = AudioDecoderCallbacksBuilder::default()
+                .ready(move |channel_count| {
+                    decoded_audio
+                        .lock()
+                        .unwrap()
+                        .resize(channel_count as usize, Vec::new());
+                })
+                .progress(move |buffer, channel_pos_mask| {
+                    let mut decoded_audio = decoded_audio_.lock().unwrap();
+                    let mut channels = channels.lock().unwrap();
+                    let channel = match channels.entry(channel_pos_mask) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            let x = (channel_pos_mask as f32).log2() as usize;
+                            *entry.insert(x)
+                        },
+                    };
+                    decoded_audio[channel].extend_from_slice((*buffer).as_ref());
+                })
+                .eos(move || {
+                    task_source.queue(task!(audio_decode_eos: move |cx| {
+                        let this = this.root();
+                        let decoded_audio = decoded_audio__.lock().unwrap();
+                        let length = if !decoded_audio.is_empty() {
+                            decoded_audio[0].len()
+                        } else {
+                            0
                         };
-                        decoded_audio[channel].extend_from_slice((*buffer).as_ref());
-                    })
-                    .eos(move || {
-                        task_source.queue(task!(audio_decode_eos: move |cx| {
-                            let this = this.root();
-                            let decoded_audio = decoded_audio__.lock().unwrap();
-                            let length = if !decoded_audio.is_empty() {
-                                decoded_audio[0].len()
-                            } else {
-                                0
-                            };
-                            let buffer = AudioBuffer::new(
+                        let buffer = AudioBuffer::new(
+                            cx,
+                            this.global().as_window(),
+                            decoded_audio.len() as u32 /* number of channels */,
+                            length as u32,
+                            this.sample_rate,
+                            Some(decoded_audio.as_slice()),
+                        );
+                        rooted!(&in(cx) let resolver = this
+                            .decode_resolvers
+                            .safe_borrow_mut(cx.no_gc())
+                            .remove(&uuid_)
+                            .expect("resolver should exist"));
+                        let promise = resolver.promise.root(cx);
+
+                        if let Some(callback) = &resolver.success_callback {
+                            let _ = callback.Call__(cx, &buffer, ExceptionHandling::Report);
+                        }
+                        promise.resolve_native(cx, &buffer);
+                    }));
+                })
+                .error(move |error| {
+                    task_source_clone.queue(task!(audio_decode_eos: move |cx| {
+                        let this = this_.root();
+                        rooted!(&in(cx) let resolver = this
+                            .decode_resolvers
+                            .safe_borrow_mut(cx.no_gc())
+                            .remove(&uuid)
+                            .expect("resolver should exist"));
+                        let promise = resolver.promise.root(cx);
+
+                        if let Some(callback) = &resolver.error_callback {
+                            let exception = DOMException::new(
                                 cx,
-                                this.global().as_window(),
-                                decoded_audio.len() as u32 /* number of channels */,
-                                length as u32,
-                                this.sample_rate,
-                                Some(decoded_audio.as_slice()),
+                                &this.global(),
+                                DOMErrorName::DataCloneError,
                             );
-                            let (promise, success_callback) = this
-                                .decode_resolvers
-                                .safe_borrow_mut(cx.no_gc())
-                                .remove(&uuid_)
-                                .map(|resolver| (resolver.promise.root(), resolver.success_callback))
-                                .expect("resolver should exist");
-
-                            if let Some(callback) = success_callback {
-                                let _ = callback.Call__(cx, &buffer, ExceptionHandling::Report);
-                            }
-                            promise.resolve_native(cx, &buffer);
-                        }));
-                    })
-                    .error(move |error| {
-                        task_source_clone.queue(task!(audio_decode_eos: move |cx| {
-                            let this = this_.root();
-                            let (promise, error_callback) = this
-                                .decode_resolvers
-                                .safe_borrow_mut(cx.no_gc())
-                                .remove(&uuid)
-                                .map(|resolver| (resolver.promise.root(), resolver.error_callback))
-                                .expect("resolver should exist");
-
-                            if let Some(callback) = error_callback {
-                                let exception = DOMException::new(
-                                    cx,
-                                    &this.global(),
-                                    DOMErrorName::DataCloneError,
-                                );
-                                let _ =
-                                    callback.Call__(cx, &exception, ExceptionHandling::Report);
-                            }
-                            let error = cformat!("Audio decode error {:?}", error);
-                            promise.reject_error(cx, Error::Type(error));
-                        }));
-                    })
-                    .build();
-                self.audio_context_impl
-                    .lock()
-                    .unwrap()
-                    .decode_audio_data(audio_data, callbacks);
-            } else {
-                debug_assert!(false, "ArrayBuffer::to_vec failed on non-detached buffer");
-                promise.reject_error(
-                    cx,
-                    Error::DataClone(Some(
-                        "Failed to detach the ArrayBuffer while decoding audio data.".into(),
-                    )),
-                );
-                return promise;
-            }
+                            let _ =
+                                callback.Call__(cx, &exception, ExceptionHandling::Report);
+                        }
+                        let error = cformat!("Audio decode error {:?}", error);
+                        promise.reject_error(cx, Error::Type(error));
+                    }));
+                })
+                .build();
+            self.audio_context_impl
+                .lock()
+                .unwrap()
+                .decode_audio_data(audio_data, callbacks);
         } else {
             // Step 4.
             // Else, execute the following error steps:
@@ -660,14 +675,13 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                 let task = task!(decode_audio_data_detached_buffer: move |cx| {
                     let this = this.root();
                     let exception = exception.root();
-                    let error_callback = this
+                    rooted!(&in(cx) let resolver = this
                         .decode_resolvers
                         .safe_borrow_mut(cx.no_gc())
                         .remove(&uuid)
-                        .map(|resolver| resolver.error_callback)
-                        .expect("resolver should exist");
+                        .expect("resolver should exist"));
 
-                    if let Some(callback) = error_callback {
+                    if let Some(callback) = &resolver.error_callback {
                         let _ = callback.Call__(
                             cx,
                             &exception,
@@ -680,7 +694,7 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                     DecodeResolver {
                         promise: promise.to_traced(),
                         success_callback: None,
-                        error_callback: Some(callback),
+                        error_callback: Some(callback.to_traced()),
                     },
                 );
                 self.global()

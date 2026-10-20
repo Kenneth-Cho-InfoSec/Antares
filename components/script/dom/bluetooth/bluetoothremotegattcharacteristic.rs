@@ -6,6 +6,7 @@ use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_dom_object;
 use servo_base::generic_channel::GenericSender;
 use servo_bluetooth_traits::blocklist::{Blocklist, uuid_is_blocklisted};
@@ -41,7 +42,7 @@ pub(crate) const MAXIMUM_ATTRIBUTE_LENGTH: usize = 512;
 pub(crate) struct BluetoothRemoteGATTCharacteristic {
     eventtarget: EventTarget,
     service: Dom<BluetoothRemoteGATTService>,
-    uuid: DOMString,
+    uuid: TracedDOMString,
     properties: Dom<BluetoothCharacteristicProperties>,
     value: DomRefCell<Option<ByteString>>,
     instance_id: String,
@@ -57,7 +58,7 @@ impl BluetoothRemoteGATTCharacteristic {
         BluetoothRemoteGATTCharacteristic {
             eventtarget: EventTarget::new_inherited(),
             service: Dom::from_ref(service),
-            uuid,
+            uuid: uuid.traced(),
             properties: Dom::from_ref(properties),
             value: DomRefCell::new(None),
             instance_id,
@@ -108,7 +109,7 @@ impl BluetoothRemoteGATTCharacteristicMethods<crate::DomTypeHolder>
 
     /// <https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetoothremotegattcharacteristic-uuid>
     fn Uuid(&self) -> DOMString {
-        self.uuid.clone()
+        self.uuid.clone().root()
     }
 
     /// <https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetoothremotegattcharacteristic-getdescriptor>
@@ -156,7 +157,7 @@ impl BluetoothRemoteGATTCharacteristicMethods<crate::DomTypeHolder>
 
     /// <https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetoothremotegattcharacteristic-readvalue>
     fn ReadValue(&self, cx: &mut CurrentRealm) -> RootedPromise {
-        let p = Promise::new_in_realm_rooted(cx);
+        let p = Promise::new_in_realm(cx);
 
         // Step 1.
         if uuid_is_blocklisted(&self.uuid.str(), Blocklist::Reads) {
@@ -193,7 +194,7 @@ impl BluetoothRemoteGATTCharacteristicMethods<crate::DomTypeHolder>
         cx: &mut CurrentRealm,
         value: ArrayBufferViewOrArrayBuffer,
     ) -> RootedPromise {
-        let p = Promise::new_in_realm_rooted(cx);
+        let p = Promise::new_in_realm(cx);
 
         // Step 1.
         if uuid_is_blocklisted(&self.uuid.str(), Blocklist::Writes) {
@@ -241,7 +242,7 @@ impl BluetoothRemoteGATTCharacteristicMethods<crate::DomTypeHolder>
 
     /// <https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetoothremotegattcharacteristic-startnotifications>
     fn StartNotifications(&self, cx: &mut CurrentRealm) -> RootedPromise {
-        let p = Promise::new_in_realm_rooted(cx);
+        let p = Promise::new_in_realm(cx);
 
         // Step 1.
         if uuid_is_blocklisted(&self.uuid.str(), Blocklist::Reads) {
@@ -278,7 +279,7 @@ impl BluetoothRemoteGATTCharacteristicMethods<crate::DomTypeHolder>
 
     /// <https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetoothremotegattcharacteristic-stopnotifications>
     fn StopNotifications(&self, cx: &mut CurrentRealm) -> RootedPromise {
-        let p = Promise::new_in_realm_rooted(cx);
+        let p = Promise::new_in_realm(cx);
         let sender = response_async(&p, self);
 
         // TODO: Step 3 - 4: Implement `active notification context set` for BluetoothRemoteGATTCharacteristic,

@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::rc::Rc;
 use std::str::FromStr;
 
 use bytes::Bytes;
@@ -19,6 +18,7 @@ use script_bindings::str::DOMString;
 use servo_url::ServoUrl;
 use url::Position;
 
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::HeadersBinding::HeadersMethods;
 use crate::dom::bindings::codegen::Bindings::ResponseBinding;
 use crate::dom::bindings::codegen::Bindings::ResponseBinding::{
@@ -31,7 +31,6 @@ use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{ByteString, USVString, serialize_jsval_to_json_utf8};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::headers::{Guard, Headers, is_obs_text, is_vchar};
-use crate::dom::promise::Promise;
 use crate::dom::stream::readablestream::ReadableStream;
 use crate::dom::stream::underlyingsourcecontainer::UnderlyingSourceType;
 use crate::fetch::body::{
@@ -66,7 +65,7 @@ pub(crate) struct Response {
 }
 
 impl Response {
-    pub(crate) fn new_inherited(stream: DomRoot<ReadableStream>) -> Response {
+    pub(crate) fn new_inherited(body_stream: Option<&ReadableStream>) -> Response {
         Response {
             reflector_: Reflector::new(),
             headers_reflector: Default::default(),
@@ -74,8 +73,8 @@ impl Response {
             response_type: DomRefCell::new(DOMResponseType::Default),
             url: DomRefCell::new(None),
             url_list: DomRefCell::new(vec![]),
-            body_stream: MutNullableDom::new(Some(&*stream)),
-            fetch_body_stream: MutNullableDom::new(Some(&*stream)),
+            body_stream: MutNullableDom::new(body_stream),
+            fetch_body_stream: MutNullableDom::new(body_stream),
             stream_consumer: DomRefCell::new(None),
             redirected: Cell::new(false),
         }
@@ -91,13 +90,27 @@ impl Response {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<Response> {
+        reflect_dom_object_with_proto(cx, Box::new(Response::new_inherited(None)), global, proto)
+    }
+
+    /// Create a `Response` whose body stream receives the chunks delivered by the network.
+    /// This is only for the fetch machinery; a JS-created `Response` is never network-backed.
+    pub(crate) fn new_fetch_response(
+        cx: &mut js::context::JSContext,
+        global: &GlobalScope,
+    ) -> DomRoot<Response> {
         let stream = ReadableStream::new_with_external_underlying_source(
             cx,
             global,
             UnderlyingSourceType::FetchResponse,
         )
         .expect("Failed to create ReadableStream with external underlying source");
-        reflect_dom_object_with_proto(cx, Box::new(Response::new_inherited(stream)), global, proto)
+        reflect_dom_object_with_proto(
+            cx,
+            Box::new(Response::new_inherited(Some(&stream))),
+            global,
+            None,
+        )
     }
 
     pub(crate) fn error_stream(&self, cx: &mut js::context::JSContext, error: Error) {
@@ -363,32 +376,32 @@ impl ResponseMethods<crate::DomTypeHolder> for Response {
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-text>
-    fn Text(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn Text(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::Text)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-blob>
-    fn Blob(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn Blob(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::Blob)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-formdata>
-    fn FormData(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn FormData(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::FormData)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-json>
-    fn Json(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn Json(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::Json)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-arraybuffer>
-    fn ArrayBuffer(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn ArrayBuffer(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::ArrayBuffer)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-bytes>
-    fn Bytes(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn Bytes(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::Bytes)
     }
 
@@ -429,7 +442,7 @@ fn initialize_response(
 
     // 5. If init["headers"] exists, then fill response’s headers with init["headers"].
     if let Some(ref headers_member) = init.headers {
-        response.Headers(cx).fill(Some(headers_member.clone()))?;
+        response.Headers(cx).fill(Some(headers_member))?;
     }
 
     // 6. If body is non-null, then:
@@ -455,7 +468,7 @@ fn initialize_response(
         {
             response.Headers(cx).Append(
                 ByteString::new(b"Content-Type".to_vec()),
-                ByteString::new(content_type_contents.as_bytes().to_vec()),
+                ByteString::new(content_type_contents.as_bytes(cx.no_gc()).to_vec()),
             )?;
         };
     } else {

@@ -14,6 +14,7 @@ use pixels::ImageMetadata;
 use script_bindings::codegen::InheritTypes::{
     ElementTypeId, HTMLElementTypeId, SVGElementTypeId, SVGGraphicsElementTypeId,
 };
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use servo_url::ServoUrl;
@@ -31,7 +32,7 @@ use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::html::htmlslotelement::HTMLSlotElement;
 use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::html::htmlvideoelement::HTMLVideoElement;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::svg::svgsvgelement::SVGSVGElement;
 use crate::dom::text::Text;
 use crate::dom::{Node, NodeFlags};
@@ -247,6 +248,7 @@ impl<'dom> LayoutDom<'dom, Node> {
     }
 
     #[expect(unsafe_code)]
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))] // Borrow of a traced field, never escapes.
     pub(crate) fn selection_for_text_node(&self) -> Option<RangeAny<Utf32CodeUnits>> {
         if let Some(shadow_root) = self.containing_shadow_root_for_layout() {
             let host = shadow_root.get_host_for_layout();
@@ -259,40 +261,42 @@ impl<'dom> LayoutDom<'dom, Node> {
         }
 
         let unsafe_self = self.unsafe_get();
-        if !unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) {
+        if !unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) ||
+            unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
+        {
             return None;
         }
 
         let text_node = self.downcast::<Text>()?;
         let text = text_node.upcast().data_for_layout();
         let selection = self.owner_doc_for_layout().visible_selection_for_layout()?;
-        let range = selection.range_for_layout();
-
-        let range = range.as_ref()?;
+        let range = selection.range_for_layout()?;
         let is_start_node = unsafe { range.start.container.to_layout() } == *self;
         let is_end_node = unsafe { range.end.container.to_layout() } == *self;
 
-        let start = is_start_node
-            .then(|| Utf16CodeUnits(range.start.offset as usize).to_utf32_code_units_in(&text));
-        let end = is_end_node
-            .then(|| Utf16CodeUnits(range.end.offset as usize).to_utf32_code_units_in(&text));
-        Some(RangeAny { start, end })
+        let start =
+            is_start_node.then(|| Utf16CodeUnits(range.start.offset).to_utf32_code_units_in(&text));
+        let end =
+            is_end_node.then(|| Utf16CodeUnits(range.end.offset).to_utf32_code_units_in(&text));
+        Some(RangeAny::new(start, end))
     }
 
     pub(crate) fn text_node_paints_caret(&self) -> bool {
-        if let Some(shadow_root) = self.containing_shadow_root_for_layout() {
-            let host = shadow_root.get_host_for_layout();
-            if host.is::<HTMLInputElement>() || host.is::<HTMLTextAreaElement>() {
-                // This is the cases where, if `selection_for_text_node` returns a selection
-                // it is a `TextInput` selection
-                return true;
-            }
-        }
-        // This is the cases where, if `selection_for_text_node` returns a selection
-        // it is a document selection.
-        // For now, never paint a caret for document selection.
-        // This will change as we improve `contenteditable` support.
-        false
+        // TODO: Add support for `contenteditable`.
+        self.parent_node_ref()
+            .is_some_and(|parent| parent.is_text_container_of_single_line_input())
+    }
+
+    pub(crate) fn text_node_needs_caret_placeholder(&self) -> bool {
+        // TODO: Add support for `contenteditable`.
+        self.parent_node_ref()
+            .is_some_and(|parent| parent.is_text_container_of_single_line_input())
+    }
+
+    pub(crate) fn replaced_is_selected(&self) -> bool {
+        let unsafe_self = self.unsafe_get();
+        unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) &&
+            !unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
     }
 
     pub(crate) fn image_url(self) -> Option<ServoUrl> {
@@ -303,6 +307,11 @@ impl<'dom> LayoutDom<'dom, Node> {
 
     pub(crate) fn image_data(self) -> Option<(Option<Image>, Option<ImageMetadata>)> {
         self.downcast::<HTMLImageElement>().map(|e| e.image_data())
+    }
+
+    pub(crate) fn load_time(self) -> Option<CrossProcessInstant> {
+        self.downcast::<HTMLImageElement>()
+            .and_then(|image_element| image_element.load_time())
     }
 
     pub(crate) fn image_density(self) -> Option<f64> {

@@ -5,7 +5,8 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::reflector::reflect_dom_object;
 use stylo_atoms::Atom;
 
 use crate::dom::bindings::codegen::Bindings::BeforeUnloadEventBinding::BeforeUnloadEventMethods;
@@ -16,18 +17,18 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::window::Window;
 
-// https://html.spec.whatwg.org/multipage/#beforeunloadevent
+/// <https://html.spec.whatwg.org/multipage/#beforeunloadevent>
 #[dom_struct]
 pub(crate) struct BeforeUnloadEvent {
     event: Event,
-    return_value: DomRefCell<DOMString>,
+    return_value: DomRefCell<TracedDOMString>,
 }
 
 impl BeforeUnloadEvent {
     fn new_inherited() -> BeforeUnloadEvent {
         BeforeUnloadEvent {
             event: Event::new_inherited(),
-            return_value: DomRefCell::new(DOMString::new()),
+            return_value: DomRefCell::new(DOMString::new().traced()),
         }
     }
 
@@ -35,7 +36,7 @@ impl BeforeUnloadEvent {
         cx: &mut JSContext,
         window: &Window,
     ) -> DomRoot<BeforeUnloadEvent> {
-        reflect_dom_object_with_cx(Box::new(BeforeUnloadEvent::new_inherited()), window, cx)
+        reflect_dom_object(cx, Box::new(BeforeUnloadEvent::new_inherited()), window)
     }
 
     pub(crate) fn new(
@@ -57,12 +58,12 @@ impl BeforeUnloadEvent {
 impl BeforeUnloadEventMethods<crate::DomTypeHolder> for BeforeUnloadEvent {
     /// <https://html.spec.whatwg.org/multipage/#dom-beforeunloadevent-returnvalue>
     fn ReturnValue(&self) -> DOMString {
-        self.return_value.borrow().clone()
+        self.return_value.borrow().clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-beforeunloadevent-returnvalue>
     fn SetReturnValue(&self, value: DOMString) {
-        *self.return_value.borrow_mut() = value;
+        *self.return_value.borrow_mut() = value.traced();
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>

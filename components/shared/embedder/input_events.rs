@@ -51,7 +51,7 @@ pub struct InputEventOutcome {
 /// An input event that is sent from the embedder to Servo.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum InputEvent {
-    EditingAction(EditingActionEvent),
+    EditingAction(ClipboardAction),
     #[cfg(feature = "gamepad")]
     Gamepad(GamepadEvent),
     Ime(ImeEvent),
@@ -78,12 +78,56 @@ impl From<InputEvent> for InputEventAndId {
     }
 }
 
-/// An editing action that should be performed on a `WebView`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum EditingActionEvent {
+/// A direction for an [`EditingAction`].
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub enum EditingDirection {
+    Forward,
+    Backward,
+}
+
+/// Describes a unit of movement for an [`EditingAction`].
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub enum EditingMotion {
+    Character,
+    Grapheme,
+    Word,
+    Line,
+    LineStartOrEnd,
+    Page,
+    DocumentStartOrEnd,
+}
+
+/// Whether the selection should follow cursor motion when doing an editing action.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub enum ModifySelection {
+    Yes,
+    No,
+}
+
+/// Which type of clipboard operation should be performed for an [`EditingAction::Clipboard`].
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub enum ClipboardAction {
     Copy,
     Cut,
     Paste,
+}
+
+/// An action to perform in an [`EditingContext`].
+///
+/// This is public because it is used in external unit tests.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum EditingAction {
+    Backspace(EditingMotion),
+    Clipboard(ClipboardAction),
+    Delete,
+    EndComposition(String),
+    InsertCompositionText(String),
+    InsertNewline,
+    InsertParagraph,
+    InsertText(String),
+    MoveCursor(EditingDirection, EditingMotion, ModifySelection),
+    SelectAll,
+    StartComposition,
 }
 
 impl InputEvent {
@@ -149,6 +193,10 @@ pub struct MouseButtonEvent {
     pub action: MouseButtonAction,
     pub button: MouseButton,
     pub point: WebViewPoint,
+    #[doc(hidden)]
+    // An internal flag marking a compatibility mouse event synthesized for a
+    // touch/pen tap. Such events must not generate pointer events.
+    pub is_compatibility_event_for_touch: bool,
 }
 
 impl MouseButtonEvent {
@@ -157,6 +205,21 @@ impl MouseButtonEvent {
             action,
             button,
             point,
+            is_compatibility_event_for_touch: false,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn new_compatibility_for_touch(
+        action: MouseButtonAction,
+        button: MouseButton,
+        point: WebViewPoint,
+    ) -> Self {
+        Self {
+            action,
+            button,
+            point,
+            is_compatibility_event_for_touch: true,
         }
     }
 }
@@ -281,6 +344,8 @@ pub struct TouchEvent {
     pub pointer_type: TouchPointerType,
     /// cancelable default value is true, once the first move has been processed by script disable it.
     cancelable: bool,
+    /// Whether this `touchend` should generate the compatibility mouse events.
+    pub can_synthesize_mouse_events: bool,
 }
 
 impl TouchEvent {
@@ -296,6 +361,7 @@ impl TouchEvent {
             point,
             pointer_type,
             cancelable: true,
+            can_synthesize_mouse_events: false,
         }
     }
 

@@ -3,8 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::thread::Builder;
 
 use dom_struct::dom_struct;
@@ -31,7 +30,7 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
 use crate::dom::window::Window;
 
 #[dom_struct]
@@ -40,8 +39,7 @@ pub(crate) struct OfflineAudioContext {
     channel_count: u32,
     length: u32,
     rendering_started: Cell<bool>,
-    #[conditional_malloc_size_of]
-    pending_rendering_promise: DomRefCell<Option<Rc<Promise>>>,
+    pending_rendering_promise: DomRefCell<Option<TracedPromise>>,
 }
 
 impl OfflineAudioContext {
@@ -137,7 +135,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-startrendering>
-    fn StartRendering(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+    fn StartRendering(&self, cx: &mut CurrentRealm) -> RootedPromise {
         let promise = Promise::new_in_realm(cx);
         if self.rendering_started.get() {
             promise.reject_error(cx, Error::InvalidState(None));
@@ -145,10 +143,10 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
         }
         self.rendering_started.set(true);
 
-        *self.pending_rendering_promise.safe_borrow_mut(cx.no_gc()) = Some(promise.clone());
+        *self.pending_rendering_promise.safe_borrow_mut(cx.no_gc()) = Some(promise.to_traced());
 
-        let processed_audio = Arc::new(Mutex::new(Vec::new()));
-        let processed_audio_ = processed_audio.clone();
+        let length = self.length as usize;
+        let channel_count = self.channel_count as usize;
         let (sender, receiver) = mpsc::channel();
         let sender = Mutex::new(sender);
         self.context
@@ -156,11 +154,13 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
             .lock()
             .unwrap()
             .set_eos_callback(Box::new(move |buffer| {
-                processed_audio_
-                    .lock()
-                    .unwrap()
-                    .extend_from_slice((*buffer).as_ref());
-                let _ = sender.lock().unwrap().send(());
+                let channels: Vec<Vec<f32>> = (*buffer)
+                    .as_ref()
+                    .chunks(length)
+                    .take(channel_count)
+                    .map(|channel| channel.to_vec())
+                    .collect();
+                let _ = sender.lock().unwrap().send(channels);
             }));
 
         let this = Trusted::new(self);
@@ -172,25 +172,20 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
         Builder::new()
             .name("OfflineACResolver".to_owned())
             .spawn(move || {
-                let _ = receiver.recv();
+                let processed_audio = receiver.recv().unwrap_or_default();
                 task_source.queue(task!(resolve: move |cx| {
                     let this = this.root();
-                    let processed_audio = processed_audio.lock().unwrap();
-                    let mut processed_audio: Vec<_> = processed_audio
-                        .chunks(this.length as usize)
-                        .map(|channel| channel.to_vec())
-                        .collect();
+                    let mut processed_audio = processed_audio;
                     // it can end up being empty if the task failed
-                    if processed_audio.len() != this.length as usize {
-                        processed_audio.resize(this.length as usize, Vec::new())
-                    }
-                    let buffer = AudioBuffer::new(
+                    processed_audio.resize_with(this.channel_count as usize, || {
+                        vec![0.; this.length as usize]
+                    });
+                    let buffer = AudioBuffer::new_with_channel_data(
                         cx,
                         this.global().as_window(),
-                        this.channel_count,
                         this.length,
                         *this.context.SampleRate(),
-                        Some(processed_audio.as_slice()),
+                        processed_audio,
                     );
                     let promise = {
                         (*this
@@ -198,6 +193,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
                             .safe_borrow_mut(cx.no_gc()))
                             .take()
                             .unwrap()
+                            .root(cx)
                     };
                     promise.resolve_native(cx, &buffer);
                     let global = &this.global();

@@ -18,7 +18,9 @@ use gleam::gl::RENDERER;
 use image::RgbaImage;
 use log::{debug, error, info, warn};
 use media::WindowGLContext;
-use paint_api::display_list::{PaintDisplayListInfo, PaintTimingReport, ScrollType};
+use paint_api::display_list::{
+    PaintDisplayListInfo, PaintTimingInfo, PaintTimingReport, ScrollType,
+};
 use paint_api::rendering_context::RenderingContext;
 use paint_api::viewport_description::ViewportDescription;
 use paint_api::{
@@ -49,9 +51,10 @@ use webrender_api::units::{
 use webrender_api::{
     self, BuiltDisplayList, BuiltDisplayListDescriptor, ColorF, DirtyRect, DisplayListPayload,
     DocumentId, DynamicProperties, Epoch as WebRenderEpoch, ExternalScrollId, FontInstanceFlags,
-    FontInstanceKey, FontInstanceOptions, FontKey, FontVariation, ImageData, ImageKey,
-    NativeFontHandle, PipelineId as WebRenderPipelineId, PropertyBinding, ReferenceFrameKind,
-    RenderReasons, SampledScrollOffset, SpaceAndClipInfo, SpatialId, TransformStyle,
+    FontInstanceKey, FontInstanceOptions, FontInstancePlatformOptions, FontKey, FontVariation,
+    ImageData, ImageKey, NativeFontHandle, PipelineId as WebRenderPipelineId, PropertyBinding,
+    ReferenceFrameKind, RenderReasons, SampledScrollOffset, SpaceAndClipInfo, SpatialId,
+    TransformStyle,
 };
 use wr_malloc_size_of::MallocSizeOfOps;
 
@@ -465,6 +468,14 @@ impl Painter {
     /// current time, inform the constellation about it and remove the pending metric from
     /// the list.
     fn send_pending_paint_metrics_messages_after_composite(&mut self) {
+        // From: <https://www.w3.org/TR/paint-timing/#mark-paint-timing>
+        // Step 12.2. Set paintTimingInfo’s implementation-defined presentation
+        // time to the current high resolution time given document’s relevant
+        // global object.
+        //
+        // Note: As per Servo, this is next in line after `Painter::render`,
+        // when the frame is presented to the screen. So we append current time
+        // to [`PaintTimingInfo`] and send it to constellation.
         let paint_time = CrossProcessInstant::now();
         let mut paint_metric_events = Vec::new();
 
@@ -483,7 +494,9 @@ impl Painter {
                     // CrossProcessPaintMessage::SendInitialTransaction sends an
                     // empty display list to WebRender which can happen before we receive
                     // the first "real" display list.
-                    PaintMetricState::Seen(epoch, first_reflow) if epoch <= current_epoch => {
+                    PaintMetricState::Seen(epoch, first_reflow, paint_timing_info)
+                        if epoch <= current_epoch =>
+                    {
                         assert!(epoch <= current_epoch);
                         #[cfg(feature = "tracing")]
                         tracing::info!(
@@ -496,7 +509,10 @@ impl Painter {
 
                         paint_metric_events.push((
                             *pipeline_id,
-                            PaintMetricEvent::FirstPaint(paint_time, first_reflow),
+                            PaintMetricEvent::FirstPaint(
+                                paint_timing_info.with_presentation_time(paint_time),
+                                first_reflow,
+                            ),
                         ));
 
                         pipeline.first_paint_metric = PaintMetricState::Sent;
@@ -505,7 +521,9 @@ impl Painter {
                 }
 
                 match pipeline.first_contentful_paint_metric {
-                    PaintMetricState::Seen(epoch, first_reflow) if epoch <= current_epoch => {
+                    PaintMetricState::Seen(epoch, first_reflow, paint_timing_info)
+                        if epoch <= current_epoch =>
+                    {
                         #[cfg(feature = "tracing")]
                         tracing::info!(
                             name: "FirstContentfulPaint",
@@ -516,7 +534,10 @@ impl Painter {
                         );
                         paint_metric_events.push((
                             *pipeline_id,
-                            PaintMetricEvent::FirstContentfulPaint(paint_time, first_reflow),
+                            PaintMetricEvent::FirstContentfulPaint(
+                                paint_timing_info.with_presentation_time(paint_time),
+                                first_reflow,
+                            ),
                         ));
                         pipeline.first_contentful_paint_metric = PaintMetricState::Sent;
                     },
@@ -524,9 +545,11 @@ impl Painter {
                 }
 
                 let pending_lcp_candidates = &mut pipeline.lcp_candidates;
-                while let Some((epoch, (id, area))) = pending_lcp_candidates.pop_front() {
+                while let Some((epoch, (id, area), paint_timing_info)) =
+                    pending_lcp_candidates.pop_front()
+                {
                     if epoch > current_epoch {
-                        pending_lcp_candidates.push_front((epoch, (id, area)));
+                        pending_lcp_candidates.push_front((epoch, (id, area), paint_timing_info));
                         break;
                     }
                     #[cfg(feature = "tracing")]
@@ -539,7 +562,30 @@ impl Painter {
                     );
                     paint_metric_events.push((
                         *pipeline_id,
-                        PaintMetricEvent::LargestContentfulPaint(paint_time, id),
+                        PaintMetricEvent::LargestContentfulPaint(
+                            paint_timing_info.with_presentation_time(paint_time),
+                            id,
+                        ),
+                    ));
+                }
+
+                let pending_container_timing = &mut pipeline.container_timing_candidates;
+                while let Some((epoch, ids)) = pending_container_timing.pop_front() {
+                    if epoch > current_epoch {
+                        pending_container_timing.push_front((epoch, ids));
+                        break;
+                    }
+                    #[cfg(feature = "tracing")]
+                    tracing::info!(
+                        name: "ContainerTiming",
+                        servo_profiling = true,
+                        paint_time = ?paint_time,
+                        count = ids.len(),
+                        pipeline_id = ?pipeline_id,
+                    );
+                    paint_metric_events.push((
+                        *pipeline_id,
+                        PaintMetricEvent::ContainerTiming(paint_time, ids),
                     ));
                 }
             }
@@ -991,7 +1037,8 @@ impl Painter {
                 .paint_timing_report
                 .contains(PaintTimingReport::FirstPaint)
         {
-            details.first_paint_metric = PaintMetricState::Seen(epoch, first_reflow);
+            details.first_paint_metric =
+                PaintMetricState::Seen(epoch, first_reflow, display_list_info.paint_timing_info);
         }
 
         if details.first_contentful_paint_metric == PaintMetricState::Waiting &&
@@ -999,11 +1046,23 @@ impl Painter {
                 .paint_timing_report
                 .contains(PaintTimingReport::FirstContentfulPaint)
         {
-            details.first_contentful_paint_metric = PaintMetricState::Seen(epoch, first_reflow);
+            details.first_contentful_paint_metric =
+                PaintMetricState::Seen(epoch, first_reflow, display_list_info.paint_timing_info);
         }
 
         if let Some(lcp_candidate) = display_list_info.lcp_candidate {
-            details.lcp_candidates.push_back((epoch, lcp_candidate));
+            details.lcp_candidates.push_back((
+                epoch,
+                lcp_candidate,
+                display_list_info.paint_timing_info,
+            ));
+        }
+
+        let container_timing_candidates = display_list_info.container_timing_candidates;
+        if !container_timing_candidates.is_empty() {
+            details
+                .container_timing_candidates
+                .push_back((epoch, container_timing_candidates));
         }
 
         details.animations.handle_new_display_list(
@@ -1158,9 +1217,10 @@ impl Painter {
         font_key: FontKey,
         size: f32,
         flags: FontInstanceFlags,
+        platform_options: FontInstancePlatformOptions,
         variations: Vec<FontVariation>,
     ) {
-        let variations = if pref!(layout_variable_fonts_enabled) {
+        let variations = if pref!(layout_css_font_variations_enabled) {
             variations
         } else {
             vec![]
@@ -1177,7 +1237,7 @@ impl Painter {
             font_key,
             size,
             Some(font_instance_options),
-            None,
+            Some(platform_options),
             variations,
         );
 
@@ -1233,10 +1293,16 @@ impl Painter {
     }
 
     pub(crate) fn remove_webview(&mut self, webview_id: WebViewId) {
-        if self.webview_renderers.remove(&webview_id).is_none() {
+        let Some(webview_renderer) = self.webview_renderers.remove(&webview_id) else {
             warn!("Tried removing unknown WebView: {webview_id:?}");
             return;
         };
+
+        let mut transaction = Transaction::new();
+        for pipeline_id in webview_renderer.pipelines.keys() {
+            transaction.remove_pipeline(pipeline_id.into());
+        }
+        self.send_transaction(transaction);
 
         self.send_root_pipeline_display_list();
     }
@@ -1424,12 +1490,7 @@ impl Painter {
             warn!("Handled input event for unknown webview: {webview_id}");
             return;
         };
-        webview_renderer.notify_input_event_handled(
-            &self.webrender_api,
-            &self.needs_repaint,
-            input_event_id,
-            result,
-        );
+        webview_renderer.notify_input_event_handled(&self.needs_repaint, input_event_id, result);
     }
 
     pub(crate) fn refresh_cursor(&self) {
@@ -1578,7 +1639,12 @@ pub(crate) enum PaintMetricState {
     Waiting,
     /// The painter has processed the display list which will trigger this event, marked the Servo
     /// instance ready to paint, and is waiting for the given epoch to actually be rendered.
-    Seen(WebRenderEpoch, bool /* first_reflow */),
+    /// Carries the paint timing info of the display list that triggered this metric.
+    Seen(
+        WebRenderEpoch,
+        bool, /* first_reflow */
+        PaintTimingInfo,
+    ),
     /// The metric has been sent to the constellation and no more work needs to be done.
     Sent,
 }

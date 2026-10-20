@@ -12,6 +12,7 @@ use js::jsval::NullValue;
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
 use script_bindings::codegen::GenericBindings::PerformanceBinding::PerformanceMarkOptions;
+use script_bindings::codegen::GenericBindings::PerformanceEntryBinding::PerformanceEntryMethods;
 use script_bindings::codegen::GenericBindings::PerformanceMarkBinding::PerformanceMarkMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::codegen::GenericUnionTypes::StringOrPerformanceMeasureOptions;
@@ -34,10 +35,9 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{AsHandleValue, Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::performance::performancetiming::PerformanceTiming;
@@ -69,7 +69,7 @@ impl PerformanceEntryList {
             .entries
             .iter()
             .filter(|e| {
-                name.as_ref().is_none_or(|name_| *e.name() == *name_) &&
+                name.as_ref().is_none_or(|name_| e.Name() == *name_) &&
                     entry_type
                         .as_ref()
                         .is_none_or(|type_| e.entry_type() == *type_)
@@ -94,7 +94,7 @@ impl PerformanceEntryList {
         entry_type: EntryType,
     ) {
         self.entries.retain(|e| {
-            e.entry_type() != entry_type || name.as_ref().is_some_and(|name_| e.name() != name_)
+            e.entry_type() != entry_type || name.as_ref().is_some_and(|name_| e.Name() != *name_)
         });
     }
 
@@ -106,7 +106,7 @@ impl PerformanceEntryList {
         self.entries
             .iter()
             .rev()
-            .find(|e| e.entry_type() == entry_type && *e.name() == name)
+            .find(|e| e.entry_type() == entry_type && e.Name() == name)
             .and_then(|entry| entry.start_time())
     }
 }
@@ -597,7 +597,7 @@ impl PerformanceMethods<crate::DomTypeHolder> for Performance {
         &self,
         cx: &mut JSContext,
         mark_name: DOMString,
-        mark_options: RootedTraceableBox<PerformanceMarkOptions>,
+        mark_options: &PerformanceMarkOptions,
     ) -> Fallible<DomRoot<PerformanceMark>> {
         // Step 1. Run the PerformanceMark constructor and let entry be the newly created object.
         let entry =
@@ -762,7 +762,7 @@ impl PerformanceMethods<crate::DomTypeHolder> for Performance {
             !options.detail.get().is_null_or_undefined()
         {
             // Step 9.1.1. Let record be the result of calling the StructuredSerialize algorithm on startOrMeasureOptions’s detail.
-            let record = structuredclone::write(cx, options.detail.handle(), None)?;
+            let record = structuredclone::write(cx, options.detail.as_handle_value(), None)?;
 
             // Step 9.1.2. Set entry’s detail to the result of calling the StructuredDeserialize algorithm on record and the current realm.
             structuredclone::read(cx, &self.global(), record, detail.handle_mut())?;

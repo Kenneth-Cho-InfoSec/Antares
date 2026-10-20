@@ -8,7 +8,7 @@ use dom_struct::dom_struct;
 use embedder_traits::{AllowOrDeny, EmbedderMsg};
 use js::context::JSContext;
 use js::realm::CurrentRealm;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_constellation_traits::ScriptToConstellationMessage;
 
 use crate::conversions::Convert;
@@ -41,7 +41,7 @@ impl WakeLock {
     }
 
     pub(crate) fn new(cx: &mut js::context::JSContext, global: &GlobalScope) -> DomRoot<Self> {
-        reflect_dom_object_with_cx(Box::new(Self::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(Self::new_inherited()), global)
     }
 }
 
@@ -49,7 +49,7 @@ impl WakeLockMethods<crate::DomTypeHolder> for WakeLock {
     /// <https://w3c.github.io/screen-wake-lock/#the-request-method>
     fn Request(&self, cx: &mut CurrentRealm, type_: WakeLockType) -> RootedPromise {
         let global = GlobalScope::from_current_realm(cx);
-        let promise = Promise::new_in_realm_rooted(cx);
+        let promise = Promise::new_in_realm(cx);
 
         // Step 1. Let document be this's relevant global object's associated Document.
         let document = global.as_window().Document();
@@ -95,7 +95,7 @@ impl WakeLockMethods<crate::DomTypeHolder> for WakeLock {
     }
 }
 
-impl RoutedPromiseListener<AllowOrDeny> for WakeLock {
+impl RoutedPromiseListener<crate::DomTypeHolder, AllowOrDeny> for WakeLock {
     /// <https://w3c.github.io/screen-wake-lock/#the-request-method>
     fn handle_response(&self, cx: &mut JSContext, response: AllowOrDeny, promise: &RootedPromise) {
         match response {

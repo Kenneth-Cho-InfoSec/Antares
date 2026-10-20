@@ -46,12 +46,13 @@ impl<'dom> TryFrom<ServoLayoutNode<'dom>> for LayoutRoot<'dom> {
         }
 
         // Only accept previously known layout roots without fragmentation as compatible layout roots.
-        let mut is_layout_root = false;
-        node.with_layout_box_base(|base| {
-            let fragments = base.fragments();
-            is_layout_root =
-                fragments.len() == 1 && matches!(fragments.first(), Some(Fragment::LayoutRoot(..)));
-        });
+        let is_layout_root = node
+            .with_layout_box_base(|base| {
+                let fragments = base.fragments();
+                fragments.len() == 1 && matches!(fragments.first(), Some(Fragment::LayoutRoot(..)))
+            })
+            .unwrap_or(false);
+
         if !is_layout_root {
             return Err(());
         }
@@ -60,7 +61,7 @@ impl<'dom> TryFrom<ServoLayoutNode<'dom>> for LayoutRoot<'dom> {
     }
 }
 
-impl LayoutRoot<'_> {
+impl<'dom> LayoutRoot<'dom> {
     pub(crate) fn try_layout(&self, layout_context: &LayoutContext) -> bool {
         let Some(inner_layout_data) = self.node.inner_layout_data_mut() else {
             return false;
@@ -124,5 +125,9 @@ impl LayoutRoot<'_> {
     pub(crate) fn handle_failed_layout_root_layout(&self) {
         self.node
             .clear_fragments_and_dirty_fragment_caches_recursively();
+    }
+
+    pub(crate) fn node(&self) -> ServoLayoutNode<'dom> {
+        self.node
     }
 }

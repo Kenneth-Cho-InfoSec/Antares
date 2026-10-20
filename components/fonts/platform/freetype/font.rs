@@ -20,13 +20,15 @@ use read_fonts::{FontRef, ReadError, TableProvider};
 use servo_arc::Arc;
 use skrifa::attribute::Weight;
 use style::Zero;
-use webrender_api::{FontInstanceFlags, FontVariation};
+use webrender_api::{FontInstanceFlags, FontInstancePlatformOptions, FontVariation};
 
 use super::library_handle::FreeTypeLibraryHandle;
 use crate::FontData;
 use crate::font::{FontMetrics, FontTableMethods, FractionalPixel, PlatformFontMethods};
 use crate::glyph::GlyphId;
-use crate::platform::freetype::freetype_face::{FontBackingStore, FreeTypeFace};
+use crate::platform::freetype::freetype_face::{
+    FALLBACK_HINTING_STYLE, FontBackingStore, FreeTypeFace,
+};
 
 const SEMI_BOLD_U16: u16 = Weight::SEMI_BOLD.value() as u16;
 
@@ -236,7 +238,7 @@ impl PlatformFontMethods for PlatformFont {
             // that the result may be interpreted as pixels in 26.6 fixed point format.
             //
             // This converts the value to a float without losing precision.
-            y_scale = freetype_metrics.y_scale as f64 / 65535.0 / 64.0;
+            y_scale = freetype_metrics.y_scale as f64 / 65536.0 / 64.0;
 
             max_advance = (face.as_ref().max_advance_width as f64) * y_scale;
             max_ascent = (face.as_ref().ascender as f64) * y_scale;
@@ -315,7 +317,7 @@ impl PlatformFontMethods for PlatformFont {
             average_advance = self
                 .glyph_index('0')
                 .and_then(|idx| self.glyph_h_advance(idx))
-                .map_or(max_advance, |advance| advance * y_scale);
+                .unwrap_or(max_advance);
         }
 
         let zero_horizontal_advance = self
@@ -393,6 +395,15 @@ impl PlatformFontMethods for PlatformFont {
         }
 
         flags
+    }
+
+    fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
+        FontInstancePlatformOptions {
+            // TODO: We should eventually read the hinting style from the system when
+            // possible such as from Fontconfig.
+            hinting: FALLBACK_HINTING_STYLE,
+            ..Default::default()
+        }
     }
 
     fn variations(&self) -> &[FontVariation] {

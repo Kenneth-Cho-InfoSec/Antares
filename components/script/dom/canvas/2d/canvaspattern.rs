@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use dom_struct::dom_struct;
 use euclid::default::{Size2D, Transform2D};
 use js::context::JSContext;
@@ -49,7 +51,7 @@ impl CanvasPattern {
 
         CanvasPattern {
             reflector_: Reflector::new(),
-            surface_data: surface_data.to_shared(),
+            surface_data: surface_data.into_shared(),
             surface_size,
             repeat_x: x,
             repeat_y: y,

@@ -20,21 +20,23 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
 use script_bindings::error::{Error, Fallible};
 use script_bindings::interfaces::{PromiseHelpers, StackRootPromiseHelpers};
 use script_bindings::reflector::{DomGlobalGeneric, Reflector, reflect_dom_object_with_wrap};
+use script_bindings::routed_promise::RoutedPromiseListener;
 use script_bindings::trace::RootedTraceableBox;
 use servo_base::generic_channel::GenericSharedMemory;
-use webgpu_traits::{Mapping, WebGPU, WebGPUBuffer, WebGPURequest};
-use wgpu_core::device::HostMap;
+use webgpu_traits::{
+    BufferAccessError, BufferAddress, BufferDescriptor, BufferUpdate, BufferUsages,
+    COPY_BUFFER_ALIGNMENT, HostMap, MAP_ALIGNMENT, Mapping, WebGPU, WebGPUBuffer, WebGPURequest,
+};
 
 use crate::datablock::DataBlock;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::USVString;
 use crate::gpuconvert::WebGPUConvert;
-use crate::traits::{Equivalence, GPUDeviceTrait, WebGPUGlobalTrait, WebGPUPromiseTrait};
+use crate::traits::{Equivalence, WebGPUGlobalTrait, WebGPUPromise, WebGPUPromiseCallbackTrait};
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct ActiveBufferMapping {
-    // TODO(sagudev): Use GenericSharedMemory when https://github.com/servo/ipc-channel/pull/356 lands
     /// <https://gpuweb.github.io/gpuweb/#active-buffer-mapping-data>
     /// <https://gpuweb.github.io/gpuweb/#active-buffer-mapping-views>
     pub(crate) data: DataBlock,
@@ -49,6 +51,7 @@ impl ActiveBufferMapping {
     pub(crate) fn new(
         mode: GPUMapModeFlags,
         range: Range<u64>,
+        data: Option<GenericSharedMemory>,
     ) -> Fallible<RootedTraceableBox<Self>> {
         // Step 1
         let size = range.end - range.start;
@@ -60,15 +63,29 @@ impl ActiveBufferMapping {
             .try_into()
             .map_err(|_| Error::Range(c"Over usize".to_owned()))?;
         Ok(RootedTraceableBox::new(Self {
-            data: DataBlock::new_zeroed(size),
+            data: data
+                .map(DataBlock::new_from_shared_memory)
+                .unwrap_or_else(|| DataBlock::new_zeroed(size)),
             mode,
             range,
         }))
     }
+
+    #[cfg_attr(
+        crown,
+        expect(
+            crown::unrooted_must_root,
+            reason = "No GC can happen when this is called"
+        )
+    )]
+    pub(crate) fn consume(self) -> (GenericSharedMemory, GPUMapModeFlags, Range<u64>) {
+        let ActiveBufferMapping { data, mode, range } = self;
+        (data.consume(), mode, range)
+    }
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
-pub struct DroppableGPUBuffer {
+pub(crate) struct DroppableGPUBuffer {
     #[no_trace]
     channel: WebGPU,
     #[no_trace]
@@ -132,7 +149,7 @@ where
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         cx: &mut js::context::JSContext,
         global: &D::GlobalScope,
@@ -145,11 +162,11 @@ where
         label: USVString,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_wrap::<D, _, _>(
+            cx,
             Box::new(GPUBuffer::new_inherited(
                 channel, buffer, device, size, usage, mapping, label,
             )),
             global,
-            cx,
             GPUBufferWrap::<D>,
         )
     }
@@ -158,24 +175,22 @@ where
 impl<D> GPUBuffer<D>
 where
     D: Equivalence,
-    D::GPUDevice: DomGlobalGeneric<D> + GPUDeviceTrait<D>,
-    D::GlobalScope: WebGPUGlobalTrait,
-    D::Promise: PromiseHelpers<D>,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     pub fn id(&self) -> WebGPUBuffer {
         self.droppable.buffer
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer>
-    pub fn create(
+    pub(crate) fn create(
         cx: &mut js::context::JSContext,
         device: &D::GPUDevice,
         descriptor: &GPUBufferDescriptor,
     ) -> Fallible<DomRoot<GPUBuffer<D>>> {
-        let desc = wgpu_types::BufferDescriptor {
+        let desc = BufferDescriptor {
             label: (&descriptor.parent).convert(),
-            size: descriptor.size as wgpu_types::BufferAddress,
-            usage: wgpu_types::BufferUsages::from_bits_retain(descriptor.usage),
+            size: descriptor.size as BufferAddress,
+            usage: BufferUsages::from_bits_retain(descriptor.usage),
             mapped_at_creation: descriptor.mappedAtCreation,
         };
         let id = <D::GPUDevice as DomGlobalGeneric<D>>::global_from_reflector(device)
@@ -197,6 +212,7 @@ where
             Some(ActiveBufferMapping::new(
                 GPUMapModeConstants::WRITE,
                 0..descriptor.size,
+                None,
             )?)
         } else {
             None
@@ -220,42 +236,43 @@ where
 impl<D> GPUBufferMethods<D> for GPUBuffer<D>
 where
     D: Equivalence,
-    D::Promise: PromiseHelpers<D> + PartialEq,
-    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromiseTrait<D>,
-    D::GPUDevice: GPUDeviceTrait<D>,
-    D::GPUDevice: DomGlobalGeneric<D> + GPUDeviceTrait<D>,
-    D::GlobalScope: WebGPUGlobalTrait,
-    D::Promise: PromiseHelpers<D>,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpubuffer-unmap>
     fn Unmap(&self, cx: &mut js::context::JSContext) {
-        // Step 1
+        // Step 1: If this.[[pending_map]] is not null:
+        // 1.2 Set this.[[pending_map]] to null.
         let promise = self.pending_map.safe_borrow_mut(cx).take();
         if let Some(promise) = promise {
+            // 1.1 Reject this.[[pending_map]] with an AbortError.
             promise.reject_error(cx, Error::Abort(Some("No pending map".into())));
         }
-        // Step 2
-        let mut mapping = RootedTraceableBox::new(self.mapping.safe_borrow_mut(cx).take());
-        let mapping = if let Some(mapping) = mapping.as_mut() {
+        // Step 2: If this.[[mapping]] is null:
+        let mut rooted_mapping = RootedTraceableBox::new(self.mapping.safe_borrow_mut(cx).take());
+        let mapping = if let Some(mapping) = rooted_mapping.as_mut() {
             mapping
         } else {
+            // 2.1 Return.
             return;
         };
 
-        // Step 3
+        // Step 3: For each ArrayBuffer ab in this.[[mapping]].views:
+        // 3.1 Perform DetachArrayBuffer(ab, "WebGPUBufferMapping").
         mapping.data.clear_views(cx);
-        // Step 5&7
+        let (data, mode, range) = rooted_mapping.into_box().unwrap().consume();
+        // Step 4: Let bufferUpdate be null.
+        // Step 5: If this.[[mapping]].mode contains WRITE:
+        // Set bufferUpdate to { data: this.[[mapping]].data, offset: this.[[mapping]].range[0] }.
+        let buffer_update = if mode & GPUMapModeConstants::WRITE > 0 {
+            BufferUpdate::Write(data, range)
+        } else {
+            // we still send the shared memory handle back so we do not need to send it at map_async
+            // otherwise we would need to have two flows for read and write, which is more complicated
+            BufferUpdate::Read(data)
+        };
         if let Err(e) = self.droppable.channel.0.send(WebGPURequest::UnmapBuffer {
             buffer_id: self.id().0,
-            mapping: if mapping.mode >= GPUMapModeConstants::WRITE {
-                Some(Mapping {
-                    data: GenericSharedMemory::from_bytes(mapping.data.data()),
-                    range: mapping.range.clone(),
-                    mode: HostMap::Write,
-                })
-            } else {
-                None
-            },
+            buffer_update,
         }) {
             warn!(
                 "Failed to send Buffer unmap ({:?}) ({})",
@@ -290,18 +307,25 @@ where
         offset: GPUSize64,
         size: Option<GPUSize64>,
     ) -> <D::Promise as PromiseHelpers<D>>::StackRoot {
-        let promise = D::Promise::new_in_realm_rooted(cx);
-        // Step 2
-        if self.pending_map.borrow().is_some() {
-            promise.reject_error(
+        // Step 3: Let p be a new promise.
+        let p = D::Promise::new_in_realm(cx);
+        // Step 2: If this.mapState is not "unmapped":
+        if self.MapState() != GPUBufferMapState::Unmapped {
+            // 2.1 Issue the early-reject steps on the Device timeline of this.[[device]].
+            self.device
+                .dispatch_error(webgpu_traits::Error::Validation(String::from(
+                    "Buffer is not in unmapped state",
+                )));
+            // 2.2 Return a promise rejected with OperationError.
+            p.reject_error(
                 cx,
-                Error::Operation(Some("There is already an active map".into())),
+                Error::Operation(Some("Buffer is not in unmapped state".into())),
             );
-            return promise;
+            return p;
         }
-        // Step 4
-        *self.pending_map.safe_borrow_mut(cx) = Some(promise.to_traced());
-        // Step 5
+        // Step 4: Set this.[[pending_map]] to p.
+        *self.pending_map.safe_borrow_mut(cx) = Some(p.to_traced());
+        // Step 5: Issue the validation steps on the Device timeline of this.[[device]].
         let host_map = match mode {
             GPUMapModeConstants::READ => HostMap::Read,
             GPUMapModeConstants::WRITE => HostMap::Write,
@@ -310,12 +334,12 @@ where
                     .dispatch_error(webgpu_traits::Error::Validation(String::from(
                         "Invalid MapModeFlags",
                     )));
-                self.map_failure(cx, &promise);
-                return promise;
+                self.map_failure(cx, &p);
+                return p;
             },
         };
 
-        let callback = promise.callback_promise_gpubuffer(self);
+        let callback = p.callback_promise_dom_manipulation_task_source(self);
         if let Err(e) = self
             .droppable
             .channel
@@ -327,17 +351,18 @@ where
                 host_map,
                 offset,
                 size,
+                buffer_size: self.size,
             })
         {
             warn!(
                 "Failed to send BufferMapAsync ({:?}) ({})",
                 self.droppable.buffer.0, e
             );
-            self.map_failure(cx, &promise);
-            return promise;
+            self.map_failure(cx, &p);
+            return p;
         }
-        // Step 6
-        promise
+        // Step 6: Return p.
+        p
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpubuffer-getmappedrange>
@@ -347,12 +372,13 @@ where
         offset: GPUSize64,
         size: Option<GPUSize64>,
     ) -> Fallible<RootedTraceableBox<HeapArrayBuffer>> {
-        let range_size = if let Some(s) = size {
-            s
-        } else {
-            self.size.saturating_sub(offset)
-        };
-        // Step 2: validation
+        // 1. If size is missing:
+        // Let rangeSize be max(0, this.size - offset).
+        // Otherwise, let rangeSize be size.
+        let range_size = size.unwrap_or(self.size.saturating_sub(offset));
+        // Step 2: If any of the following conditions are unsatisfied, throw an OperationError and return.
+
+        // this.[[mapping]] is not null.
         let mut mapping = self
             .mapping
             .safe_borrow_mut(cx)
@@ -360,7 +386,8 @@ where
             .map(RootedTraceableBox::new)
             .ok_or(Error::Operation(Some("No active buffer map".into())))?;
 
-        if !(offset.is_multiple_of(wgpu_types::MAP_ALIGNMENT)) {
+        // offset is a multiple of 8.
+        if !(offset.is_multiple_of(MAP_ALIGNMENT)) {
             self.mapping
                 .safe_borrow_mut(cx)
                 .replace(*mapping.into_box());
@@ -370,7 +397,8 @@ where
             )));
         }
 
-        if !(range_size % wgpu_types::COPY_BUFFER_ALIGNMENT == 0) {
+        // rangeSize is a multiple of 4.
+        if !range_size.is_multiple_of(COPY_BUFFER_ALIGNMENT) {
             self.mapping
                 .safe_borrow_mut(cx)
                 .replace(*mapping.into_box());
@@ -380,6 +408,7 @@ where
             )));
         }
 
+        // offset ≥ this.[[mapping]].range[0].
         if !(offset >= mapping.range.start) {
             self.mapping
                 .safe_borrow_mut(cx)
@@ -390,6 +419,7 @@ where
             )));
         }
 
+        // offset + rangeSize ≤ this.[[mapping]].range[1].
         if !(offset + range_size <= mapping.range.end) {
             self.mapping
                 .safe_borrow_mut(cx)
@@ -400,13 +430,16 @@ where
             )));
         }
 
-        // Step 4
-        // only mapping.range is mapped with mapping.range.start at 0
-        // so we need to rebase range to mapped.range
-        let rebased_offset = (offset - mapping.range.start) as usize;
+        // [offset, offset + rangeSize) does not overlap another range in this.[[mapping]].views.
+
+        // Step 4: Let view be ! create an ArrayBuffer of size rangeSize,
+        // but with its pointer mutably referencing the content of data at offset (offset - [[mapping]].range[0]).
+
+        // Step 6: Append view to this.[[mapping]].views.
+
         let result = mapping
             .data
-            .view(cx, rebased_offset..rebased_offset + range_size as usize)
+            .view(cx, offset as usize..(offset as usize + range_size as usize))
             .map(|view| view.array_buffer())
             .map_err(|()| {
                 Error::Operation(Some(
@@ -417,6 +450,8 @@ where
         self.mapping
             .safe_borrow_mut(cx)
             .replace(*mapping.into_box());
+
+        // Step 7: Return view.
         result
     }
 
@@ -456,7 +491,6 @@ where
 impl<D> GPUBuffer<D>
 where
     D: Equivalence,
-    D::GPUDevice: GPUDeviceTrait<D>,
 {
     pub fn map_failure(
         &self,
@@ -485,7 +519,7 @@ where
         &self,
         cx: &mut js::context::JSContext,
         p: &<D::Promise as PromiseHelpers<D>>::StackRoot,
-        wgpu_mapping: Mapping,
+        Mapping { data, mode, range }: Mapping,
     ) {
         // Step 1
         if self.pending_map.borrow().as_deref() != Some(p) {
@@ -498,11 +532,12 @@ where
 
         // Step 4
         let mapping = ActiveBufferMapping::new(
-            match wgpu_mapping.mode {
+            match mode {
                 HostMap::Read => GPUMapModeConstants::READ,
                 HostMap::Write => GPUMapModeConstants::WRITE,
             },
-            wgpu_mapping.range,
+            range,
+            Some(data),
         );
 
         match mapping {
@@ -510,9 +545,7 @@ where
                 *self.pending_map.safe_borrow_mut(cx) = None;
                 p.reject_error(cx, error);
             },
-            Ok(mut mapping) => {
-                // Step 5
-                mapping.data.load(&wgpu_mapping.data);
+            Ok(mapping) => {
                 // Step 6
                 self.mapping
                     .safe_borrow_mut(cx)
@@ -521,6 +554,20 @@ where
                 self.pending_map.safe_borrow_mut(cx).take();
                 p.resolve_native(cx, &());
             },
+        }
+    }
+}
+
+impl<D: Equivalence> RoutedPromiseListener<D, Result<Mapping, BufferAccessError>> for GPUBuffer<D> {
+    fn handle_response(
+        &self,
+        cx: &mut js::context::JSContext,
+        response: Result<Mapping, BufferAccessError>,
+        promise: &<D::Promise as PromiseHelpers<D>>::StackRoot,
+    ) {
+        match response {
+            Ok(mapping) => self.map_success(cx, promise, mapping),
+            Err(_) => self.map_failure(cx, promise),
         }
     }
 }

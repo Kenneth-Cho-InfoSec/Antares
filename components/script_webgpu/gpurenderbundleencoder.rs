@@ -14,12 +14,13 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
     GPUIndexFormat, GPURenderBundleDescriptor, GPURenderBundleEncoderDescriptor,
     GPURenderBundleEncoderMethods, GPURenderBundleEncoderWrap,
 };
-use script_bindings::interfaces::GlobalScopeHelpers;
+use script_bindings::interfaces::PromiseHelpers;
 use script_bindings::reflector::{DomGlobalGeneric, Reflector, reflect_dom_object_with_wrap};
 use webgpu_traits::{
-    RenderBundleCommand, WebGPU, WebGPURenderBundle, WebGPURenderBundleEncoder, WebGPURequest,
+    BindingCommand, BufferSize, DebugCommand, RenderBundleDepthStencil, RenderBundleDescriptor,
+    RenderBundleEncoderCommand, RenderBundleEncoderDescriptor, RenderCommand, WebGPU,
+    WebGPURenderBundle, WebGPURenderBundleEncoder, WebGPURequest,
 };
-use wgpu_core::command::RenderBundleEncoderDescriptor;
 
 use crate::JSTraceable;
 use crate::dom::bindings::error::Fallible;
@@ -30,7 +31,7 @@ use crate::gpubuffer::GPUBuffer;
 use crate::gpuconvert::WebGPUConvert;
 use crate::gpurenderbundle::GPURenderBundle;
 use crate::gpurenderpipeline::GPURenderPipeline;
-use crate::traits::{Equivalence, GPUDeviceTrait, GPUExternalTextureTrait, WebGPUGlobalTrait};
+use crate::traits::{Equivalence, WebGPUGlobalTrait, WebGPUPromise};
 
 #[derive(JSTraceable, MallocSizeOf)]
 struct DroppableGPURenderBundleEncoder {
@@ -91,6 +92,7 @@ where
         label: USVString,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_wrap::<D, _, _>(
+            cx,
             Box::new(GPURenderBundleEncoder::new_inherited(
                 device,
                 channel,
@@ -98,7 +100,6 @@ where
                 render_bundle_encoder,
             )),
             global,
-            cx,
             GPURenderBundleEncoderWrap::<D>,
         )
     }
@@ -107,11 +108,10 @@ where
 impl<D> GPURenderBundleEncoder<D>
 where
     D: Equivalence,
-    D::GPUDevice: GPUDeviceTrait<D>,
-    Self: DomGlobalGeneric<D>,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-createrenderbundleencoder>
-    pub fn create(
+    pub(crate) fn create(
         cx: &mut JSContext,
         device: &D::GPUDevice,
         descriptor: &GPURenderBundleEncoderDescriptor,
@@ -136,7 +136,7 @@ where
                 .map(|dsf| {
                     device
                         .validate_texture_format_required_features(&dsf)
-                        .map(|format| wgpu_types::RenderBundleDepthStencil {
+                        .map(|format| RenderBundleDepthStencil {
                             format,
                             depth_read_only: descriptor.depthReadOnly,
                             stencil_read_only: descriptor.stencilReadOnly,
@@ -184,10 +184,7 @@ where
 impl<D> GPURenderBundleEncoderMethods<D> for GPURenderBundleEncoder<D>
 where
     D: Equivalence,
-    D::GPUDevice: DomGlobalGeneric<D> + GPUDeviceTrait<D>,
-    D::GPUExternalTexture: GPUExternalTextureTrait<D>,
-    D::GlobalScope: WebGPUGlobalTrait + GlobalScopeHelpers<D>,
-    Self: DomGlobalGeneric<D>,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label>
     fn Label(&self) -> USVString {
@@ -207,11 +204,13 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::SetBindGroup {
-                        index,
-                        bind_group_id: bind_group.id().0,
-                        offsets: dynamic_offsets,
-                    },
+                    render_command: RenderBundleEncoderCommand::BindingCommand(
+                        BindingCommand::SetBindGroup {
+                            index,
+                            bind_group: Some(bind_group.id().0),
+                            dynamic_offsets,
+                        },
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -230,7 +229,9 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::SetPipeline(pipeline.id().0),
+                    render_command: RenderBundleEncoderCommand::RenderCommand(
+                        RenderCommand::SetPipeline(pipeline.id().0),
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -255,12 +256,14 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::SetIndexBuffer {
-                        buffer_id: buffer.id().0,
-                        index_format: index_format.convert(),
-                        offset,
-                        size: wgpu_types::BufferSize::new(size),
-                    },
+                    render_command: RenderBundleEncoderCommand::RenderCommand(
+                        RenderCommand::SetIndexBuffer {
+                            buffer: buffer.id().0,
+                            index_format: index_format.convert(),
+                            offset,
+                            size: BufferSize::new(size),
+                        },
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -279,12 +282,14 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::SetVertexBuffer {
-                        slot,
-                        buffer_id: buffer.map(|b| b.id().0),
-                        offset,
-                        size: wgpu_types::BufferSize::new(size),
-                    },
+                    render_command: RenderBundleEncoderCommand::RenderCommand(
+                        RenderCommand::SetVertexBuffer {
+                            slot,
+                            buffer: buffer.map(|b| b.id().0),
+                            offset,
+                            size: BufferSize::new(size),
+                        },
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -303,12 +308,14 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::Draw {
-                        vertex_count,
-                        instance_count,
-                        first_vertex,
-                        first_instance,
-                    },
+                    render_command: RenderBundleEncoderCommand::RenderCommand(
+                        RenderCommand::Draw {
+                            vertex_count,
+                            instance_count,
+                            first_vertex,
+                            first_instance,
+                        },
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -334,13 +341,15 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::DrawIndexed {
-                        index_count,
-                        instance_count,
-                        first_index,
-                        base_vertex,
-                        first_instance,
-                    },
+                    render_command: RenderBundleEncoderCommand::RenderCommand(
+                        RenderCommand::DrawIndexed {
+                            index_count,
+                            instance_count,
+                            first_index,
+                            base_vertex,
+                            first_instance,
+                        },
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -359,10 +368,12 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::DrawIndirect {
-                        buffer_id: indirect_buffer.id().0,
-                        offset: indirect_offset,
-                    },
+                    render_command: RenderBundleEncoderCommand::RenderCommand(
+                        RenderCommand::DrawIndirect {
+                            indirect_buffer: indirect_buffer.id().0,
+                            indirect_offset,
+                        },
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -381,10 +392,12 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::DrawIndexedIndirect {
-                        buffer_id: indirect_buffer.id().0,
-                        offset: indirect_offset,
-                    },
+                    render_command: RenderBundleEncoderCommand::RenderCommand(
+                        RenderCommand::DrawIndexedIndirect {
+                            indirect_buffer: indirect_buffer.id().0,
+                            indirect_offset,
+                        },
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -403,7 +416,9 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::PushDebugGroup(group_label.to_string()),
+                    render_command: RenderBundleEncoderCommand::DebugCommand(
+                        DebugCommand::PushDebugGroup(group_label.to_string()),
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -422,7 +437,9 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::PopDebugGroup,
+                    render_command: RenderBundleEncoderCommand::DebugCommand(
+                        DebugCommand::PopDebugGroup,
+                    ),
                     device_id: self.device.id().0,
                 })
         {
@@ -441,8 +458,8 @@ where
                 .0
                 .send(WebGPURequest::RenderBundleEncoderCommand {
                     render_bundle_encoder_id: self.droppable.render_bundle_encoder.0,
-                    render_command: RenderBundleCommand::InsertDebugMarker(
-                        marker_label.to_string(),
+                    render_command: RenderBundleEncoderCommand::DebugCommand(
+                        DebugCommand::InsertDebugMarker(marker_label.to_string()),
                     ),
                     device_id: self.device.id().0,
                 })
@@ -460,7 +477,7 @@ where
         cx: &mut JSContext,
         descriptor: &GPURenderBundleDescriptor,
     ) -> DomRoot<D::GPURenderBundle> {
-        let desc = wgpu_types::RenderBundleDescriptor {
+        let desc = RenderBundleDescriptor {
             label: (&descriptor.parent).convert(),
         };
         let render_bundle_id = self

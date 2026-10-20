@@ -2,21 +2,25 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Sender, unbounded};
-use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg, WorkerId};
+#[cfg(feature = "devtools")]
+use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg};
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
 use js::jsval::UndefinedValue;
-use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleObject, HandleValue};
+use js::rust::{CustomAutoRooterGuard, HandleObject, HandleValue};
 use net_traits::request::Referrer;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_base::generic_channel;
+use servo_base::id::WorkerId;
 use servo_constellation_traits::{StructuredSerializedData, WorkerScriptLoadOrigin};
 use uuid::Uuid;
 
@@ -48,7 +52,7 @@ use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 pub(crate) type TrustedWorkerAddress = Trusted<Worker>;
 
-// https://html.spec.whatwg.org/multipage/#worker
+/// <https://html.spec.whatwg.org/multipage/#worker>
 #[dom_struct]
 pub(crate) struct Worker {
     eventtarget: EventTarget,
@@ -220,8 +224,10 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
                     })
             });
 
+        #[cfg(feature = "devtools")]
         let (devtools_sender, devtools_receiver) = generic_channel::channel().unwrap();
         let worker_id = WorkerId(Uuid::new_v4());
+        #[cfg(feature = "devtools")]
         if let Some(chan) = global.devtools_chan() {
             let pipeline_id = global.pipeline_id();
             let title = format!("Worker for {}", worker_url.url());
@@ -246,6 +252,7 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             .and_then(|window| window.webgl_chan_value());
         let init = prepare_workerscope_init(
             global,
+            #[cfg(feature = "devtools")]
             Some(devtools_sender),
             Some(worker_id),
             #[cfg(feature = "webgl")]
@@ -266,6 +273,7 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             init,
             webview_id,
             worker_url,
+            #[cfg(feature = "devtools")]
             devtools_receiver,
             worker_ref,
             event_loop_sender,
@@ -317,17 +325,14 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
         &self,
         cx: &mut JSContext,
         message: HandleValue,
-        options: RootedTraceableBox<StructuredSerializeOptions>,
+        options: &StructuredSerializeOptions,
     ) -> ErrorResult {
-        let mut rooted = CustomAutoRooter::new(
+        auto_root!(&in(cx) let guard =
             options
                 .transfer
                 .iter()
                 .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-                .collect(),
-        );
-        #[expect(unsafe_code)]
-        let guard = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+                .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }
 

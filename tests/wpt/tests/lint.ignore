@@ -171,6 +171,8 @@ SET TIMEOUT: annotation-model/scripts/ajv.min.js
 SET TIMEOUT: apng/animated-png-timeout.html
 SET TIMEOUT: avif/animated-avif-timeout.html
 SET TIMEOUT: jpegxl/animated-img-timeout.html
+SET TIMEOUT: clear-site-data/no-cors-fetch-iframe.https.sub.html
+SET TIMEOUT: clear-site-data/no-cors-fetch-window.https.sub.html
 SET TIMEOUT: cookies/resources/testharness-helpers.js
 SET TIMEOUT: common/reftest-wait.js
 SET TIMEOUT: compute-pressure/resources/support-iframe.html
@@ -224,6 +226,9 @@ SET TIMEOUT: html/canvas/resources/draw-element-image-utils.js
 SET TIMEOUT: html/canvas/element/manual/draw-element-image/intersection-observer-visibility.tentative.html
 SET TIMEOUT: html/canvas/element/manual/draw-element-image/onpaint.tentative.html
 SET TIMEOUT: html/canvas/element/manual/draw-element-image/onpaint-css-animation.tentative.html
+SET TIMEOUT: html/canvas/element/manual/draw-element-image/onpaint-display-none.tentative.html
+SET TIMEOUT: html/canvas/element/manual/draw-element-image/onpaint-iframe-nested-invalidation.tentative.html
+SET TIMEOUT: html/canvas/element/manual/draw-element-image/onpaint-post-tree-order-shadow-dom.tentative.html
 SET TIMEOUT: html/canvas/element/manual/draw-element-image/onpaint-post-tree-order.tentative.html
 SET TIMEOUT: html/canvas/element/manual/draw-element-image/requestPaint.tentative.html
 SET TIMEOUT: html/cross-origin-opener-policy/resources/fully-loaded.js
@@ -438,7 +443,6 @@ SET TIMEOUT: document-policy/font-display/override-to-optional.tentative.html
 SET TIMEOUT: geolocation/watchposition-timeout.https.window.js
 SET TIMEOUT: permissions-policy/experimental-features/resources/focus-without-user-activation-iframe-tentative.html
 SET TIMEOUT: html/browsers/windows/auxiliary-browsing-contexts/resources/close-opener.html
-SET TIMEOUT: html/cross-origin-embedder-policy/resources/reporting-worker.js
 SET TIMEOUT: html/cross-origin-opener-policy/navigate-to-aboutblank.https.html
 SET TIMEOUT: html/cross-origin-opener-policy/navigate-top-to-aboutblank.https.html
 SET TIMEOUT: html/dom/documents/dom-tree-accessors/Document.currentScript.html
@@ -446,6 +450,7 @@ SET TIMEOUT: html/webappapis/dynamic-markup-insertion/opening-the-input-stream/c
 SET TIMEOUT: html/webappapis/timers/*
 SET TIMEOUT: portals/history/resources/portal-harness.js
 SET TIMEOUT: requestidlecallback/deadline-after-expired-timer.html
+SET TIMEOUT: resource-timing/tentative/initiator-url/dedicated-worker-script.html
 SET TIMEOUT: resource-timing/tentative/initiator-url/module-script-from-document.html
 SET TIMEOUT: resource-timing/tentative/initiator-url/set-timeout.html
 SET TIMEOUT: resource-timing/tentative/initiator-url/set-timeout.any.js

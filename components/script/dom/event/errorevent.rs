@@ -10,25 +10,26 @@ use js::jsapi::Heap;
 use js::jsval::JSVal;
 use js::rust::{HandleObject, HandleValue, MutableHandleValue};
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use stylo_atoms::Atom;
 
-use crate::dom::bindings::codegen::Bindings::ErrorEventBinding;
-use crate::dom::bindings::codegen::Bindings::ErrorEventBinding::ErrorEventMethods;
+use crate::dom::bindings::codegen::Bindings::ErrorEventBinding::{
+    ErrorEventInit, ErrorEventMethods,
+};
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{AsHandleValue, DomRoot};
 use crate::dom::bindings::str::DOMString;
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::globalscope::GlobalScope;
 
 #[dom_struct]
 pub(crate) struct ErrorEvent {
     event: Event,
-    message: DomRefCell<DOMString>,
-    filename: DomRefCell<DOMString>,
+    message: DomRefCell<TracedDOMString>,
+    filename: DomRefCell<TracedDOMString>,
     lineno: Cell<u32>,
     colno: Cell<u32>,
     #[ignore_malloc_size_of = "Defined in rust-mozjs"]
@@ -39,8 +40,8 @@ impl ErrorEvent {
     fn new_inherited() -> ErrorEvent {
         ErrorEvent {
             event: Event::new_inherited(),
-            message: DomRefCell::new(DOMString::new()),
-            filename: DomRefCell::new(DOMString::new()),
+            message: DomRefCell::new(DOMString::new().traced()),
+            filename: DomRefCell::new(DOMString::new().traced()),
             lineno: Cell::new(0),
             colno: Cell::new(0),
             error: Heap::default(),
@@ -55,7 +56,7 @@ impl ErrorEvent {
         reflect_dom_object_with_proto(cx, Box::new(ErrorEvent::new_inherited()), global, proto)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         cx: &mut JSContext,
         global: &GlobalScope,
@@ -73,7 +74,7 @@ impl ErrorEvent {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new_with_proto(
         cx: &mut JSContext,
         global: &GlobalScope,
@@ -91,8 +92,8 @@ impl ErrorEvent {
         {
             let event = ev.upcast::<Event>();
             event.init_event(type_, bool::from(bubbles), bool::from(cancelable));
-            *ev.message.borrow_mut() = message;
-            *ev.filename.borrow_mut() = filename;
+            *ev.message.safe_borrow_mut(cx.no_gc()) = message.traced();
+            *ev.filename.safe_borrow_mut(cx.no_gc()) = filename.traced();
             ev.lineno.set(lineno);
             ev.colno.set(colno);
         }
@@ -108,7 +109,7 @@ impl ErrorEventMethods<crate::DomTypeHolder> for ErrorEvent {
         global: &GlobalScope,
         proto: Option<HandleObject>,
         type_: DOMString,
-        init: RootedTraceableBox<ErrorEventBinding::ErrorEventInit>,
+        init: &ErrorEventInit,
     ) -> Fallible<DomRoot<ErrorEvent>> {
         let msg = match init.message.as_ref() {
             Some(message) => message.clone(),
@@ -139,7 +140,7 @@ impl ErrorEventMethods<crate::DomTypeHolder> for ErrorEvent {
             file_name,
             line_num,
             col_num,
-            init.error.handle(),
+            init.error.as_handle_value(),
         );
         event.upcast::<Event>().set_composed(init.parent.composed);
         Ok(event)
@@ -157,12 +158,12 @@ impl ErrorEventMethods<crate::DomTypeHolder> for ErrorEvent {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-errorevent-message>
     fn Message(&self) -> DOMString {
-        self.message.borrow().clone()
+        self.message.borrow().clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-errorevent-filename>
     fn Filename(&self) -> DOMString {
-        self.filename.borrow().clone()
+        self.filename.borrow().clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-errorevent-error>

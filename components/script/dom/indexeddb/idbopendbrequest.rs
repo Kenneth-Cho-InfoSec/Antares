@@ -8,7 +8,7 @@ use js::conversions::ToJSValConvertible;
 use js::jsval::UndefinedValue;
 use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::generic_channel::GenericSend;
 use servo_url::origin::ImmutableOrigin;
 use storage_traits::client_storage::StorageProxyMap;
@@ -120,7 +120,7 @@ impl IDBOpenDBRequest {
     }
 
     pub fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<IDBOpenDBRequest> {
-        reflect_dom_object_with_cx(Box::new(IDBOpenDBRequest::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(IDBOpenDBRequest::new_inherited()), global)
     }
 
     pub(crate) fn get_id(&self) -> Uuid {
@@ -246,7 +246,7 @@ impl IDBOpenDBRequest {
         let response_listener = OpenRequestListener {
             open_request: Trusted::new(self),
         };
-        let callback = GenericCallback::new(global.time_profiler_chan().clone(), move |message| {
+        let callback = GenericCallback::new(move |message| {
             let response_listener = response_listener.clone();
             task_source.queue(task!(request_callback: move |cx| {
                 response_listener.handle_delete_db(cx, message.unwrap());

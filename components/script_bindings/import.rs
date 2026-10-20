@@ -32,7 +32,8 @@ pub(crate) mod base {
 
     pub(crate) use crate::callback::{
         CallbackContainer, CallbackFunction, CallbackInterface, CallbackObject, ExceptionHandling,
-        OwnerWindow, RootedCallback, ThisReflector, call_setup, wrap_call_this_value,
+        HasCallbackHolder, OwnerWindow, RootedCallback, ThisReflector, TracedCallback, call_setup,
+        create_callback_rooted, wrap_call_this_value,
     };
     pub(crate) use crate::codegen::DomTypes::DomTypes;
     pub(crate) use crate::codegen::GenericUnionTypes;
@@ -75,11 +76,10 @@ pub(crate) mod module {
     };
     pub(crate) use js::panic::wrap_panic;
     pub(crate) use js::rust::wrappers2::{
-        Call, GetRealmFunctionPrototype, GetWellKnownSymbol, JS_DefineProperty,
-        JS_DefinePropertyById2, JS_ForwardGetPropertyTo, JS_GetProperty,
-        JS_GetPropertyDescriptorById, JS_HasPropertyById, JS_NewObjectWithoutMetadata,
-        JS_NewPlainObject, JS_SetImmutablePrototype, JS_SetProperty, JS_SetPrototype,
-        RUST_SYMBOL_TO_JSID,
+        Call, GetRealmFunctionPrototype, GetWellKnownSymbol, JS_DefinePropertyById2,
+        JS_ForwardGetPropertyTo, JS_GetPropertyDescriptorById, JS_HasPropertyById,
+        JS_NewObjectWithoutMetadata, JS_NewPlainObject, JS_SetImmutablePrototype, JS_SetProperty,
+        JS_SetPrototype, RUST_SYMBOL_TO_JSID,
     };
     pub(crate) use js::rust::{CustomAutoRooterGuard, GCMethods, Handle, MutableHandle};
     pub(crate) use js::{
@@ -114,6 +114,7 @@ pub(crate) mod module {
         define_guarded_properties, get_per_interface_object_handle, is_exposed_in,
     };
     pub(crate) use crate::iterable::{Iterable, IterableIterator, IteratorType};
+    pub(crate) use crate::js::{JS_DefineProperty, JS_GetProperty, PropertyFlags};
     pub(crate) use crate::like::{Maplike, Setlike};
     pub(crate) use crate::mem::malloc_size_of_including_raw_self;
     pub(crate) use crate::namespace::NamespaceObjectClass;

@@ -7,7 +7,6 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::codegen::GenericBindings::AnimationBinding::AnimationPlayState;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
-use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::inheritance::Castable;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::root::DomRoot;
@@ -73,9 +72,9 @@ impl Animation {
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#animation-set-the-timeline-of-an-animation>
-    fn set_the_timeline(&self, timeline: &AnimationTimeline) {
+    fn set_the_timeline(&self, timeline: Option<&AnimationTimeline>) {
         // FIXME: Implement this fully
-        self.timeline.set(Some(timeline));
+        self.timeline.set(timeline);
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#animation-set-the-associated-effect-of-an-animation>
@@ -92,17 +91,21 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         window: &Window,
         _object: Option<HandleObject>,
         effect: Option<&AnimationEffect>,
+        timeline: Option<Option<&AnimationTimeline>>,
     ) -> DomRoot<Self> {
-        let document = window.Document();
-
         // Step 1. Let animation be a new Animation object.
         let animation = Animation::new(cx, window.upcast());
 
         // Step 2. Run the procedure to set the timeline of an animation on animation passing timeline
         // as the new timeline; or, if the timeline argument is missing, passing the default document
         // timeline of the Document associated with the Window that is the current global object.
-        // TODO: We don't suppor the timeline argument yet.
-        animation.set_the_timeline(document.Timeline().upcast());
+        if let Some(timeline) = timeline.flatten() {
+            animation.set_the_timeline(Some(timeline));
+        } else {
+            let document = window.document_unrooted(cx.no_gc());
+            let timeline = document.Timeline();
+            animation.set_the_timeline(Some(timeline.upcast()));
+        }
 
         // Step 3. Run the procedure to set the associated effect of an animation on animation passing
         // source as the new effect.
@@ -119,7 +122,7 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
     /// <https://drafts.csswg.org/web-animations-1/#dom-animation-effect>
     fn SetEffect(&self, effect: Option<&AnimationEffect>) {
         // > Setting this attribute updates the object’s associated effect using
-        //> the procedure to set the associated effect of an animation.
+        // > the procedure to set the associated effect of an animation.
         self.set_the_associated_effect(effect);
     }
 
@@ -168,5 +171,17 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
     /// <https://drafts.csswg.org/web-animations-1/#dom-animation-pause>
     fn Pause(&self) {
         // No-op: effects are never ticked.
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-animation-effect-timeline-timeline>
+    fn GetTimeline(&self) -> Option<DomRoot<AnimationTimeline>> {
+        self.timeline.get()
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-animation-animation-effect-timeline-timeline>
+    fn SetTimeline(&self, timeline: Option<&AnimationTimeline>) {
+        // > Setting this attribute updates the object’s timeline using the procedure
+        // > to set the timeline of an animation.
+        self.set_the_timeline(timeline);
     }
 }

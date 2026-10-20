@@ -5,7 +5,7 @@
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 
 use crate::dom::bindings::codegen::Bindings::TextTrackListBinding::TextTrackListMethods;
 use crate::dom::bindings::codegen::UnionTypes::VideoTrackOrAudioTrackOrTextTrack;
@@ -50,10 +50,10 @@ impl TextTrackList {
         window: &Window,
         tracks: &[&TextTrack],
     ) -> DomRoot<TextTrackList> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(TextTrackList::new_inherited(media_element, tracks)),
             window,
-            cx,
         )
     }
 
@@ -71,7 +71,9 @@ impl TextTrackList {
         // element for <track> elements. Otherwise, we would be double
         // counting.
         if track.associated_track().is_none() {
-            self.dom_tracks.borrow_mut().push(Dom::from_ref(track));
+            self.dom_tracks
+                .safe_borrow_mut(cx.no_gc())
+                .push(Dom::from_ref(track));
         }
 
         track.add_track_list(self);
@@ -183,7 +185,7 @@ impl TextTrackListMethods<crate::DomTypeHolder> for TextTrackList {
         // > When no tracks match the given argument, the method must return null.
         let id_str = String::from(id);
         self.iter(no_gc)
-            .find(|track| track.id() == id_str)
+            .find(|track| *track.id() == id_str)
             .map(|track| track.as_rooted())
     }
 

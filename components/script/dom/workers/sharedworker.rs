@@ -2,11 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
 use crossbeam_channel::{Sender, unbounded};
-use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg, WorkerId};
+#[cfg(feature = "devtools")]
+use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg};
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::HandleObject;
@@ -15,6 +18,7 @@ use net_traits::pub_domains::reg_suffix;
 use net_traits::request::{CredentialsMode, Referrer};
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_base::generic_channel;
+use servo_base::id::WorkerId;
 use servo_constellation_traits::{MessagePortImpl, WorkerScriptLoadOrigin};
 use servo_url::{Host, ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
@@ -390,6 +394,23 @@ impl SharedWorker {
         // Enable outside port's port message queue.
         global.start_message_port(cx, worker.port.message_port_id());
     }
+
+    /// Set online status for all living shared workers.
+    pub(crate) fn set_network_online_state(online: bool) {
+        let (workers, _ready) = &*SHARED_WORKERS;
+        let workers = workers.lock().expect("SharedWorker registry poisoned");
+        for entry in workers.iter() {
+            let SharedWorkerRegistryState::Created(registration) = &entry.state else {
+                continue;
+            };
+            if registration.closing.load(Ordering::SeqCst) {
+                continue;
+            }
+            let _ = registration
+                ._control_sender
+                .send(SharedWorkerControlMsg::SetNetworkOnlineState(online));
+        }
+    }
 }
 
 impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
@@ -560,34 +581,43 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             pipeline_id: global.pipeline_id(),
         };
 
-        let (devtools_sender, devtools_receiver) = generic_channel::channel().unwrap();
-        let worker_id = WorkerId(Uuid::new_v4());
-        if let Some(chan) = global.devtools_chan() {
-            let webview_id = global
-                .webview_id()
-                .expect("Window global must have a WebViewId");
-            let page_info = DevtoolsPageInfo {
-                title: format!("SharedWorker for {}", worker_url.url()),
-                url: worker_url.url(),
-                is_top_level_global: false,
-                is_service_worker: false,
-            };
-            let _ = chan.send(ScriptToDevtoolsControlMsg::NewGlobal(
-                (
-                    window.window_proxy().browsing_context_id(),
-                    global.pipeline_id(),
-                    Some(worker_id),
-                    webview_id,
-                ),
-                devtools_sender.clone(),
-                page_info,
-            ));
-        }
+        #[cfg(feature = "devtools")]
+        let ((devtools_sender, devtools_receiver), worker_id) = {
+            let (devtools_sender, devtools_receiver) = generic_channel::channel().unwrap();
+            let worker_id = Some(WorkerId(Uuid::new_v4()));
+
+            if let Some(chan) = global.devtools_chan() {
+                let webview_id = global
+                    .webview_id()
+                    .expect("Window global must have a WebViewId");
+                let page_info = DevtoolsPageInfo {
+                    title: format!("SharedWorker for {}", worker_url.url()),
+                    url: worker_url.url(),
+                    is_top_level_global: false,
+                    is_service_worker: false,
+                };
+                let _ = chan.send(ScriptToDevtoolsControlMsg::NewGlobal(
+                    (
+                        window.window_proxy().browsing_context_id(),
+                        global.pipeline_id(),
+                        worker_id,
+                        webview_id,
+                    ),
+                    devtools_sender.clone(),
+                    page_info,
+                ));
+            }
+
+            ((devtools_sender, devtools_receiver), worker_id)
+        };
+        #[cfg(not(feature = "devtools"))]
+        let worker_id: Option<WorkerId> = None;
 
         let init = prepare_workerscope_init(
             global,
+            #[cfg(feature = "devtools")]
             Some(devtools_sender),
-            Some(worker_id),
+            worker_id,
             #[cfg(feature = "webgl")]
             window.webgl_chan_value(),
         );
@@ -605,6 +635,7 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             worker_url,
             worker_addr.clone(),
             parent_event_loop_sender,
+            #[cfg(feature = "devtools")]
             devtools_receiver,
             sender.clone(),
             receiver,

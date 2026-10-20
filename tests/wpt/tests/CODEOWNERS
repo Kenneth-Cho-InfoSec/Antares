@@ -126,7 +126,6 @@ css/css-anchor-position/position-visibility-anchors-visible-css-visibility.html 
 css/css-anchor-position/position-visibility-anchors-visible-non-intervening-container.html @web-platform-tests/interop
 css/css-anchor-position/position-visibility-anchors-visible-stacked-child.html @web-platform-tests/interop
 css/css-anchor-position/position-visibility-anchors-visible-with-position.html @web-platform-tests/interop
-css/css-anchor-position/position-visibility-anchors-visible.html @web-platform-tests/interop
 css/css-anchor-position/position-visibility-no-overflow-scroll.html @web-platform-tests/interop
 css/css-anchor-position/position-visibility-no-overflow-stacked-child.html @web-platform-tests/interop
 css/css-anchor-position/position-visibility-no-overflow.html @web-platform-tests/interop
@@ -919,8 +918,6 @@ fetch/range/data.any.js @web-platform-tests/interop
 fetch/range/general.any.js @web-platform-tests/interop
 fetch/range/general.window.js @web-platform-tests/interop
 fetch/range/non-matching-range-response.html @web-platform-tests/interop
-fetch/range/sw-416.https.window.js @web-platform-tests/interop
-fetch/range/sw.https.window.js @web-platform-tests/interop
 html/dom/render-blocking/blocking-idl-attr.html @web-platform-tests/interop
 html/dom/render-blocking/element-render-blocking-001.html @web-platform-tests/interop
 html/dom/render-blocking/element-render-blocking-002.html @web-platform-tests/interop
@@ -1410,7 +1407,6 @@ scroll-animations/css/animation-shorthand.html @web-platform-tests/interop
 scroll-animations/css/animation-timeline-computed.html @web-platform-tests/interop
 scroll-animations/css/animation-timeline-in-keyframe.html @web-platform-tests/interop
 scroll-animations/css/animation-timeline-multiple.html @web-platform-tests/interop
-scroll-animations/css/animation-timeline-none.html @web-platform-tests/interop
 scroll-animations/css/animation-timeline-parsing.html @web-platform-tests/interop
 scroll-animations/css/chrome-40925697.html @web-platform-tests/interop
 scroll-animations/css/get-animations-inactive-timeline.html @web-platform-tests/interop
@@ -1426,7 +1422,6 @@ scroll-animations/css/scroll-timeline-axis-computed.html @web-platform-tests/int
 scroll-animations/css/scroll-timeline-axis-parsing.html @web-platform-tests/interop
 scroll-animations/css/scroll-timeline-axis-writing-mode.html @web-platform-tests/interop
 scroll-animations/css/scroll-timeline-document-scroller-quirks.html @web-platform-tests/interop
-scroll-animations/css/scroll-timeline-in-container-query.html @web-platform-tests/interop
 scroll-animations/css/scroll-timeline-inactive.html @web-platform-tests/interop
 scroll-animations/css/scroll-timeline-name-computed.html @web-platform-tests/interop
 scroll-animations/css/scroll-timeline-name-parsing.html @web-platform-tests/interop
@@ -1446,7 +1441,6 @@ scroll-animations/css/timeline-scope-all.html @web-platform-tests/interop
 scroll-animations/css/timeline-scope-computed.html @web-platform-tests/interop
 scroll-animations/css/timeline-scope-parsing.html @web-platform-tests/interop
 scroll-animations/css/timeline-scope.html @web-platform-tests/interop
-scroll-animations/css/view-timeline-animation.html @web-platform-tests/interop
 scroll-animations/css/view-timeline-axis-computed.html @web-platform-tests/interop
 scroll-animations/css/view-timeline-axis-parsing.html @web-platform-tests/interop
 scroll-animations/css/view-timeline-dynamic.html @web-platform-tests/interop
@@ -1478,7 +1472,6 @@ scroll-animations/scroll-timelines/play-animation.html @web-platform-tests/inter
 scroll-animations/scroll-timelines/reverse-animation.html @web-platform-tests/interop
 scroll-animations/scroll-timelines/scroll-animation-inactive-timeline.html @web-platform-tests/interop
 scroll-animations/scroll-timelines/scroll-animation.html @web-platform-tests/interop
-scroll-animations/scroll-timelines/scroll-timeline-invalidation.html @web-platform-tests/interop
 scroll-animations/scroll-timelines/scroll-timeline-range.html @web-platform-tests/interop
 scroll-animations/scroll-timelines/scroll-timeline-snapshotting.html @web-platform-tests/interop
 scroll-animations/scroll-timelines/setting-current-time.html @web-platform-tests/interop
@@ -1505,12 +1498,10 @@ scroll-animations/view-timelines/sticky/view-timeline-sticky-offscreen-6.html @w
 scroll-animations/view-timelines/sticky/view-timeline-sticky-offscreen-7.html @web-platform-tests/interop
 scroll-animations/view-timelines/svg-graphics-element-001.html @web-platform-tests/interop
 scroll-animations/view-timelines/svg-graphics-element-002.html @web-platform-tests/interop
-scroll-animations/view-timelines/svg-graphics-element-003.html @web-platform-tests/interop
 scroll-animations/view-timelines/timeline-offset-in-keyframe.html @web-platform-tests/interop
 scroll-animations/view-timelines/unattached-subject-inset.html @web-platform-tests/interop
 scroll-animations/view-timelines/view-timeline-get-set-range.html @web-platform-tests/interop
 scroll-animations/view-timelines/view-timeline-inset.html @web-platform-tests/interop
-scroll-animations/view-timelines/view-timeline-missing-subject.html @web-platform-tests/interop
 scroll-animations/view-timelines/view-timeline-on-display-none-element.html @web-platform-tests/interop
 scroll-animations/view-timelines/view-timeline-range-large-subject.html @web-platform-tests/interop
 scroll-animations/view-timelines/view-timeline-range.html @web-platform-tests/interop

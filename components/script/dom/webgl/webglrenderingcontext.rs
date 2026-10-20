@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::{cmp, ptr};
@@ -16,10 +17,7 @@ use js::conversions::ToJSValConvertible;
 use js::jsapi::{JSObject, Type};
 use js::jsval::{BooleanValue, DoubleValue, Int32Value, NullValue, ObjectValue, UInt32Value};
 use js::rust::{CustomAutoRooterGuard, MutableHandleObject, MutableHandleValue};
-use js::typedarray::{
-    ArrayBufferView, CreateWith, Float32, Float32Array, Int32, Int32Array, TypedArray,
-    TypedArrayElementCreator, Uint32Array,
-};
+use js::typedarray::{ArrayBufferView, Float32, Int32, TypedArrayElementCreator, Uint32};
 use pixels::{self, Alpha, PixelFormat, Snapshot, SnapshotPixelFormat};
 use script_bindings::cell::{DomRefCell, Ref, RefMut};
 use script_bindings::reflector::{
@@ -39,7 +37,9 @@ use servo_config::pref;
 use webrender_api::ImageKey;
 
 use crate::canvas_context::{CanvasContext, HTMLCanvasElementOrOffscreenCanvas};
-use crate::dom::bindings::buffer_source::get_buffer_source_slice;
+#[cfg(feature = "webxr")]
+use crate::dom::RootedPromise;
+use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_slice};
 use crate::dom::bindings::codegen::Bindings::ANGLEInstancedArraysBinding::ANGLEInstancedArraysConstants;
 use crate::dom::bindings::codegen::Bindings::EXTBlendMinmaxBinding::EXTBlendMinmaxConstants;
 use crate::dom::bindings::codegen::Bindings::OESVertexArrayObjectBinding::OESVertexArrayObjectConstants;
@@ -73,7 +73,7 @@ use crate::dom::webgl::validations::tex_image_2d::{
     CompressedTexSubImage2DValidator, TexImage2DValidator, TexImage2DValidatorResult,
 };
 use crate::dom::webgl::validations::types::TexImageTarget;
-use crate::dom::webgl::vertexarrayobject::VertexAttribData;
+use crate::dom::webgl::vertexarrayobject::{VertexAttribData, VertexAttribPointerKind};
 use crate::dom::webgl::webglactiveinfo::WebGLActiveInfo;
 use crate::dom::webgl::webglbuffer::WebGLBuffer;
 use crate::dom::webgl::webglcontextevent::WebGLContextEvent;
@@ -111,19 +111,15 @@ where
     receiver.recv().unwrap()
 }
 
-#[expect(unsafe_code)]
-pub(crate) unsafe fn uniform_typed<T>(
+pub(crate) fn uniform_typed<T>(
     cx: &mut JSContext,
     value: &[T::Element],
     mut retval: MutableHandleValue,
 ) where
-    T: TypedArrayElementCreator,
+    T: TypedArrayElementCreator + 'static,
 {
     rooted!(&in(cx) let mut rval = ptr::null_mut::<JSObject>());
-    unsafe {
-        <TypedArray<T, *mut JSObject>>::create(cx, CreateWith::Slice(value), rval.handle_mut())
-    }
-    .unwrap();
+    create_buffer_source::<T>(cx, value, rval.handle_mut()).unwrap();
     retval.set(ObjectValue(rval.get()));
 }
 
@@ -137,6 +133,16 @@ bitflags! {
         const PREMULTIPLY_ALPHA = 0x02;
         const CONVERT_COLORSPACE = 0x04;
     }
+}
+
+/// WebGL 2 `UNPACK_*` pixel store state that selects a block of client memory.
+#[derive(Clone, Copy, Default, JSTraceable, MallocSizeOf, PartialEq)]
+pub(crate) struct UnpackLayout {
+    pub(crate) row_length: u32,
+    pub(crate) image_height: u32,
+    pub(crate) skip_pixels: u32,
+    pub(crate) skip_rows: u32,
+    pub(crate) skip_images: u32,
 }
 
 #[derive(Clone, Copy, Debug, JSTraceable, MallocSizeOf)]
@@ -182,6 +188,7 @@ pub(crate) struct WebGLRenderingContext {
     texture_unpacking_settings: Cell<TextureUnpacking>,
     // TODO(nox): Should be Cell<u8>.
     texture_unpacking_alignment: Cell<u32>,
+    texture_unpack_layout: Cell<UnpackLayout>,
     bound_draw_framebuffer: MutNullableDom<WebGLFramebuffer>,
     // TODO(mmatyas): This was introduced in WebGL2, but listed here because it's used by
     // Textures and Renderbuffers, but such WebGLObjects have access only to the GL1 context.
@@ -251,6 +258,7 @@ impl WebGLRenderingContext {
                 texture_packing_alignment: Cell::new(4),
                 texture_unpacking_settings: Cell::new(TextureUnpacking::CONVERT_COLORSPACE),
                 texture_unpacking_alignment: Cell::new(4),
+                texture_unpack_layout: Cell::default(),
                 bound_draw_framebuffer: MutNullableDom::new(None),
                 bound_read_framebuffer: MutNullableDom::new(None),
                 bound_buffer_array: MutNullableDom::new(None),
@@ -356,12 +364,114 @@ impl WebGLRenderingContext {
         self.webgl_version
     }
 
+    pub(crate) fn api_type(&self) -> GlType {
+        self.api_type
+    }
+
     pub(crate) fn limits(&self) -> &GLLimits {
         &self.limits
     }
 
     pub(crate) fn texture_unpacking_alignment(&self) -> u32 {
         self.texture_unpacking_alignment.get()
+    }
+
+    pub(crate) fn texture_unpack_layout(&self) -> UnpackLayout {
+        self.texture_unpack_layout.get()
+    }
+
+    pub(crate) fn set_texture_unpack_layout(&self, layout: UnpackLayout) {
+        self.texture_unpack_layout.set(layout);
+    }
+
+    /// Copies a `width` x `height` x `depth` block of `cpp`-byte pixels out of `data` under the
+    /// unpack layout, as rows padded to the unpack alignment; `None` depth is a 2D upload.
+    /// Generates `INVALID_OPERATION` when the block does not fit.
+    pub(crate) fn unpack_block<'a>(
+        &self,
+        data: &'a [u8],
+        width: u32,
+        height: u32,
+        depth: Option<u32>,
+        cpp: u32,
+    ) -> Result<Cow<'a, [u8]>, ()> {
+        let mut layout = self.texture_unpack_layout.get();
+        if depth.is_none() {
+            layout.image_height = 0;
+            layout.skip_images = 0;
+        }
+        if layout == UnpackLayout::default() {
+            return Ok(Cow::Borrowed(data));
+        }
+        // <https://registry.khronos.org/webgl/specs/latest/2.0/#PIXEL_STORE_PARAM_CONSTRAINTS>
+        let data_store_width = if layout.row_length > 0 {
+            layout.row_length
+        } else {
+            width
+        };
+        let data_store_height = if layout.image_height > 0 {
+            layout.image_height
+        } else {
+            height
+        };
+        if layout.skip_pixels + width > data_store_width ||
+            (depth.is_some() && layout.skip_rows + height > data_store_height)
+        {
+            self.webgl_error(InvalidOperation);
+            return Err(());
+        }
+        let depth = depth.unwrap_or(1);
+        if width == 0 || height == 0 || depth == 0 {
+            return Ok(Cow::Borrowed(&[]));
+        }
+
+        let alignment = self.texture_unpacking_alignment.get() as usize;
+        let align = |bytes: usize| bytes.div_ceil(alignment).checked_mul(alignment);
+        let (width, height, depth, cpp) = (
+            width as usize,
+            height as usize,
+            depth as usize,
+            cpp as usize,
+        );
+        let row_pixels = if layout.row_length > 0 {
+            layout.row_length as usize
+        } else {
+            width
+        };
+        let image_rows = if layout.image_height > 0 {
+            layout.image_height as usize
+        } else {
+            height
+        };
+        let row_bytes = width * cpp;
+        // The layout values are bounded only by `i32::MAX`, so the source offsets can overflow.
+        let source = (|| {
+            let src_stride = align(row_pixels.checked_mul(cpp)?)?;
+            let src_image = src_stride.checked_mul(image_rows)?;
+            let start = (layout.skip_images as usize)
+                .checked_mul(src_image)?
+                .checked_add((layout.skip_rows as usize).checked_mul(src_stride)?)?
+                .checked_add((layout.skip_pixels as usize).checked_mul(cpp)?)?;
+            let required = start
+                .checked_add((depth - 1).checked_mul(src_image)?)?
+                .checked_add((height - 1).checked_mul(src_stride)?)?
+                .checked_add(row_bytes)?;
+            (required <= data.len()).then_some((src_stride, src_image, start, align(row_bytes)?))
+        })();
+        let Some((src_stride, src_image, start, dst_stride)) = source else {
+            self.webgl_error(InvalidOperation);
+            return Err(());
+        };
+
+        let mut block = vec![0; dst_stride * height * depth];
+        for image in 0..depth {
+            for row in 0..height {
+                let src = start + image * src_image + row * src_stride;
+                let dst = (image * height + row) * dst_stride;
+                block[dst..dst + row_bytes].copy_from_slice(&data[src..src + row_bytes]);
+            }
+        }
+        Ok(Cow::Owned(block))
     }
 
     pub(crate) fn bound_draw_framebuffer(&self) -> Option<DomRoot<WebGLFramebuffer>> {
@@ -415,12 +525,14 @@ impl WebGLRenderingContext {
         self.send_with_fallibility(command, Operation::Fallible);
     }
 
+    #[track_caller]
     pub(crate) fn webgl_error(&self, err: WebGLError) {
         // TODO(emilio): Add useful debug messages to this
         warn!(
-            "WebGL error: {:?}, previous error was {:?}",
+            "WebGL error: {:?}, previous error was {:?}, caller: {}",
             err,
-            self.last_error.get()
+            self.last_error.get(),
+            std::panic::Location::caller()
         );
 
         // If an error has been detected no further errors must be
@@ -453,9 +565,20 @@ impl WebGLRenderingContext {
             Some(fb) => match fb.check_status_for_rendering() {
                 CompleteForRendering::Complete => Ok(()),
                 CompleteForRendering::Incomplete => Err(InvalidFramebufferOperation),
-                CompleteForRendering::MissingColorAttachment => Err(InvalidOperation),
             },
             None => Ok(()),
+        }
+    }
+
+    /// Validates the bound framebuffer for an operation that reads its color; returns
+    /// `INVALID_OPERATION` when the framebuffer has no color attachment.
+    ///
+    /// <https://registry.khronos.org/webgl/specs/latest/1.0/#READING_FROM_MISSING_ATTACHMENT>
+    pub(crate) fn validate_read_framebuffer(&self) -> WebGLResult<()> {
+        self.validate_framebuffer()?;
+        match self.bound_draw_framebuffer.get() {
+            Some(framebuffer) if !framebuffer.has_color_attachment() => Err(InvalidOperation),
+            _ => Ok(()),
         }
     }
 
@@ -530,19 +653,11 @@ impl WebGLRenderingContext {
         }
     }
 
-    fn vertex_attrib(&self, cx: &mut JSContext, indx: u32, x: f32, y: f32, z: f32, w: f32) {
+    fn vertex_attrib(&self, indx: u32, x: f32, y: f32, z: f32, w: f32) {
         if indx >= self.limits.max_vertex_attribs {
             return self.webgl_error(InvalidValue);
         }
 
-        match self.webgl_version() {
-            WebGLVersion::WebGL1 => self
-                .current_vao(cx)
-                .set_vertex_attrib_type(indx, constants::FLOAT),
-            WebGLVersion::WebGL2 => self
-                .current_vao_webgl2(cx)
-                .set_vertex_attrib_type(indx, constants::FLOAT),
-        };
         self.current_vertex_attribs.borrow_mut()[indx as usize] = VertexAttrib::Float(x, y, z, w);
 
         self.send_command(WebGLCommand::VertexAttrib(indx, x, y, z, w));
@@ -664,7 +779,7 @@ impl WebGLRenderingContext {
                     return Ok(None);
                 };
 
-                let snapshot = snapshot.to_shared();
+                let snapshot = snapshot.into_shared();
                 let size = snapshot.size().cast();
                 let format = match snapshot.format() {
                     SnapshotPixelFormat::RGBA => PixelFormat::RGBA8,
@@ -718,7 +833,7 @@ impl WebGLRenderingContext {
                     return Ok(None);
                 };
 
-                let snapshot = snapshot.to_shared();
+                let snapshot = snapshot.into_shared();
                 let size = snapshot.size().cast();
                 let format: PixelFormat = match snapshot.format() {
                     SnapshotPixelFormat::RGBA => PixelFormat::RGBA8,
@@ -748,7 +863,7 @@ impl WebGLRenderingContext {
                     return Ok(None);
                 };
 
-                let snapshot = snapshot.to_shared();
+                let snapshot = snapshot.into_shared();
                 let size = snapshot.size().cast();
                 let format = match snapshot.format() {
                     SnapshotPixelFormat::RGBA => PixelFormat::RGBA8,
@@ -775,7 +890,7 @@ impl WebGLRenderingContext {
                     return Ok(None);
                 };
 
-                let snapshot = snapshot.to_shared();
+                let snapshot = snapshot.into_shared();
                 let size = snapshot.size().cast();
                 let format: PixelFormat = match snapshot.format() {
                     SnapshotPixelFormat::RGBA => PixelFormat::RGBA8,
@@ -1609,10 +1724,7 @@ impl WebGLRenderingContext {
             self.bound_renderbuffer.get().ok_or(InvalidOperation),
             return
         );
-        handle_potential_webgl_error!(
-            self,
-            rb.storage(self.api_type, samples, internal_format, width, height)
-        );
+        handle_potential_webgl_error!(self, rb.storage(samples, internal_format, width, height));
         if let Some(fb) = self.bound_draw_framebuffer.get() {
             fb.invalidate_renderbuffer(&rb);
         }
@@ -2066,7 +2178,7 @@ impl CanvasContext for WebGLRenderingContext {
     //
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#2.2>
     fn get_image_data(&self) -> Option<Snapshot> {
-        handle_potential_webgl_error!(self, self.validate_framebuffer(), return None);
+        handle_potential_webgl_error!(self, self.validate_read_framebuffer(), return None);
         let mut size = self.size().cast();
 
         let (fb_width, fb_height) = handle_potential_webgl_error!(
@@ -2179,7 +2291,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         self.get_buffer_param(buffer, parameter, retval)
     }
 
-    #[expect(unsafe_code)]
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.3>
     fn GetParameter(&self, cx: &mut JSContext, parameter: u32, mut retval: MutableHandleValue) {
         if !self
@@ -2265,24 +2376,24 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             // GL_OES_read_format support (assuming an underlying GLES
             // driver. Desktop is happy to format convert for us).
             constants::IMPLEMENTATION_COLOR_READ_FORMAT => {
-                if self.validate_framebuffer().is_err() {
+                if self.validate_read_framebuffer().is_err() {
                     self.webgl_error(InvalidOperation);
                     return retval.set(NullValue());
                 }
                 return retval.set(Int32Value(constants::RGBA as i32));
             },
             constants::IMPLEMENTATION_COLOR_READ_TYPE => {
-                if self.validate_framebuffer().is_err() {
+                if self.validate_read_framebuffer().is_err() {
                     self.webgl_error(InvalidOperation);
                     return retval.set(NullValue());
                 }
                 return retval.set(Int32Value(constants::UNSIGNED_BYTE as i32));
             },
-            constants::COMPRESSED_TEXTURE_FORMATS => unsafe {
+            constants::COMPRESSED_TEXTURE_FORMATS => {
                 let format_ids = self.extension_manager.get_tex_compression_ids();
 
                 rooted!(&in(cx) let mut rval = ptr::null_mut::<JSObject>());
-                Uint32Array::create(cx, CreateWith::Slice(&format_ids), rval.handle_mut()).unwrap();
+                create_buffer_source::<Uint32>(cx, &format_ids, rval.handle_mut()).unwrap();
                 return retval.set(ObjectValue(rval.get()));
             },
             constants::VERSION => {
@@ -2382,28 +2493,25 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 self.send_command(WebGLCommand::GetParameterInt(param, sender));
                 retval.set(Int32Value(receiver.recv().unwrap()))
             },
-            Parameter::Int2(param) => unsafe {
+            Parameter::UInt(param) => {
+                let (sender, receiver) = webgl_channel().unwrap();
+                self.send_command(WebGLCommand::GetParameterUInt(param, sender));
+                retval.set(UInt32Value(receiver.recv().unwrap()))
+            },
+            Parameter::Int2(param) => {
                 let (sender, receiver) = webgl_channel().unwrap();
                 self.send_command(WebGLCommand::GetParameterInt2(param, sender));
                 rooted!(&in(cx) let mut rval = ptr::null_mut::<JSObject>());
-                Int32Array::create(
-                    cx,
-                    CreateWith::Slice(&receiver.recv().unwrap()),
-                    rval.handle_mut(),
-                )
-                .unwrap();
+                create_buffer_source::<Int32>(cx, &receiver.recv().unwrap(), rval.handle_mut())
+                    .unwrap();
                 retval.set(ObjectValue(rval.get()))
             },
-            Parameter::Int4(param) => unsafe {
+            Parameter::Int4(param) => {
                 let (sender, receiver) = webgl_channel().unwrap();
                 self.send_command(WebGLCommand::GetParameterInt4(param, sender));
                 rooted!(&in(cx) let mut rval = ptr::null_mut::<JSObject>());
-                Int32Array::create(
-                    cx,
-                    CreateWith::Slice(&receiver.recv().unwrap()),
-                    rval.handle_mut(),
-                )
-                .unwrap();
+                create_buffer_source::<Int32>(cx, &receiver.recv().unwrap(), rval.handle_mut())
+                    .unwrap();
                 retval.set(ObjectValue(rval.get()))
             },
             Parameter::Float(param) => {
@@ -2411,28 +2519,20 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 self.send_command(WebGLCommand::GetParameterFloat(param, sender));
                 retval.set(DoubleValue(receiver.recv().unwrap() as f64))
             },
-            Parameter::Float2(param) => unsafe {
+            Parameter::Float2(param) => {
                 let (sender, receiver) = webgl_channel().unwrap();
                 self.send_command(WebGLCommand::GetParameterFloat2(param, sender));
                 rooted!(&in(cx) let mut rval = ptr::null_mut::<JSObject>());
-                Float32Array::create(
-                    cx,
-                    CreateWith::Slice(&receiver.recv().unwrap()),
-                    rval.handle_mut(),
-                )
-                .unwrap();
+                create_buffer_source::<Float32>(cx, &receiver.recv().unwrap(), rval.handle_mut())
+                    .unwrap();
                 retval.set(ObjectValue(rval.get()))
             },
-            Parameter::Float4(param) => unsafe {
+            Parameter::Float4(param) => {
                 let (sender, receiver) = webgl_channel().unwrap();
                 self.send_command(WebGLCommand::GetParameterFloat4(param, sender));
                 rooted!(&in(cx) let mut rval = ptr::null_mut::<JSObject>());
-                Float32Array::create(
-                    cx,
-                    CreateWith::Slice(&receiver.recv().unwrap()),
-                    rval.handle_mut(),
-                )
-                .unwrap();
+                create_buffer_source::<Float32>(cx, &receiver.recv().unwrap(), rval.handle_mut())
+                    .unwrap();
                 retval.set(ObjectValue(rval.get()))
             },
         }
@@ -2580,16 +2680,12 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         &self,
         cx: &mut js::context::JSContext,
         name: DOMString,
-        mut return_value: MutableHandleObject,
+        rval: MutableHandleObject,
     ) {
         self.extension_manager
             .init_once(|| self.get_gl_extensions());
-        return_value.set(
-            self.extension_manager
-                .get_or_init_extension(cx, &name, self)
-                .map(|nonnull| nonnull.as_ptr())
-                .unwrap_or(ptr::null_mut()),
-        );
+        self.extension_manager
+            .get_or_init_extension(cx, &name, self, rval);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.3>
@@ -2847,7 +2943,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         height: i32,
         border: i32,
     ) {
-        handle_potential_webgl_error!(self, self.validate_framebuffer(), return);
+        handle_potential_webgl_error!(self, self.validate_read_framebuffer(), return);
 
         let validator = CommonTexImage2DValidator::new(
             self,
@@ -2952,7 +3048,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         width: i32,
         height: i32,
     ) {
-        handle_potential_webgl_error!(self, self.validate_framebuffer(), return);
+        handle_potential_webgl_error!(self, self.validate_read_framebuffer(), return);
 
         // NB: We use a dummy (valid) format and border in order to reuse the
         // common validations, but this should have its own validator.
@@ -3658,7 +3754,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         handle_potential_webgl_error!(self, program.get_uniform_location(cx, name), None)
     }
 
-    #[expect(unsafe_code)]
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn GetVertexAttrib(
         &self,
@@ -3673,34 +3768,21 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 match attrib {
                     VertexAttrib::Float(x, y, z, w) => {
                         let value = [x, y, z, w];
-                        unsafe {
-                            rooted!(&in(cx) let mut result = ptr::null_mut::<JSObject>());
-                            Float32Array::create(
-                                cx,
-                                CreateWith::Slice(&value),
-                                result.handle_mut(),
-                            )
-                            .unwrap();
-                            return retval.set(ObjectValue(result.get()));
-                        }
+                        rooted!(&in(cx) let mut result = ptr::null_mut::<JSObject>());
+                        create_buffer_source::<Float32>(cx, &value, result.handle_mut()).unwrap();
+                        return retval.set(ObjectValue(result.get()));
                     },
                     VertexAttrib::Int(x, y, z, w) => {
                         let value = [x, y, z, w];
-                        unsafe {
-                            rooted!(&in(cx) let mut result = ptr::null_mut::<JSObject>());
-                            Int32Array::create(cx, CreateWith::Slice(&value), result.handle_mut())
-                                .unwrap();
-                            return retval.set(ObjectValue(result.get()));
-                        }
+                        rooted!(&in(cx) let mut result = ptr::null_mut::<JSObject>());
+                        create_buffer_source::<Int32>(cx, &value, result.handle_mut()).unwrap();
+                        return retval.set(ObjectValue(result.get()));
                     },
                     VertexAttrib::Uint(x, y, z, w) => {
                         let value = [x, y, z, w];
-                        unsafe {
-                            rooted!(&in(cx) let mut result = ptr::null_mut::<JSObject>());
-                            Uint32Array::create(cx, CreateWith::Slice(&value), result.handle_mut())
-                                .unwrap();
-                            return retval.set(ObjectValue(result.get()));
-                        }
+                        rooted!(&in(cx) let mut result = ptr::null_mut::<JSObject>());
+                        create_buffer_source::<Uint32>(cx, &value, result.handle_mut()).unwrap();
+                        return retval.set(ObjectValue(result.get()));
                     },
                 };
             }
@@ -3719,7 +3801,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 constants::VERTEX_ATTRIB_ARRAY_SIZE => retval.set(Int32Value(data.size as i32)),
                 constants::VERTEX_ATTRIB_ARRAY_TYPE => retval.set(Int32Value(data.type_ as i32)),
                 constants::VERTEX_ATTRIB_ARRAY_NORMALIZED => {
-                    retval.set(BooleanValue(data.normalized))
+                    retval.set(BooleanValue(data.kind.is_normalized()))
                 },
                 constants::VERTEX_ATTRIB_ARRAY_STRIDE => retval.set(Int32Value(data.stride as i32)),
                 constants::VERTEX_ATTRIB_ARRAY_BUFFER_BINDING => {
@@ -3731,6 +3813,11 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 },
                 ANGLEInstancedArraysConstants::VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE => {
                     retval.set(UInt32Value(data.divisor))
+                },
+                WebGL2RenderingContextConstants::VERTEX_ATTRIB_ARRAY_INTEGER
+                    if self.webgl_version() == WebGLVersion::WebGL2 =>
+                {
+                    retval.set(BooleanValue(data.kind.is_integer()))
                 },
                 _ => {
                     self.webgl_error(InvalidEnum);
@@ -3920,7 +4007,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         pixel_type: u32,
         mut pixels: CustomAutoRooterGuard<Option<ArrayBufferView>>,
     ) {
-        handle_potential_webgl_error!(self, self.validate_framebuffer(), return);
+        handle_potential_webgl_error!(self, self.validate_read_framebuffer(), return);
 
         let pixels =
             handle_potential_webgl_error!(self, pixels.as_mut().ok_or(InvalidValue), return);
@@ -4326,7 +4413,6 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
     }
 
     // https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10
-    #[expect(unsafe_code)]
     fn GetUniform(
         &self,
         cx: &mut JSContext,
@@ -4363,54 +4449,44 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             WebGL2RenderingContextConstants::SAMPLER_3D => {
                 rval.set(Int32Value(uniform_get(triple, WebGLCommand::GetUniformInt)))
             },
-            constants::INT_VEC2 => unsafe {
+            constants::INT_VEC2 => {
                 uniform_typed::<Int32>(cx, &uniform_get(triple, WebGLCommand::GetUniformInt2), rval)
             },
-            constants::INT_VEC3 => unsafe {
+            constants::INT_VEC3 => {
                 uniform_typed::<Int32>(cx, &uniform_get(triple, WebGLCommand::GetUniformInt3), rval)
             },
-            constants::INT_VEC4 => unsafe {
+            constants::INT_VEC4 => {
                 uniform_typed::<Int32>(cx, &uniform_get(triple, WebGLCommand::GetUniformInt4), rval)
             },
             constants::FLOAT => rval
                 .set(DoubleValue(
                     uniform_get(triple, WebGLCommand::GetUniformFloat) as f64,
                 )),
-            constants::FLOAT_VEC2 => unsafe {
-                uniform_typed::<Float32>(
-                    cx,
-                    &uniform_get(triple, WebGLCommand::GetUniformFloat2),
-                    rval,
-                )
-            },
-            constants::FLOAT_VEC3 => unsafe {
-                uniform_typed::<Float32>(
-                    cx,
-                    &uniform_get(triple, WebGLCommand::GetUniformFloat3),
-                    rval,
-                )
-            },
-            constants::FLOAT_VEC4 | constants::FLOAT_MAT2 => unsafe {
-                uniform_typed::<Float32>(
-                    cx,
-                    &uniform_get(triple, WebGLCommand::GetUniformFloat4),
-                    rval,
-                )
-            },
-            constants::FLOAT_MAT3 => unsafe {
-                uniform_typed::<Float32>(
-                    cx,
-                    &uniform_get(triple, WebGLCommand::GetUniformFloat9),
-                    rval,
-                )
-            },
-            constants::FLOAT_MAT4 => unsafe {
-                uniform_typed::<Float32>(
-                    cx,
-                    &uniform_get(triple, WebGLCommand::GetUniformFloat16),
-                    rval,
-                )
-            },
+            constants::FLOAT_VEC2 => uniform_typed::<Float32>(
+                cx,
+                &uniform_get(triple, WebGLCommand::GetUniformFloat2),
+                rval,
+            ),
+            constants::FLOAT_VEC3 => uniform_typed::<Float32>(
+                cx,
+                &uniform_get(triple, WebGLCommand::GetUniformFloat3),
+                rval,
+            ),
+            constants::FLOAT_VEC4 | constants::FLOAT_MAT2 => uniform_typed::<Float32>(
+                cx,
+                &uniform_get(triple, WebGLCommand::GetUniformFloat4),
+                rval,
+            ),
+            constants::FLOAT_MAT3 => uniform_typed::<Float32>(
+                cx,
+                &uniform_get(triple, WebGLCommand::GetUniformFloat9),
+                rval,
+            ),
+            constants::FLOAT_MAT4 => uniform_typed::<Float32>(
+                cx,
+                &uniform_get(triple, WebGLCommand::GetUniformFloat16),
+                rval,
+            ),
             _ => panic!("wrong uniform type"),
         }
     }
@@ -4444,14 +4520,14 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
-    fn VertexAttrib1f(&self, cx: &mut JSContext, indx: u32, x: f32) {
-        self.vertex_attrib(cx, indx, x, 0f32, 0f32, 1f32)
+    fn VertexAttrib1f(&self, _cx: &mut JSContext, indx: u32, x: f32) {
+        self.vertex_attrib(indx, x, 0f32, 0f32, 1f32)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
     fn VertexAttrib1fv(
         &self,
-        cx: &mut JSContext,
+        _cx: &mut JSContext,
         indx: u32,
         v: Float32ArrayOrUnrestrictedFloatSequence,
     ) {
@@ -4465,18 +4541,18 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             // https://github.com/KhronosGroup/WebGL/issues/2700
             return self.webgl_error(InvalidValue);
         }
-        self.vertex_attrib(cx, indx, values[0], 0f32, 0f32, 1f32);
+        self.vertex_attrib(indx, values[0], 0f32, 0f32, 1f32);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
-    fn VertexAttrib2f(&self, cx: &mut JSContext, indx: u32, x: f32, y: f32) {
-        self.vertex_attrib(cx, indx, x, y, 0f32, 1f32)
+    fn VertexAttrib2f(&self, _cx: &mut JSContext, indx: u32, x: f32, y: f32) {
+        self.vertex_attrib(indx, x, y, 0f32, 1f32)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
     fn VertexAttrib2fv(
         &self,
-        cx: &mut JSContext,
+        _cx: &mut JSContext,
         indx: u32,
         v: Float32ArrayOrUnrestrictedFloatSequence,
     ) {
@@ -4490,18 +4566,18 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             // https://github.com/KhronosGroup/WebGL/issues/2700
             return self.webgl_error(InvalidValue);
         }
-        self.vertex_attrib(cx, indx, values[0], values[1], 0f32, 1f32);
+        self.vertex_attrib(indx, values[0], values[1], 0f32, 1f32);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
-    fn VertexAttrib3f(&self, cx: &mut JSContext, indx: u32, x: f32, y: f32, z: f32) {
-        self.vertex_attrib(cx, indx, x, y, z, 1f32)
+    fn VertexAttrib3f(&self, _cx: &mut JSContext, indx: u32, x: f32, y: f32, z: f32) {
+        self.vertex_attrib(indx, x, y, z, 1f32)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
     fn VertexAttrib3fv(
         &self,
-        cx: &mut JSContext,
+        _cx: &mut JSContext,
         indx: u32,
         v: Float32ArrayOrUnrestrictedFloatSequence,
     ) {
@@ -4515,18 +4591,18 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             // https://github.com/KhronosGroup/WebGL/issues/2700
             return self.webgl_error(InvalidValue);
         }
-        self.vertex_attrib(cx, indx, values[0], values[1], values[2], 1f32);
+        self.vertex_attrib(indx, values[0], values[1], values[2], 1f32);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
-    fn VertexAttrib4f(&self, cx: &mut JSContext, indx: u32, x: f32, y: f32, z: f32, w: f32) {
-        self.vertex_attrib(cx, indx, x, y, z, w)
+    fn VertexAttrib4f(&self, _cx: &mut JSContext, indx: u32, x: f32, y: f32, z: f32, w: f32) {
+        self.vertex_attrib(indx, x, y, z, w)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
     fn VertexAttrib4fv(
         &self,
-        cx: &mut JSContext,
+        _cx: &mut JSContext,
         indx: u32,
         v: Float32ArrayOrUnrestrictedFloatSequence,
     ) {
@@ -4540,7 +4616,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             // https://github.com/KhronosGroup/WebGL/issues/2700
             return self.webgl_error(InvalidValue);
         }
-        self.vertex_attrib(cx, indx, values[0], values[1], values[2], values[3]);
+        self.vertex_attrib(indx, values[0], values[1], values[2], values[3]);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
@@ -4554,13 +4630,14 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         stride: i32,
         offset: i64,
     ) {
+        let kind = VertexAttribPointerKind::Float { normalized };
         let res = match self.webgl_version() {
             WebGLVersion::WebGL1 => self
                 .current_vao(cx)
-                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset),
+                .vertex_attrib_pointer(index, size, type_, stride, offset, kind),
             WebGLVersion::WebGL2 => self
                 .current_vao_webgl2(cx)
-                .vertex_attrib_pointer(index, size, type_, normalized, stride, offset),
+                .vertex_attrib_pointer(index, size, type_, stride, offset, kind),
         };
         handle_potential_webgl_error!(self, res);
     }
@@ -4652,7 +4729,17 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         let buff = match *pixels {
             None => GenericSharedMemory::from_byte(0, expected_byte_length as usize),
             Some(ref data) => {
-                GenericSharedMemory::from_bytes(data.as_slice_safe(no_gc).unwrap_or_default())
+                let block = match self.unpack_block(
+                    data.as_slice_safe(no_gc).unwrap_or_default(),
+                    width,
+                    height,
+                    None,
+                    bytes_per_pixel(format, data_type),
+                ) {
+                    Ok(block) => block,
+                    Err(()) => return Ok(()),
+                };
+                GenericSharedMemory::from_bytes(&block)
             },
         };
 
@@ -4843,14 +4930,25 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             Err(()) => return Ok(()),
         };
 
-        let buff = handle_potential_webgl_error!(
+        let data = handle_potential_webgl_error!(
             self,
             pixels
                 .as_ref()
-                .map(|p| GenericSharedMemory::from_bytes(p.as_slice_safe(no_gc).unwrap_or(&[])))
+                .map(|p| p.as_slice_safe(no_gc).unwrap_or(&[]))
                 .ok_or(InvalidValue),
             return Ok(())
         );
+        let block = match self.unpack_block(
+            data,
+            width,
+            height,
+            None,
+            bytes_per_pixel(format, data_type),
+        ) {
+            Ok(block) => block,
+            Err(()) => return Ok(()),
+        };
+        let buff = GenericSharedMemory::from_bytes(&block);
 
         // From the WebGL spec:
         //
@@ -5031,7 +5129,7 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
     /// <https://immersive-web.github.io/webxr/#dom-webglrenderingcontextbase-makexrcompatible>
     #[cfg(feature = "webxr")]
-    fn MakeXRCompatible(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn MakeXRCompatible(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         // XXXManishearth Fill in with compatibility checks when rust-webxr supports this
         Promise::new_resolved(cx, &self.global(), ())
     }
@@ -5274,6 +5372,37 @@ impl TexPixels {
     pub(crate) fn into_shared_memory(self) -> GenericSharedMemory {
         self.data
     }
+
+    /// The `size` block at `origin`, or `None` if it does not fit. `origin` is counted in the
+    /// image as uploaded, so from the bottom when the rows are flipped.
+    pub(crate) fn sub_rect(self, origin: Point2D<u32>, size: Size2D<u32>) -> Option<Self> {
+        if origin.x.checked_add(size.width)? > self.size.width ||
+            origin.y.checked_add(size.height)? > self.size.height
+        {
+            return None;
+        }
+        if origin == Point2D::zero() && size == self.size {
+            return Some(self);
+        }
+        let image_width = self.size.width as usize;
+        let pixel_count = image_width * self.size.height as usize;
+        let bytes_per_pixel = self.data.len().checked_div(pixel_count).unwrap_or_default();
+        let top = match self.y_axis_treatment {
+            YAxisTreatment::AsIs => origin.y,
+            YAxisTreatment::Flipped => self.size.height - origin.y - size.height,
+        } as usize;
+        let row_bytes = size.width as usize * bytes_per_pixel;
+        let mut block = Vec::with_capacity(row_bytes * size.height as usize);
+        for row in top..top + size.height as usize {
+            let start = (row * image_width + origin.x as usize) * bytes_per_pixel;
+            block.extend_from_slice(&self.data[start..start + row_bytes]);
+        }
+        Some(Self {
+            data: GenericSharedMemory::from_vec(block),
+            size,
+            ..self
+        })
+    }
 }
 
 pub(crate) enum TexSource {
@@ -5298,4 +5427,9 @@ fn array_buffer_type_to_sized_type(type_: Type) -> Option<SizedDataType> {
         Type::Int64 |
         Type::Simd128 => None,
     }
+}
+
+/// The bytes one pixel of `format` and `data_type` takes in client memory.
+pub(crate) fn bytes_per_pixel(format: TexFormat, data_type: TexDataType) -> u32 {
+    data_type.element_size() * format.components() / data_type.components_per_element()
 }

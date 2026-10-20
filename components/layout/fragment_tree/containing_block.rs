@@ -54,7 +54,7 @@ impl<'a, T> ContainingBlockManager<'a, T> {
         let Some(box_fragment) = fragment.retrieve_box_fragment() else {
             return self.for_non_absolute_descendants;
         };
-        match box_fragment.style().clone_position() {
+        match box_fragment.style().get_box().position {
             ComputedPosition::Fixed => self.for_absolute_and_fixed_descendants,
             ComputedPosition::Absolute => self
                 .for_absolute_descendants
@@ -63,38 +63,27 @@ impl<'a, T> ContainingBlockManager<'a, T> {
         }
     }
 
-    pub(crate) fn new_for_non_absolute_descendants(
-        &self,
-        for_non_absolute_descendants: &'a T,
-    ) -> Self {
+    pub(crate) fn new_for_non_absolute_descendants(&self, containing_block: &'a T) -> Self {
         ContainingBlockManager {
-            for_non_absolute_descendants,
+            for_non_absolute_descendants: containing_block,
             for_absolute_descendants: self.for_absolute_descendants,
             for_absolute_and_fixed_descendants: self.for_absolute_and_fixed_descendants,
         }
     }
 
-    pub(crate) fn new_for_absolute_descendants(
-        &self,
-        for_non_absolute_descendants: &'a T,
-        for_absolute_descendants: &'a T,
-    ) -> Self {
+    pub(crate) fn new_for_absolute_descendants(&self, containing_block: &'a T) -> Self {
         ContainingBlockManager {
-            for_non_absolute_descendants,
-            for_absolute_descendants: Some(for_absolute_descendants),
+            for_non_absolute_descendants: containing_block,
+            for_absolute_descendants: Some(containing_block),
             for_absolute_and_fixed_descendants: self.for_absolute_and_fixed_descendants,
         }
     }
 
-    pub(crate) fn new_for_absolute_and_fixed_descendants(
-        &self,
-        for_non_absolute_descendants: &'a T,
-        for_absolute_and_fixed_descendants: &'a T,
-    ) -> Self {
+    pub(crate) fn new_for_absolute_and_fixed_descendants(&self, containing_block: &'a T) -> Self {
         ContainingBlockManager {
-            for_non_absolute_descendants,
+            for_non_absolute_descendants: containing_block,
             for_absolute_descendants: None,
-            for_absolute_and_fixed_descendants,
+            for_absolute_and_fixed_descendants: containing_block,
         }
     }
 }

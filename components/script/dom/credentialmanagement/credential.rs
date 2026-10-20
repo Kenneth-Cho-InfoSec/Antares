@@ -1,11 +1,10 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-use std::rc::Rc;
-
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::str::{DOMString, USVString};
 
@@ -13,14 +12,14 @@ use crate::dom::bindings::codegen::Bindings::CredentialBinding::CredentialMethod
 use crate::dom::bindings::codegen::DomTypeHolder::DomTypeHolder;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct Credential {
     reflector_: Reflector,
     id: USVString,
-    credential_type: DOMString,
+    credential_type: TracedDOMString,
 }
 
 impl Credential {
@@ -28,7 +27,7 @@ impl Credential {
         Credential {
             reflector_: Reflector::new(),
             id,
-            credential_type,
+            credential_type: credential_type.traced(),
         }
     }
 
@@ -55,16 +54,16 @@ impl CredentialMethods<DomTypeHolder> for Credential {
 
     /// <https://www.w3.org/TR/credential-management-1/#dom-credential-type>
     fn Type(&self) -> DOMString {
-        self.credential_type.clone()
+        self.credential_type.clone().root()
     }
 
     /// <https://www.w3.org/TR/credential-management-1/#dom-credential-isconditionalmediationavailable>
-    fn IsConditionalMediationAvailable(cx: &mut CurrentRealm, _global: &Window) -> Rc<Promise> {
+    fn IsConditionalMediationAvailable(cx: &mut CurrentRealm, _global: &Window) -> RootedPromise {
         Promise::new_in_realm(cx)
     }
 
     /// <https://www.w3.org/TR/credential-management-1/#dom-credential-willrequestconditionalcreation>
-    fn WillRequestConditionalCreation(cx: &mut CurrentRealm, _global: &Window) -> Rc<Promise> {
+    fn WillRequestConditionalCreation(cx: &mut CurrentRealm, _global: &Window) -> RootedPromise {
         Promise::new_in_realm(cx)
     }
 }

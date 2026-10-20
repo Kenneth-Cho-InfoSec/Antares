@@ -58,15 +58,12 @@ function runDigestTests(subtle, sourceData, getVectors) {
 
       promise_test(function () {
         var buffer = new Uint8Array(sourceData[size]);
-        var algorithm = vector.transferBeforeCall
-          ? vector.algorithm
-          : withNameGetter(vector.algorithm, function () {
-              buffer.buffer.transfer();
-              return algorithmName(vector.algorithm);
-            });
-        if (vector.transferBeforeCall) {
-          buffer.buffer.transfer();
-        }
+        var algorithm = withNameGetter(vector.algorithm, function () {
+          if (!buffer.buffer.detached) {
+            buffer.buffer.transfer();
+          }
+          return algorithmName(vector.algorithm);
+        });
         return subtle.digest(algorithm, buffer).then(function (result) {
           assert_true(
             equalBuffers(result, vector.emptyExpected),

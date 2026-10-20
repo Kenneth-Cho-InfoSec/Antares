@@ -4,7 +4,6 @@
 
 use std::cell::RefCell;
 use std::ops::Deref;
-use std::rc::Rc;
 use std::thread::LocalKey;
 
 use js::context::JSContext;
@@ -60,7 +59,7 @@ pub trait DomHelpers<D: DomTypes> {
     fn push_new_element_queue();
     fn pop_current_element_queue(cx: &mut JSContext);
 
-    fn reflect_dom_object_with_cx<T, U>(cx: &mut JSContext, obj: Box<T>, global: &U) -> DomRoot<T>
+    fn reflect_dom_object<T, U>(cx: &mut JSContext, obj: Box<T>, global: &U) -> DomRoot<T>
     where
         T: DomObject + DomObjectWrap<D>,
         U: DerivedFrom<D::GlobalScope>;
@@ -70,7 +69,7 @@ pub trait DomHelpers<D: DomTypes> {
 
 /// Operations that must be invoked from the generated bindings.
 #[expect(unsafe_code)]
-pub trait GlobalScopeHelpers<D: DomTypes> {
+pub trait GlobalScopeHelpers<D: DomTypes>: DomObject + Sized {
     fn from_current_realm(realm: &'_ mut CurrentRealm) -> DomRoot<D::GlobalScope>;
 
     /// # Safety
@@ -91,16 +90,24 @@ pub trait GlobalScopeHelpers<D: DomTypes> {
     fn pipeline_id(&self) -> PipelineId;
 
     fn script_to_constellation_chan(&self) -> ScriptToConstellationChan;
+    fn entry() -> DomRoot<Self>;
+}
+
+pub trait ThreadTrustedPromiseHelpers<D: DomTypes> {
+    type StackRoot;
+    fn root(self, cx: &JSContext) -> Self::StackRoot;
 }
 
 pub trait HeapTracedPromiseHelpers<D: DomTypes> {
     type StackRoot;
-    fn root(&self) -> Self::StackRoot;
+    fn root(&self, cx: &JSContext) -> Self::StackRoot;
 }
 
 pub trait StackRootPromiseHelpers<D: DomTypes> {
     type HeapTraced;
+    type ThreadTrusted: Send + ThreadTrustedPromiseHelpers<D, StackRoot = Self>;
     fn to_traced(&self) -> Self::HeapTraced;
+    fn to_trusted(&self) -> Self::ThreadTrusted;
 }
 
 pub trait PromiseHelpers<D: DomTypes> {
@@ -112,12 +119,15 @@ pub trait PromiseHelpers<D: DomTypes> {
         + MallocSizeOf
         + Deref<Target = D::Promise>
         + HeapTracedPromiseHelpers<D, StackRoot = Self::StackRoot>;
-    fn new_in_realm(cx: &mut CurrentRealm) -> Rc<D::Promise>;
-    fn new_in_realm_rooted(cx: &mut CurrentRealm) -> Self::StackRoot;
+    type ThreadTrusted;
+    fn new_in_realm(cx: &mut CurrentRealm) -> Self::StackRoot;
+    fn new(cx: &mut JSContext, global: &D::GlobalScope) -> Self::StackRoot;
     fn reject_error(&self, cx: &mut JSContext, error: Error);
     fn is_rejected(&self) -> bool;
     fn is_pending(&self) -> bool;
+    fn is_fulfilled(&self) -> bool;
     fn resolve_native<T: ToJSValConvertible>(&self, cx: &mut JSContext, val: &T);
+    fn reject_native<T: ToJSValConvertible>(&self, cx: &mut JSContext, val: &T);
 }
 
 pub trait DocumentHelpers {

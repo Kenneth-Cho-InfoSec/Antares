@@ -39,6 +39,7 @@ use serde_json::{Map, Number, Value};
 use servo_base::generic_channel::{self, GenericSender};
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
 use servo_config::pref;
+use uuid::Uuid;
 
 use crate::actor::{Actor, ActorEncode, ActorError, ActorRegistry, new_actor_name};
 use crate::actors::browsing_context::BrowsingContextActor;
@@ -165,7 +166,7 @@ struct DevtoolsInstance {
     receiver: Receiver<DevtoolsControlMsg>,
     pipelines: FxHashMap<PipelineId, BrowsingContextId>,
     actor_workers: FxHashMap<WorkerId, String>,
-    actor_requests: HashMap<String, String>,
+    actor_requests: HashMap<Uuid, String>,
     /// A map of active TCP connections to devtools clients.
     ///
     /// Client threads remove their connection from here once they exit.
@@ -450,10 +451,9 @@ impl DevtoolsInstance {
         let Some(browsing_context_name) = self.browsing_contexts.get(&browsing_context_id) else {
             return;
         };
-        let browsing_context_name = browsing_context_name.clone();
         let browsing_context_actor = self
             .registry
-            .find::<BrowsingContextActor>(&browsing_context_name);
+            .find::<BrowsingContextActor>(browsing_context_name);
         let watcher_actor = self
             .registry
             .find::<WatcherActor>(&browsing_context_actor.watcher_name);
@@ -683,7 +683,7 @@ impl DevtoolsInstance {
     fn handle_network_event(
         &mut self,
         connections: Vec<DevtoolsConnection>,
-        request_id: String,
+        request_id: Uuid,
         network_event: NetworkEvent,
     ) {
         let browsing_context_id = match &network_event {
@@ -713,7 +713,7 @@ impl DevtoolsInstance {
     /// Create a new NetworkEventActor for a given request ID and browsing context name.
     fn create_network_event_actor(
         &mut self,
-        request_id: String,
+        request_id: Uuid,
         browsing_context_name: String,
     ) -> String {
         let resource_id = self.next_resource_id;
@@ -790,8 +790,9 @@ impl DevtoolsInstance {
                 .registry
                 .find::<BrowsingContextActor>(browsing_context_name);
 
-            let thread_actor_name = browsing_context_actor.thread_name.clone();
-            let thread_actor = self.registry.find::<ThreadActor>(&thread_actor_name);
+            let thread_actor = self
+                .registry
+                .find::<ThreadActor>(&browsing_context_actor.thread_name);
             thread_actor.source_manager.add_source(source_actor.name());
 
             for stream in self.connections.lock().unwrap().values_mut() {
@@ -904,6 +905,7 @@ impl DevtoolsInstance {
             class,
             own_property_length,
             preview,
+            prototype,
         } = value
         else {
             return;
@@ -915,6 +917,7 @@ impl DevtoolsInstance {
             class,
             own_property_length,
             preview.map(|preview| *preview),
+            prototype.map(|prototype| *prototype),
         );
         let _ = result_sender.send(object_actor);
     }
@@ -1048,6 +1051,7 @@ pub(crate) fn debugger_value_to_json(registry: &ActorRegistry, value: DebuggerVa
             class,
             own_property_length,
             preview,
+            prototype,
         } => {
             let object_name = ObjectActor::register(
                 registry,
@@ -1055,6 +1059,7 @@ pub(crate) fn debugger_value_to_json(registry: &ActorRegistry, value: DebuggerVa
                 class,
                 own_property_length,
                 preview.map(|preview| *preview),
+                prototype.map(|prototype| *prototype),
             );
             let object_msg = registry.encode::<ObjectActor, _>(&object_name);
             let value = serde_json::to_value(object_msg).unwrap_or_default();

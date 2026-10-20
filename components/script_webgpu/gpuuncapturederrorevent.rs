@@ -30,7 +30,6 @@ pub struct GPUUncapturedErrorEvent<D: DomTypes> {
 impl<D> GPUUncapturedErrorEvent<D>
 where
     D: Equivalence,
-    D::Event: DomEventTrait,
 {
     fn new_inherited(init: &GPUUncapturedErrorEventInit<D>) -> Self {
         Self {
@@ -39,7 +38,7 @@ where
         }
     }
 
-    pub fn new(
+    pub(crate) fn new(
         cx: &mut JSContext,
         global: &D::GlobalScope,
         event_type: Atom,
@@ -56,10 +55,10 @@ where
         init: &GPUUncapturedErrorEventInit<D>,
     ) -> DomRoot<Self> {
         let event = reflect_dom_object_with_proto_and_wrap::<D, _, _>(
+            cx,
             Box::new(GPUUncapturedErrorEvent::new_inherited(init)),
             global,
             proto,
-            cx,
             GPUUncapturedErrorEventWrap::<D>,
         );
         event
@@ -72,7 +71,7 @@ where
 impl<D> GPUUncapturedErrorEventMethods<D> for GPUUncapturedErrorEvent<D>
 where
     D: Equivalence,
-    D::Event: DomEventTrait,
+    D::Event: DomEventTrait<D>,
 {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuuncapturederrorevent-gpuuncapturederrorevent>
     fn Constructor(

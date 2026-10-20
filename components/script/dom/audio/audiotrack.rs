@@ -6,24 +6,24 @@ use std::cell::Cell;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 
 use crate::dom::audio::audiotracklist::AudioTrackList;
 use crate::dom::bindings::codegen::Bindings::AudioTrackBinding::AudioTrackMethods;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::window::Window;
 
 #[dom_struct]
 pub(crate) struct AudioTrack {
     reflector_: Reflector,
-    id: DOMString,
-    kind: DOMString,
-    label: DOMString,
-    language: DOMString,
+    id: TracedDOMString,
+    kind: TracedDOMString,
+    label: TracedDOMString,
+    language: TracedDOMString,
     enabled: Cell<bool>,
-    track_list: DomRefCell<Option<Dom<AudioTrackList>>>,
+    track_list: MutNullableDom<AudioTrackList>,
 }
 
 impl AudioTrack {
@@ -36,12 +36,12 @@ impl AudioTrack {
     ) -> AudioTrack {
         AudioTrack {
             reflector_: Reflector::new(),
-            id,
-            kind,
-            label,
-            language,
+            id: id.traced(),
+            kind: kind.traced(),
+            label: label.traced(),
+            language: language.traced(),
             enabled: Cell::new(false),
-            track_list: DomRefCell::new(track_list.map(Dom::from_ref)),
+            track_list: MutNullableDom::new(track_list),
         }
     }
 
@@ -64,11 +64,11 @@ impl AudioTrack {
     }
 
     pub(crate) fn id(&self) -> DOMString {
-        self.id.clone()
+        self.id.clone().root()
     }
 
     pub(crate) fn kind(&self) -> DOMString {
-        self.kind.clone()
+        self.kind.clone().root()
     }
 
     pub(crate) fn enabled(&self) -> bool {
@@ -80,11 +80,11 @@ impl AudioTrack {
     }
 
     pub(crate) fn add_track_list(&self, track_list: &AudioTrackList) {
-        *self.track_list.borrow_mut() = Some(Dom::from_ref(track_list));
+        self.track_list.set(Some(track_list));
     }
 
     pub(crate) fn remove_track_list(&self) {
-        *self.track_list.borrow_mut() = None;
+        self.track_list.set(None);
     }
 }
 
@@ -101,12 +101,12 @@ impl AudioTrackMethods<crate::DomTypeHolder> for AudioTrack {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-audiotrack-label>
     fn Label(&self) -> DOMString {
-        self.label.clone()
+        self.label.clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-audiotrack-language>
     fn Language(&self) -> DOMString {
-        self.language.clone()
+        self.language.clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-audiotrack-enabled>
@@ -116,7 +116,7 @@ impl AudioTrackMethods<crate::DomTypeHolder> for AudioTrack {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-audiotrack-enabled>
     fn SetEnabled(&self, value: bool) {
-        if let Some(list) = self.track_list.borrow().as_ref() &&
+        if let Some(list) = self.track_list.get() &&
             let Some(idx) = list.find(self)
         {
             list.set_enabled(idx, value);

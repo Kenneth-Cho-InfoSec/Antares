@@ -1,7 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-#![allow(rustdoc::private_intra_doc_links)]
+#![expect(rustdoc::private_intra_doc_links)]
 
 //! # HTML Tables (╯°□°)╯︵ ┻━┻
 //!
@@ -72,8 +72,8 @@ use std::ops::Range;
 
 use app_units::Au;
 use atomic_refcell::AtomicRef;
-pub(crate) use construct::AnonymousTableContent;
 pub use construct::TableBuilder;
+pub(crate) use construct::{AnonymousTableContent, AnonymousTableContentElement};
 use euclid::{Point2D, Size2D, UnknownUnit, Vector2D};
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};

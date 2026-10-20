@@ -21,14 +21,14 @@ use js::jsapi::StackFormat as JSStackFormat;
 use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
-    JS_ClearPendingException, JS_ErrorFromException, JS_GetPendingException, JS_GetProperty,
-    JS_IsExceptionPending, JS_SetPendingException,
+    JS_ClearPendingException, JS_ErrorFromException, JS_GetPendingException,
 };
 use js::rust::{describe_scripted_caller, error_info_from_exception_stack};
 use libc::c_uint;
 #[cfg(feature = "js_backtrace")]
 use script_bindings::cell::DomRefCell;
 pub(crate) use script_bindings::error::*;
+use script_bindings::js::{JS_GetProperty, JS_IsExceptionPending, JS_SetPendingException};
 use script_bindings::root::DomRoot;
 use script_bindings::str::DOMString;
 
@@ -70,24 +70,24 @@ pub(crate) fn throw_dom_exception(cx: &mut JSContext, global: &GlobalScope, resu
     }
 
     match create_dom_exception(cx, global, result) {
-        Ok(exception) => unsafe {
+        Ok(exception) => {
             assert!(!JS_IsExceptionPending(cx));
             rooted!(&in(cx) let mut thrown = UndefinedValue());
             exception.to_jsval(cx, thrown.handle_mut());
             JS_SetPendingException(cx, thrown.handle(), ExceptionStackBehavior::Capture);
         },
 
-        Err(JsEngineError::Type(message)) => unsafe {
+        Err(JsEngineError::Type(message)) => {
             assert!(!JS_IsExceptionPending(cx));
             throw_type_error(cx, &message);
         },
 
-        Err(JsEngineError::Range(message)) => unsafe {
+        Err(JsEngineError::Range(message)) => {
             assert!(!JS_IsExceptionPending(cx));
             throw_range_error(cx, &message);
         },
 
-        Err(JsEngineError::JSFailed) => unsafe {
+        Err(JsEngineError::JSFailed) => {
             assert!(JS_IsExceptionPending(cx));
         },
     }
@@ -354,7 +354,7 @@ fn error_info_from_pending_exception(
     cx: &mut JSContext,
     value: MutableHandleValue,
 ) -> Option<ErrorInfo> {
-    if unsafe { !JS_IsExceptionPending(cx) } {
+    if !JS_IsExceptionPending(cx) {
         return None;
     }
 
@@ -380,14 +380,7 @@ pub(crate) fn javascript_error_info_from_error_info(
 
         rooted!(&in(cx) let object = value.to_object());
         rooted!(&in(cx) let mut stack_value = UndefinedValue());
-        if unsafe {
-            !JS_GetProperty(
-                cx,
-                object.handle(),
-                c"stack".as_ptr(),
-                stack_value.handle_mut(),
-            )
-        } {
+        if !JS_GetProperty(cx, object.handle(), c"stack", stack_value.handle_mut()) {
             return None;
         }
         if !stack_value.is_string() {
@@ -427,7 +420,7 @@ impl ErrorToJsval for Error {
     fn to_jsval(self, cx: &mut JSContext, global: &GlobalScope, rval: MutableHandleValue) {
         match self {
             Error::JSFailed => (),
-            _ => unsafe { assert!(!JS_IsExceptionPending(cx)) },
+            _ => assert!(!JS_IsExceptionPending(cx)),
         }
         throw_dom_exception(cx, global, self);
         unsafe {

@@ -7,8 +7,8 @@ use embedder_traits::Cursor;
 use euclid::Point2D;
 use js::context::JSContext;
 use js::rust::HandleObject;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_dom_object_with_proto;
-use servo_base::text::Utf32CodeUnitsOrNodeOffset;
 use style::Atom;
 use style_traits::CSSPixel;
 
@@ -19,6 +19,7 @@ use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::datatransfer::DataTransfer;
 use crate::dom::node::Node;
+use crate::dom::selection_range::RootedSelectionBoundary;
 use crate::dom::staticrange::StaticRange;
 use crate::dom::uievent::UIEvent;
 use crate::dom::window::Window;
@@ -26,9 +27,9 @@ use crate::dom::window::Window;
 #[dom_struct]
 pub(crate) struct InputEvent {
     uievent: UIEvent,
-    data: Option<DOMString>,
+    data: Option<TracedDOMString>,
     is_composing: bool,
-    input_type: DOMString,
+    input_type: TracedDOMString,
 }
 
 impl InputEvent {
@@ -50,9 +51,9 @@ impl InputEvent {
             cx,
             Box::new(InputEvent {
                 uievent: UIEvent::new_inherited(),
-                data,
+                data: data.map(|domstring| domstring.traced()),
                 is_composing,
-                input_type,
+                input_type: input_type.traced(),
             }),
             window,
             proto,
@@ -91,7 +92,7 @@ impl InputEventMethods<crate::DomTypeHolder> for InputEvent {
 
     /// <https://w3c.github.io/uievents/#dom-inputevent-data>
     fn GetData(&self) -> Option<DOMString> {
-        self.data.clone()
+        self.data.clone().map(|domstring| domstring.root())
     }
 
     /// <https://w3c.github.io/uievents/#dom-inputevent-iscomposing>
@@ -101,7 +102,7 @@ impl InputEventMethods<crate::DomTypeHolder> for InputEvent {
 
     /// <https://w3c.github.io/uievents/#dom-inputevent-inputtype>
     fn InputType(&self) -> DOMString {
-        self.input_type.clone()
+        self.input_type.clone().root()
     }
 
     /// <https://w3c.github.io/input-events/#dom-inputevent-datatransfer>
@@ -126,7 +127,7 @@ impl InputEventMethods<crate::DomTypeHolder> for InputEvent {
 /// `PaintHitTestResult` against our current layout.
 pub(crate) struct HitTestResult {
     pub node: DomRoot<Node>,
-    pub dom_position_for_selection: Option<(DomRoot<Node>, Utf32CodeUnitsOrNodeOffset)>,
+    pub dom_position_for_selection: Option<RootedSelectionBoundary>,
     pub cursor: Cursor,
     pub point_in_node: Point2D<f32, CSSPixel>,
     pub point_in_frame: Point2D<f32, CSSPixel>,

@@ -7,7 +7,7 @@
 //! Layout. Performs layout on the DOM, builds display lists and sends them to be
 //! painted.
 
-mod accessibility_tree;
+mod accessibility;
 mod cell;
 mod context;
 mod display_list;
@@ -29,6 +29,7 @@ mod positioned;
 mod query;
 mod quotes;
 mod replaced;
+mod selection;
 mod sizing;
 mod style_ext;
 pub mod table;

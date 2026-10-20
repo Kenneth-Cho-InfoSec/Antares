@@ -422,24 +422,6 @@ class CommandBase(object):
                 print("Hint: Ninja-build is available on github at: https://github.com/ninja-build/ninja/releases")
                 exit(1)
 
-        # jemalloc requires to be compiled with a page size that is at least equal to the one
-        # used by the kernel of machine on which it will run.
-        # Some linux distros for arm64 configure the page size to 16KB (e.g. Raspberry Pi OS 13)
-        # and few others use a 64KB page size. The upstream 'jemalloc` has switched to 64KB pages
-        # as the default, but this is not available in `tikv-jemalloc` yet, so we configure it here.
-        # FIXME: Remove after `tikv-jemalloc` ships the change to default to 64KB page size.
-        # See https://github.com/servo/servo/issues/47114
-        if "aarch64-unknown-linux-gnu" == self.target.triple():
-            # The value of the environment variable represents the number of bits in the address
-            # space, so 2^16 means we use 64KB as the page size.
-            env["AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_LG_PAGE"] = "16"
-
-        # Increase stylo thread stack size to 8 MiB for all builds
-        # to match the recursion depth of Chromium.
-        # This only reserves virtual memory space and has almost no overhead.
-        # See https://github.com/servo/servo/pull/43888
-        env["SERVO_STYLE_THREAD_STACK_SIZE_KB"] = env.get("SERVO_STYLE_THREAD_STACK_SIZE_KB", str(8 * 1024))
-
         return env
 
     @staticmethod
@@ -737,10 +719,6 @@ class CommandBase(object):
             if self.config["build"]["media-stack"] != "auto":
                 media_stack = self.config["build"]["media-stack"]
                 assert media_stack
-            elif not self.target.is_cross_build():
-                media_stack = "gstreamer"
-            else:
-                media_stack = "dummy"
 
         # This is a workaround for Ubuntu 20.04, which doesn't support a new enough GStreamer.
         # Once we drop support for this platform (it's currently needed for wpt.fyi runners),
@@ -763,6 +741,8 @@ class CommandBase(object):
         use_crown: bool = False,
         capture_output: bool = False,
         target_override: Optional[str] = None,
+        subcommand: str | None = None,
+        sanitizer: SanitizerKind = SanitizerKind.NONE,
         **_kwargs: Any,
     ) -> CompletedProcess[bytes] | int:
         env = cast(dict[str, str], env or self.build_env())
@@ -770,7 +750,7 @@ class CommandBase(object):
         # NB: On non-Linux platforms we cannot check whether GStreamer is installed until
         # environment variables are set via `self.build_env()`.
         platform = servo.platform.get()
-        if self.enable_media and not platform.is_gstreamer_installed(self.target):
+        if not self.target.is_cross_build() and self.enable_media and not platform.is_gstreamer_installed(self.target):
             raise FileNotFoundError(
                 "GStreamer libraries not found (>= version 1.18).Please see installation instructions in README.md"
             )
@@ -813,8 +793,22 @@ class CommandBase(object):
 
         if "-p" not in cargo_args:  # We're building specific package, that may not have features
             features += list(self.features)
-            if self.enable_media:
-                features.append("media-gstreamer")
+
+            if not self.enable_media or sanitizer.is_asan():
+                if "--no-default-features" not in cargo_args:
+                    cargo_args.append("--no-default-features")
+                    features.append("default_base")
+                    if self.enable_media:
+                        features.append("media-gstreamer")
+                    if not sanitizer.is_asan():
+                        features.append("jemalloc")
+                else:
+                    print(
+                        "Info: Explicit `--no-default-features` passed in an ASAN or `--media-stack dummy` build."
+                        " Skipping `mach` override of default features. If you are not sure what"
+                        " you are doing, consider removing `--no-default-features` from your invocation."
+                    )
+
             if self.config["build"]["debug-mozjs"] or debug_mozjs:
                 features.append("debugmozjs")
 
@@ -834,10 +828,14 @@ class CommandBase(object):
         # but uv venv on Windows only provides a `python`, not `python3`.
         env["PYTHON3"] = "python"
 
-        if capture_output:
-            return subprocess.run(["cargo", command] + args + cargo_args, env=env, capture_output=capture_output)
+        command_args = [command]
+        if subcommand:
+            command_args.append(subcommand)
 
-        return call(["cargo", command] + args + cargo_args, env=env, verbose=verbose)
+        if capture_output:
+            return subprocess.run(["cargo"] + command_args + args + cargo_args, env=env, capture_output=capture_output)
+
+        return call(["cargo"] + command_args + args + cargo_args, env=env, verbose=verbose)
 
     def android_adb_path(self, env: dict[str, Any]) -> str:
         if "ANDROID_SDK_ROOT" in env:

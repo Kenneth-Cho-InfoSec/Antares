@@ -51,9 +51,8 @@ use style_traits::CSSPixel;
 use time::OffsetDateTime;
 use uuid::Uuid;
 use webdriver::actions::{
-    ActionSequence, ActionsType, KeyAction, KeyActionItem, KeyDownAction, KeyUpAction,
-    PointerAction, PointerActionItem, PointerActionParameters, PointerDownAction,
-    PointerMoveAction, PointerOrigin, PointerType, PointerUpAction,
+    KeyAction, KeyActionItem, KeyDownAction, KeyUpAction, PointerAction, PointerActionItem,
+    PointerDownAction, PointerMoveAction, PointerOrigin, PointerType, PointerUpAction,
 };
 use webdriver::capabilities::CapabilitiesMatching;
 use webdriver::command::{
@@ -73,7 +72,9 @@ use webdriver::response::{
 };
 use webdriver::server::{Session, SessionTeardownKind, WebDriverHandler};
 
-use crate::actions::{ELEMENT_CLICK_BUTTON, InputSourceState, PendingActions, PointerInputState};
+use crate::actions::{
+    ActionItem, ELEMENT_CLICK_BUTTON, InputSourceState, PendingActions, PointerInputState,
+};
 use crate::session::{PageLoadStrategy, WebDriverSession};
 use crate::timeout::{DEFAULT_PAGE_LOAD_TIMEOUT, SCREENSHOT_TIMEOUT};
 
@@ -545,9 +546,11 @@ impl Handler {
         self.session().unwrap().current_webview_id().unwrap()
     }
 
-    fn focused_webview_id(&self) -> WebDriverResult<Option<WebViewId>> {
+    fn webview_selected_for_interaction(&self) -> WebDriverResult<Option<WebViewId>> {
         let (sender, receiver) = generic_channel::oneshot().unwrap();
-        self.send_message_to_embedder(WebDriverCommandMsg::GetFocusedWebView(sender))?;
+        self.send_message_to_embedder(WebDriverCommandMsg::GetWebViewSelectedForInteraction(
+            sender,
+        ))?;
         // Wait until the document is ready before returning the top-level browsing context id.
         wait_for_oneshot_response(receiver)
     }
@@ -620,7 +623,7 @@ impl Handler {
         let response = NewSessionResponse::new(session_id.to_string(), Value::Object(capabilities));
 
         // Step 8. Set session' current top-level browsing context
-        match self.focused_webview_id()? {
+        match self.webview_selected_for_interaction()? {
             Some(webview_id) => {
                 self.session_mut()?.set_webview_id(webview_id);
                 self.wait_until_browsing_context_is_open(BrowsingContextId::from(webview_id))?;
@@ -640,7 +643,7 @@ impl Handler {
                 let webview_id = receiver
                     .recv()
                     .expect("IPC failure when creating new webview for new session");
-                self.focus_webview(webview_id)?;
+                self.select_webview_for_interaction(webview_id)?;
                 self.session_mut()?.set_webview_id(webview_id);
                 self.wait_until_browsing_context_is_open(BrowsingContextId::from(webview_id))?;
                 self.session_mut()?
@@ -1358,7 +1361,7 @@ impl Handler {
         // Step 5. Update any implementation-specific state that would result
         // from the user selecting session's current browsing context for interaction,
         // without altering OS-level focus.
-        self.focus_webview(webview_id)?;
+        self.select_webview_for_interaction(webview_id)?;
 
         Ok(WebDriverResponse::Void)
     }
@@ -2003,7 +2006,9 @@ impl Handler {
         self.handle_any_user_prompts(self.webview_id()?)?;
 
         // Step 5. Let actions by tick be the result of trying to extract an action sequence
-        let actions_by_tick = self.extract_an_action_sequence(parameters.actions);
+        let actions_by_tick = self
+            .extract_an_action_sequence(parameters.actions)
+            .map_err(|error| WebDriverError::new(error, ""))?;
 
         // Step 6. Dispatch actions with current browsing context
         match self.dispatch_actions(actions_by_tick, browsing_context) {
@@ -2226,16 +2231,10 @@ impl Handler {
                         KeyState::Down => KeyAction::Down(KeyDownAction { value: raw_string }),
                         KeyState::Up => KeyAction::Up(KeyUpAction { value: raw_string }),
                     };
-                    let action_sequence = ActionSequence {
-                        id: id.clone(),
-                        actions: ActionsType::Key {
-                            actions: vec![KeyActionItem::Key(key_action)],
-                        },
-                    };
-
-                    let actions_by_tick = self.extract_an_action_sequence(vec![action_sequence]);
+                    let actions =
+                        vec![(id.clone(), ActionItem::Key(KeyActionItem::Key(key_action)))];
                     if let Err(e) =
-                        self.dispatch_actions(actions_by_tick, self.browsing_context_id()?)
+                        self.dispatch_a_list_of_actions(actions, self.browsing_context_id()?)
                     {
                         error!("handle_element_send_keys: dispatch_actions failed: {:?}", e);
                     }
@@ -2368,23 +2367,31 @@ impl Handler {
             ..Default::default()
         };
 
-        let action_sequence = ActionSequence {
-            id: id.clone(),
-            actions: ActionsType::Pointer {
-                parameters: PointerActionParameters {
-                    pointer_type: PointerType::Mouse,
-                },
-                actions: vec![
-                    PointerActionItem::Pointer(PointerAction::Move(pointer_move_action)),
-                    PointerActionItem::Pointer(PointerAction::Down(pointer_down_action)),
-                    PointerActionItem::Pointer(PointerAction::Up(pointer_up_action)),
-                ],
-            },
-        };
+        // Step 8.15. Let actions be the list
+        // «pointer move action, pointer down action, pointer up action».
+        let actions = vec![
+            (
+                id.clone(),
+                ActionItem::Pointer(PointerActionItem::Pointer(PointerAction::Move(
+                    pointer_move_action,
+                ))),
+            ),
+            (
+                id.clone(),
+                ActionItem::Pointer(PointerActionItem::Pointer(PointerAction::Down(
+                    pointer_down_action,
+                ))),
+            ),
+            (
+                id.clone(),
+                ActionItem::Pointer(PointerActionItem::Pointer(PointerAction::Up(
+                    pointer_up_action,
+                ))),
+            ),
+        ];
 
         // Step 8.16. Dispatch a list of actions with session's current browsing context
-        let actions_by_tick = self.extract_an_action_sequence(vec![action_sequence]);
-        if let Err(e) = self.dispatch_actions(actions_by_tick, self.browsing_context_id()?) {
+        if let Err(e) = self.dispatch_a_list_of_actions(actions, self.browsing_context_id()?) {
             error!("handle_element_click: dispatch_actions failed: {:?}", e);
         }
 
@@ -2653,8 +2660,8 @@ impl Handler {
         ))
     }
 
-    fn focus_webview(&self, webview_id: WebViewId) -> WebDriverResult<()> {
-        self.send_message_to_embedder(WebDriverCommandMsg::FocusWebView(webview_id))
+    fn select_webview_for_interaction(&self, webview_id: WebViewId) -> WebDriverResult<()> {
+        self.send_message_to_embedder(WebDriverCommandMsg::SelectWebViewForInteraction(webview_id))
     }
 
     fn focus_browsing_context(&self, browsing_cotext_id: BrowsingContextId) -> WebDriverResult<()> {

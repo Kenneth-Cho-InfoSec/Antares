@@ -17,10 +17,11 @@ use script_bindings::codegen::GenericUnionTypes::RangeEnforcedUnsignedLongSequen
 use script_bindings::interfaces::PromiseHelpers;
 use script_bindings::reflector::{DomGlobalGeneric, Reflector, reflect_dom_object_with_wrap};
 use webgpu_traits::{
-    WebGPU, WebGPUCommandBuffer, WebGPUCommandEncoder, WebGPUComputePass, WebGPUDevice,
-    WebGPURenderPass, WebGPURequest,
+    CommandBufferDescriptor, CommandEncoderCommand, CommandEncoderDescriptor, DebugCommand,
+    PassChannel, RenderPassColorAttachment, RenderPassDepthStencilAttachment, WebGPU,
+    WebGPUCommandBuffer, WebGPUCommandEncoder, WebGPUComputePass, WebGPUDevice, WebGPURenderPass,
+    WebGPURequest,
 };
-use wgpu_core::command as wgpu_com;
 
 use crate::JSTraceable;
 use crate::dom::bindings::error::Fallible;
@@ -34,7 +35,7 @@ use crate::gpuconvert::{
 };
 use crate::gpuqueryset::GPUQuerySet;
 use crate::gpurenderpassencoder::GPURenderPassEncoder;
-use crate::traits::{Equivalence, GPUDeviceTrait, WebGPUGlobalTrait};
+use crate::traits::{Equivalence, WebGPUGlobalTrait, WebGPUPromise};
 
 #[derive(JSTraceable, MallocSizeOf)]
 struct DroppableGPUCommandEncoder {
@@ -88,11 +89,11 @@ impl<D: Equivalence> GPUCommandEncoder<D> {
         label: USVString,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_wrap::<D, _, _>(
+            cx,
             Box::new(GPUCommandEncoder::new_inherited(
                 channel, device, encoder, label,
             )),
             global,
-            cx,
             GPUCommandEncoderWrap::<D>,
         )
     }
@@ -101,8 +102,7 @@ impl<D: Equivalence> GPUCommandEncoder<D> {
 impl<D> GPUCommandEncoder<D>
 where
     D: Equivalence,
-    D::GPUDevice: GPUDeviceTrait<D> + DomGlobalGeneric<D>,
-    Self: DomGlobalGeneric<D>,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     pub(crate) fn id(&self) -> WebGPUCommandEncoder {
         self.droppable.encoder
@@ -113,7 +113,7 @@ where
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-createcommandencoder>
-    pub fn create(
+    pub(crate) fn create(
         cx: &mut JSContext,
         device: &D::GPUDevice,
         descriptor: &GPUCommandEncoderDescriptor,
@@ -128,7 +128,7 @@ where
             .send(WebGPURequest::CreateCommandEncoder {
                 device_id: device.id().0,
                 command_encoder_id,
-                desc: wgpu_types::CommandEncoderDescriptor {
+                desc: CommandEncoderDescriptor {
                     label: (&descriptor.parent).convert(),
                 },
             })
@@ -145,15 +145,27 @@ where
             descriptor.parent.label.clone(),
         )
     }
+
+    fn send_command(&self, command: CommandEncoderCommand) {
+        if let Err(error) = self
+            .droppable
+            .channel
+            .0
+            .send(WebGPURequest::CommandEncoderCommand {
+                command_encoder_id: self.droppable.encoder.0,
+                command,
+                device_id: self.device.id().0,
+            })
+        {
+            warn!("Failed to send WebGPURequest::CommandEncoderCommand {error:?}");
+        }
+    }
 }
 
 impl<D> GPUCommandEncoderMethods<D> for GPUCommandEncoder<D>
 where
     D: Equivalence,
-    D::GPUDevice: GPUDeviceTrait<D>,
-    D::GlobalScope: WebGPUGlobalTrait,
-    D::Promise: PromiseHelpers<D>,
-    Self: DomGlobalGeneric<D>,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label>
     fn Label(&self) -> USVString {
@@ -210,33 +222,35 @@ where
         cx: &mut JSContext,
         descriptor: &GPURenderPassDescriptor<D>,
     ) -> Fallible<DomRoot<GPURenderPassEncoder<D>>> {
-        let depth_stencil_attachment = descriptor.depthStencilAttachment.as_ref().map(|ds| {
-            wgpu_com::RenderPassDepthStencilAttachment {
-                depth: wgpu_com::PassChannel {
-                    load_op: ds
-                        .depthLoadOp
-                        .as_ref()
-                        .map(|l| convert_load_op(l, ds.depthClearValue.map(|v| *v))),
-                    store_op: ds.depthStoreOp.as_ref().map(WebGPUConvert::convert),
-                    read_only: ds.depthReadOnly,
-                },
-                stencil: wgpu_com::PassChannel {
-                    load_op: ds
-                        .stencilLoadOp
-                        .as_ref()
-                        .map(|l| convert_load_op(l, Some(ds.stencilClearValue))),
-                    store_op: ds.stencilStoreOp.as_ref().map(WebGPUConvert::convert),
-                    read_only: ds.stencilReadOnly,
-                },
-                view: convert_texture_for_wgpu_with_cx(cx, &ds.view).0,
-            }
-        });
+        let depth_stencil_attachment =
+            descriptor
+                .depthStencilAttachment
+                .as_ref()
+                .map(|ds| RenderPassDepthStencilAttachment {
+                    depth: PassChannel {
+                        load_op: ds
+                            .depthLoadOp
+                            .as_ref()
+                            .map(|l| convert_load_op(l, ds.depthClearValue.map(|v| *v))),
+                        store_op: ds.depthStoreOp.as_ref().map(WebGPUConvert::convert),
+                        read_only: ds.depthReadOnly,
+                    },
+                    stencil: PassChannel {
+                        load_op: ds
+                            .stencilLoadOp
+                            .as_ref()
+                            .map(|l| convert_load_op(l, Some(ds.stencilClearValue))),
+                        store_op: ds.stencilStoreOp.as_ref().map(WebGPUConvert::convert),
+                        read_only: ds.stencilReadOnly,
+                    },
+                    view: convert_texture_for_wgpu_with_cx(cx, &ds.view).0,
+                });
 
         let color_attachments = descriptor
             .colorAttachments
             .iter()
             .map(|color| -> Fallible<_> {
-                Ok(Some(wgpu_com::RenderPassColorAttachment {
+                Ok(Some(RenderPassColorAttachment {
                     resolve_target: color
                         .resolveTarget
                         .as_ref()
@@ -300,19 +314,13 @@ where
         destination_offset: GPUSize64,
         size: GPUSize64,
     ) {
-        self.droppable
-            .channel
-            .0
-            .send(WebGPURequest::CopyBufferToBuffer {
-                command_encoder_id: self.droppable.encoder.0,
-                source_id: source.id().0,
-                source_offset,
-                destination_id: destination.id().0,
-                destination_offset,
-                size,
-                device_id: self.device.id().0,
-            })
-            .expect("Failed to send CopyBufferToBuffer");
+        self.send_command(CommandEncoderCommand::CopyBufferToBuffer {
+            source: source.id().0,
+            source_offset,
+            destination: destination.id().0,
+            destination_offset,
+            size: Some(size),
+        });
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpucommandencoder-copybuffertotexture>
@@ -322,17 +330,11 @@ where
         destination: &GPUTexelCopyTextureInfo<D>,
         copy_size: GPUExtent3D,
     ) -> Fallible<()> {
-        self.droppable
-            .channel
-            .0
-            .send(WebGPURequest::CopyBufferToTexture {
-                command_encoder_id: self.droppable.encoder.0,
-                source: source.convert(),
-                destination: destination.try_convert()?,
-                copy_size: (&copy_size).try_convert()?,
-                device_id: self.device.id().0,
-            })
-            .expect("Failed to send CopyBufferToTexture");
+        self.send_command(CommandEncoderCommand::CopyBufferToTexture {
+            source: source.convert(),
+            destination: destination.try_convert()?,
+            copy_size: (&copy_size).try_convert()?,
+        });
 
         Ok(())
     }
@@ -344,17 +346,11 @@ where
         destination: &GPUTexelCopyBufferInfo<D>,
         copy_size: GPUExtent3D,
     ) -> Fallible<()> {
-        self.droppable
-            .channel
-            .0
-            .send(WebGPURequest::CopyTextureToBuffer {
-                command_encoder_id: self.droppable.encoder.0,
-                source: source.try_convert()?,
-                destination: destination.convert(),
-                copy_size: (&copy_size).try_convert()?,
-                device_id: self.device.id().0,
-            })
-            .expect("Failed to send CopyTextureToBuffer");
+        self.send_command(CommandEncoderCommand::CopyTextureToBuffer {
+            source: source.try_convert()?,
+            destination: destination.convert(),
+            copy_size: (&copy_size).try_convert()?,
+        });
 
         Ok(())
     }
@@ -366,17 +362,11 @@ where
         destination: &GPUTexelCopyTextureInfo<D>,
         copy_size: GPUExtent3D,
     ) -> Fallible<()> {
-        self.droppable
-            .channel
-            .0
-            .send(WebGPURequest::CopyTextureToTexture {
-                command_encoder_id: self.droppable.encoder.0,
-                source: source.try_convert()?,
-                destination: destination.try_convert()?,
-                copy_size: (&copy_size).try_convert()?,
-                device_id: self.device.id().0,
-            })
-            .expect("Failed to send CopyTextureToTexture");
+        self.send_command(CommandEncoderCommand::CopyTextureToTexture {
+            source: source.try_convert()?,
+            destination: destination.try_convert()?,
+            copy_size: (&copy_size).try_convert()?,
+        });
 
         Ok(())
     }
@@ -397,7 +387,7 @@ where
             .send(WebGPURequest::CommandEncoderFinish {
                 command_encoder_id: self.droppable.encoder.0,
                 device_id: self.device.id().0,
-                desc: wgpu_types::CommandBufferDescriptor {
+                desc: CommandBufferDescriptor {
                     label: (&descriptor.parent).convert(),
                 },
                 command_buffer_id,
@@ -416,49 +406,23 @@ where
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudebugcommandsmixin-pushdebuggroup>
     fn PushDebugGroup(&self, group_label: USVString) {
-        if let Err(e) = self
-            .droppable
-            .channel
-            .0
-            .send(WebGPURequest::CommandEncoderPushDebugGroup {
-                command_encoder_id: self.droppable.encoder.0,
-                label: group_label.to_string(),
-                device_id: self.device.id().0,
-            })
-        {
-            warn!("Error sending WebGPURequest::CommandEncoderPushDebugGroup: {e:?}")
-        }
+        self.send_command(CommandEncoderCommand::DebugCommand(
+            DebugCommand::PushDebugGroup(group_label.to_string()),
+        ));
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudebugcommandsmixin-popdebuggroup>
     fn PopDebugGroup(&self) {
-        if let Err(e) = self
-            .droppable
-            .channel
-            .0
-            .send(WebGPURequest::CommandEncoderPopDebugGroup {
-                command_encoder_id: self.droppable.encoder.0,
-                device_id: self.device.id().0,
-            })
-        {
-            warn!("Error sending WebGPURequest::CommandEncoderPopDebugGroup: {e:?}")
-        }
+        self.send_command(CommandEncoderCommand::DebugCommand(
+            DebugCommand::PopDebugGroup,
+        ));
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudebugcommandsmixin-insertdebugmarker>
     fn InsertDebugMarker(&self, marker_label: USVString) {
-        if let Err(e) =
-            self.droppable
-                .channel
-                .0
-                .send(WebGPURequest::CommandEncoderInsertDebugMarker {
-                    command_encoder_id: self.droppable.encoder.0,
-                    label: marker_label.to_string(),
-                    device_id: self.device.id().0,
-                })
-        {
-            warn!("Error sending WebGPURequest::CommandEncoderInsertDebugMarker: {e:?}")
-        }
+        self.send_command(CommandEncoderCommand::DebugCommand(
+            DebugCommand::InsertDebugMarker(marker_label.to_string()),
+        ));
     }
 
     fn ResolveQuerySet(
@@ -469,21 +433,12 @@ where
         destination: &GPUBuffer<D>,
         destination_offset: u64,
     ) {
-        if let Err(error) = self
-            .droppable
-            .channel
-            .0
-            .send(WebGPURequest::ResolveQuerySet {
-                command_encoder_id: self.droppable.encoder.0,
-                query_set_id: query_set.id().0,
-                start_query: first_query,
-                query_count,
-                destination: destination.id().0,
-                destination_offset,
-                device_id: self.device.id().0,
-            })
-        {
-            warn!("Error sending WebGPURequest::ResolveQuerySet: {error:?}")
-        }
+        self.send_command(CommandEncoderCommand::ResolveQuerySet {
+            query_set: query_set.id().0,
+            first_query,
+            query_count,
+            destination: destination.id().0,
+            destination_offset,
+        });
     }
 }

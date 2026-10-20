@@ -6,14 +6,14 @@
 use std::borrow::{Cow, ToOwned};
 use std::cell::{Ref, RefCell, RefMut};
 use std::default::Default;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 use std::str::FromStr;
 use std::sync::LazyLock;
 use std::{fmt, slice, str};
 
 use html5ever::{LocalName, Namespace};
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use js::conversions::{ToJSValConvertible, jsstr_to_string};
 use js::gc::{HandleValue, MutableHandleValue};
 use js::jsapi::{Heap, JS_GetLatin1StringCharsAndLength, JSString};
@@ -22,7 +22,7 @@ use js::rust::{Runtime, Trace};
 use malloc_size_of::MallocSizeOfOps;
 use num_traits::{ToPrimitive, Zero};
 use regex::Regex;
-use servo_base::text::{Utf8CodeUnits, Utf16CodeUnits};
+use servo_base::text::{AssumeUnder4GB, Utf8CodeUnits, Utf16CodeUnits};
 use style::Atom;
 use style::str::HTML_SPACE_CHARACTERS;
 use zeroize::Zeroize;
@@ -40,18 +40,24 @@ const ASCII_FORMFEED: u8 = 0x0C;
 const ASCII_CR: u8 = 0x0D;
 const ASCII_SPACE: u8 = 0x20;
 
-/// Gets the latin1 bytes from the js engine.
-/// Safety: Make sure the *mut JSString is not null.
-unsafe fn get_latin1_string_bytes(
-    rooted_traceable_box: &RootedTraceableBox<Heap<*mut JSString>>,
-) -> &[u8] {
-    debug_assert!(!rooted_traceable_box.get().is_null());
+/// Return the Latin1 string bytes of the given `JSString`. As a garbage collection
+/// can collect this string, it must be later bound to the lifetime of a provided `NoGC`
+/// parameter. This function will never GC.
+///
+/// # Safety
+///
+/// The `*mut JSString` in `rooted_traceable_box` must be non-null. The resulting slice is
+/// guaranteed to live as long as no garbage collection operation happens. Afterwards this
+/// pointer can  point to arbitrary memory. Callers should enforce this using `NoGC`. It is
+/// essential for callers that this function not trigger a garbage collection.
+unsafe fn get_latin1_string_bytes(string: &Heap<*mut JSString>) -> &[u8] {
+    debug_assert!(!string.get().is_null());
     let mut length = 0;
     unsafe {
         let chars = JS_GetLatin1StringCharsAndLength(
             Runtime::get().expect("JS runtime has shut down").as_ptr(),
             ptr::null(),
-            rooted_traceable_box.get(),
+            string.get(),
             &mut length,
         );
         assert!(!chars.is_null());
@@ -60,12 +66,11 @@ unsafe fn get_latin1_string_bytes(
 }
 
 /// A type representing the underlying encoded bytes of a [`DOMString`].
-#[derive(Debug)]
 pub enum EncodedBytes<'a> {
     /// These bytes are Latin1 encoded.
-    Latin1(Ref<'a, [u8]>),
+    Latin1((&'a NoGC, Ref<'a, [u8]>)),
     /// These bytes are UTF-8 encoded.
-    Utf8(Ref<'a, [u8]>),
+    Utf8((&'a NoGC, Ref<'a, [u8]>)),
 }
 
 impl EncodedBytes<'_> {
@@ -73,18 +78,8 @@ impl EncodedBytes<'_> {
     /// the underlying encoding.
     pub fn bytes(&self) -> &[u8] {
         match self {
-            Self::Latin1(bytes) => bytes,
-            Self::Utf8(bytes) => bytes,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Latin1(bytes) => bytes
-                .iter()
-                .map(|b| if *b <= ASCII_END { 1 } else { 2 })
-                .sum(),
-            Self::Utf8(bytes) => bytes.len(),
+            Self::Latin1(bytes) => &bytes.1,
+            Self::Utf8(bytes) => &bytes.1,
         }
     }
 
@@ -95,18 +90,31 @@ impl EncodedBytes<'_> {
 }
 
 #[derive(Zeroize)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 enum DOMStringType {
     /// A simple rust string
     Rust(String),
     /// A JS String stored in mozjs.
     #[zeroize(skip)]
-    JSString(RootedTraceableBox<Heap<*mut JSString>>),
+    JSString(Box<Heap<*mut JSString>>),
     #[cfg(test)]
     /// This is used for testing of the bindings to give
     /// a raw u8 Latin1 encoded string without having a js engine.
     Latin1Vec(Vec<u8>),
     #[zeroize(skip)] // static strings will never have secrets.
     RustStatic(&'static str),
+}
+
+impl Clone for DOMStringType {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Rust(arg0) => Self::Rust(arg0.clone()),
+            Self::JSString(rooted_box) => Self::JSString(Heap::boxed(rooted_box.get())),
+            #[cfg(test)]
+            Self::Latin1Vec(arg0) => Self::Latin1Vec(arg0.clone()),
+            Self::RustStatic(arg0) => Self::RustStatic(arg0),
+        }
+    }
 }
 
 impl Default for DOMStringType {
@@ -120,7 +128,12 @@ impl DOMStringType {
     /// This function does not check and just returns the raw bytes of the string,
     /// whether they are utf8 or latin1.
     /// The caller needs to take care that these make sense in context.
-    fn as_raw_bytes(&self) -> &[u8] {
+    ///
+    /// # Safety
+    ///
+    /// The returned slice is only guaranteed to be valid until garbage collection happens.
+    /// Afterwards it can point to arbitrary memory.
+    unsafe fn as_raw_bytes(&self) -> &[u8] {
         match self {
             DOMStringType::Rust(s) => s.as_bytes(),
             DOMStringType::JSString(rooted_traceable_box) => unsafe {
@@ -296,6 +309,8 @@ impl std::fmt::Debug for DOMStringType {
 /// unify the `DOMString` and `USVString` types, both in the WebIDL standard
 /// and in Servo.)
 ///
+/// Note: the above appears refuted by the needs of `dom/encoding`.
+///
 /// This string class will keep either the Reference to the mozjs object alive
 /// or will have an internal rust string.
 /// We currently default to doing most of the string operation on the rust side.
@@ -304,39 +319,85 @@ impl std::fmt::Debug for DOMStringType {
 /// expensive. For now, you should assume that all the functions incur this
 /// conversion cost.
 #[repr(transparent)]
-#[derive(Debug, Default, MallocSizeOf, JSTraceable)]
-pub struct DOMString(RefCell<DOMStringType>);
+#[derive(Clone, Debug, Default, MallocSizeOf, JSTraceable)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+pub struct TracedDOMString(RefCell<DOMStringType>);
 
-impl Clone for DOMString {
-    fn clone(&self) -> Self {
-        self.ensure_rust_string().clone().into()
+// TODO: Removed RootedTraceableBox if TracedDOMString is not a js type.
+#[derive(Default, MallocSizeOf, JSTraceable)]
+pub struct DOMString(RootedTraceableBox<TracedDOMString>);
+
+impl std::fmt::Debug for DOMString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("DOMString").field(&*self.0).finish()
     }
 }
 
-pub enum DOMStringErrorType {
-    JSConversionError,
+impl DerefMut for DOMString {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Deref for DOMString {
+    type Target = TracedDOMString;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Clone for DOMString {
+    fn clone(&self) -> Self {
+        self.0.clone().root()
+    }
 }
 
 impl DOMString {
     /// Creates a new `DOMString`.
     pub fn new() -> DOMString {
-        Default::default()
+        TracedDOMString::default().root()
     }
 
     /// Creates the string from js. If the string can be encoded in latin1, just take the reference
     /// to the JSString. Otherwise do the conversion to utf8 now.
+    /// <https://webidl.spec.whatwg.org/#js-DOMString>
     pub fn from_js_string(
         cx: &mut JSContext,
         value: HandleValue,
     ) -> Result<DOMString, DOMStringErrorType> {
-        let string_ptr = unsafe { js::rust::ToString(cx, value) };
+        // Step 1: If V is null
+        // and the conversion is to an IDL type associated
+        // with the [LegacyNullToEmptyString] extended attribute,
+        // then return the DOMString value that represents the empty string.
+        // TODO.
+
+        // Step 2: Let x be ? ToString(V).
+        // Step 3: Return the IDL DOMString value that represents the same sequence of
+        // code units as the one the JavaScript String value x represents.
+        // Note: this implementation does not preserve the same sequence of code units.
+        rooted!(&in(cx) let string_ptr = unsafe { js::rust::ToString(cx, value) });
+        unsafe { DOMString::from_raw_js_string(cx, *string_ptr) }
+    }
+
+    /// Takes a raw `*mut JSString` and creates a [`DOMString`] out of it. Prefer [`DOMString::from_js_string`] if you have a `HandleValue`.
+    /// Seee [`DOMString::from_js_string`] for more detail.
+    ///
+    /// # Safety
+    ///
+    /// *mut JSString needs to point to a valid JSString.
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
+    pub unsafe fn from_raw_js_string(
+        cx: &JSContext,
+        string_ptr: *mut JSString,
+    ) -> Result<DOMString, DOMStringErrorType> {
         if string_ptr.is_null() {
             debug!("ToString failed");
             Err(DOMStringErrorType::JSConversionError)
         } else {
             let latin1 = unsafe { js::jsapi::JS_DeprecatedStringHasLatin1Chars(string_ptr) };
             let inner = if latin1 {
-                let h = RootedTraceableBox::from_box(Heap::boxed(string_ptr));
+                let h = Heap::boxed(string_ptr);
                 DOMStringType::JSString(h)
             } else {
                 // We need to convert the string anyway as it is not just latin1
@@ -344,13 +405,39 @@ impl DOMString {
                     jsstr_to_string(cx, NonNull::new(string_ptr).unwrap())
                 })
             };
-            Ok(DOMString(RefCell::new(inner)))
+            Ok(TracedDOMString(RefCell::new(inner)).root())
         }
     }
 
     /// Creates a DOMString from a `&'static str` reference. More efficient than allocating the string.
     pub fn from_static(s: &'static str) -> DOMString {
-        DOMString(RefCell::new(DOMStringType::RustStatic(s)))
+        TracedDOMString(RefCell::new(DOMStringType::RustStatic(s))).root()
+    }
+
+    pub fn traced(self) -> TracedDOMString {
+        *self.0.into_box()
+    }
+
+    pub fn str(&self) -> StringView<'_> {
+        self.0.str()
+    }
+}
+
+#[derive(Debug)]
+pub enum DOMStringErrorType {
+    JSConversionError,
+}
+
+impl From<String> for TracedDOMString {
+    fn from(string: String) -> Self {
+        TracedDOMString(RefCell::new(DOMStringType::Rust(string)))
+    }
+}
+
+impl TracedDOMString {
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
+    pub fn root(self) -> DOMString {
+        DOMString(RootedTraceableBox::from_box(Box::new(self)))
     }
 
     /// Transforms the internal storage of this [`DOMString`] into a Rust string if it is not
@@ -395,19 +482,23 @@ impl DOMString {
 
     /// Return the [`EncodedBytes`] of this [`DOMString`]. This returns the original encoded
     /// bytes of the string without doing any conversions.
-    pub fn encoded_bytes(&self) -> EncodedBytes<'_> {
+    pub fn encoded_bytes<'a>(&'a self, no_gc: &'a NoGC) -> EncodedBytes<'a> {
         let inner = self.0.borrow();
+        // The lifetime of the `EncodedBytes` struct is bound by the lifetime of the `NoGC` token.
         match &*inner {
-            DOMStringType::Rust(..) | DOMStringType::RustStatic(..) => {
-                EncodedBytes::Utf8(Ref::map(inner, |inner| inner.as_raw_bytes()))
-            },
-            DOMStringType::JSString(..) => {
-                EncodedBytes::Latin1(Ref::map(inner, |inner| inner.as_raw_bytes()))
-            },
+            DOMStringType::Rust(..) | DOMStringType::RustStatic(..) => EncodedBytes::Utf8((
+                no_gc,
+                Ref::map(inner, |inner| unsafe { inner.as_raw_bytes() }),
+            )),
+            DOMStringType::JSString(..) => EncodedBytes::Latin1((
+                no_gc,
+                Ref::map(inner, |inner| unsafe { inner.as_raw_bytes() }),
+            )),
             #[cfg(test)]
-            DOMStringType::Latin1Vec(..) => {
-                EncodedBytes::Latin1(Ref::map(inner, |inner| inner.as_raw_bytes()))
-            },
+            DOMStringType::Latin1Vec(..) => EncodedBytes::Latin1((
+                no_gc,
+                Ref::map(inner, |inner| unsafe { inner.as_raw_bytes() }),
+            )),
         }
     }
 
@@ -421,15 +512,9 @@ impl DOMString {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.encoded_bytes().is_empty()
-    }
-
-    /// The length of this string in UTF-8 code units, each one being one byte in size.
-    ///
-    /// Note: This is different than the number of Unicode characters (or code points). A
-    /// character may require multiple UTF-8 code units.
-    pub fn len(&self) -> usize {
-        self.encoded_bytes().len()
+        // This is safe as the bytes do not leave this function and no gc can happen.
+        let no_gc = unsafe { NoGC::new() };
+        self.encoded_bytes(&no_gc).is_empty()
     }
 
     /// The length of this string in UTF-8 code units, each one being one byte in size.
@@ -439,7 +524,29 @@ impl DOMString {
     /// Note: This is different than the number of Unicode characters (or code points). A
     /// character may require multiple UTF-8 code units.
     pub fn len_utf8(&self) -> Utf8CodeUnits {
-        Utf8CodeUnits(self.len())
+        // TODO: add a check that DOMString values never exceed 2 GiB?
+        // This is safe as the bytes do not leave this function and no GC can happen.
+        let no_gc = unsafe { NoGC::new() };
+        Utf8CodeUnits(match self.encoded_bytes(&no_gc) {
+            EncodedBytes::Utf8(bytes) => bytes.1.len() as u32,
+            EncodedBytes::Latin1(bytes) => bytes
+                .1
+                .iter()
+                // Latin-1 bytes 0x00 to 0x7F are ASCII-compatible and UTF-8-compatible
+                // Latin-1 bytes 0x80 to 0xFF convert to two-byte UTF-8 sequences
+                .map(|&byte| if byte < 128 { 1 } else { 2 })
+                .sum::<u32>(),
+        })
+    }
+
+    /// Returns a length for “is small” heuristics, whose precise definition does not matter
+    pub fn len_utf8_or_latin1(&self) -> usize {
+        // This is safe as the bytes do not leave this function and no GC can happen.
+        let no_gc = unsafe { NoGC::new() };
+        match self.encoded_bytes(&no_gc) {
+            EncodedBytes::Utf8(bytes) => bytes.1.len(),
+            EncodedBytes::Latin1(bytes) => bytes.1.len(),
+        }
     }
 
     /// The length of this string in UTF-16 code units, each one being one two bytes in size.
@@ -447,7 +554,17 @@ impl DOMString {
     /// Note: This is different than the number of Unicode characters (or code points). A
     /// character may require multiple UTF-16 code units.
     pub fn len_utf16(&self) -> Utf16CodeUnits {
-        Utf16CodeUnits(self.str().chars().map(char::len_utf16).sum())
+        // This is safe as the bytes do not leave this function and no GC can happen.
+        let no_gc = unsafe { NoGC::new() };
+        match self.encoded_bytes(&no_gc) {
+            // All Latin-1 characters encode to a single UTF-16 code unit.
+            EncodedBytes::Latin1(bytes) => Utf16CodeUnits(bytes.1.len() as u32),
+            // TODO: add a check that DOMString values never exceed 2 GiB?
+            // SAFETY: These are the bytes of a UTF-8 string, so they can be interpreted as UTF-8.
+            EncodedBytes::Utf8(bytes) => Utf16CodeUnits::length_of(AssumeUnder4GB, unsafe {
+                str::from_utf8_unchecked(&bytes.1)
+            }),
+        }
     }
 
     /// This works the same as `make_ascii_lowercase` on std::string. This means that any character in [A-Z]
@@ -490,11 +607,7 @@ impl DOMString {
 
     /// <https://html.spec.whatwg.org/multipage/#valid-floating-point-number>
     pub fn is_valid_floating_point_number_string(&self) -> bool {
-        static RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"^-?(?:\d+\.\d+|\d+|\.\d+)(?:(e|E)(\+|\-)?\d+)?$").unwrap()
-        });
-
-        RE.is_match(self.0.borrow_mut().ensure_rust_string()) &&
+        is_valid_floating_point_number_string(self.0.borrow_mut().ensure_rust_string()) &&
             self.parse_floating_point_number().is_some()
     }
 
@@ -544,11 +657,13 @@ impl DOMString {
         *string = string.replace("\r\n", "\n").replace("\r", "\n")
     }
 
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub fn replace(self, needle: &str, replace_char: &str) -> DOMString {
         let new_string = self.str().to_owned();
-        DOMString(RefCell::new(DOMStringType::Rust(
+        TracedDOMString(RefCell::new(DOMStringType::Rust(
             new_string.replace(needle, replace_char),
         )))
+        .root()
     }
 
     /// Pattern is not yet stable in rust, hence, we need different methods for str and char
@@ -558,7 +673,9 @@ impl DOMString {
         } else {
             // As this is an ASCII character, it is guaranteed to be a single byte, no matter if the
             // underlying encoding is UTF-8 or Latin1.
-            self.encoded_bytes().bytes().starts_with(&[c as u8])
+            // This is safe as the bytes do not leave this function and no GC can happen.
+            let no_gc = unsafe { NoGC::new() };
+            self.encoded_bytes(&no_gc).bytes().starts_with(&[c as u8])
         }
     }
 
@@ -580,7 +697,9 @@ impl DOMString {
     /// <https://infra.spec.whatwg.org/#ascii-case-insensitive>
     pub fn eq_ignore_ascii_case(&self, other: &str) -> bool {
         if other.is_ascii() {
-            self.encoded_bytes()
+            // This is safe as the bytes do not leave this function and no GC can happen.
+            let no_gc = unsafe { NoGC::new() };
+            self.encoded_bytes(&no_gc)
                 .bytes()
                 .eq_ignore_ascii_case(other.as_bytes())
         } else {
@@ -589,13 +708,16 @@ impl DOMString {
     }
 
     pub fn to_ascii_lowercase(&self) -> String {
-        let conversion = match self.encoded_bytes() {
+        // This is safe as the bytes do not leave this function and no GC can happen. The bytes actually get copiied.
+        let no_gc = unsafe { NoGC::new() };
+        let conversion = match self.encoded_bytes(&no_gc) {
             EncodedBytes::Latin1(bytes) => {
-                if bytes.iter().all(|c| *c <= ASCII_END) {
+                if bytes.1.iter().all(|c| *c <= ASCII_END) {
                     // We are just simple ascii
                     Some(unsafe {
                         String::from_utf8_unchecked(
                             bytes
+                                .1
                                 .iter()
                                 .map(|c| {
                                     if *c >= ASCII_CAPITAL_A && *c <= ASCII_CAPITAL_Z {
@@ -613,7 +735,7 @@ impl DOMString {
             },
             EncodedBytes::Utf8(bytes) => unsafe {
                 // Safe because we know it was a utf8 string
-                Some(str::from_utf8_unchecked(&bytes).to_ascii_lowercase())
+                Some(str::from_utf8_unchecked(&bytes.1).to_ascii_lowercase())
             },
         };
         // We otherwise would double borrow the refcell
@@ -629,13 +751,15 @@ impl DOMString {
         latin1_characters: &'static [u8],
         utf8_characters: &'static [char],
     ) -> bool {
-        match self.encoded_bytes() {
+        // This is safe as the bytes do not leave this function and no GC can happen.
+        let no_gc = unsafe { NoGC::new() };
+        match self.encoded_bytes(&no_gc) {
             EncodedBytes::Latin1(items) => {
-                latin1_characters.iter().any(|byte| items.contains(byte))
+                latin1_characters.iter().any(|byte| items.1.contains(byte))
             },
             EncodedBytes::Utf8(bytes) => {
                 // Save because we know it was a utf8 string
-                let s = unsafe { str::from_utf8_unchecked(&bytes) };
+                let s = unsafe { str::from_utf8_unchecked(&bytes.1) };
                 s.contains(utf8_characters)
             },
         }
@@ -662,25 +786,35 @@ impl DOMString {
     }
 
     /// This returns the string in utf8 bytes, i.e., `[u8]` encoded with utf8.
-    pub fn as_bytes(&self) -> BytesView<'_> {
+    pub fn as_bytes<'a>(&'a self, no_gc: &'a NoGC) -> BytesView<'a> {
         // BytesView will just give the raw bytes on dereference.
         // If we are ascii this is the same for latin1 and utf8.
         // Otherwise we convert to rust.
         if self.is_ascii() {
-            BytesView(self.0.borrow())
+            BytesView {
+                _no_gc: no_gc,
+                inner: self.0.borrow(),
+            }
         } else {
             self.ensure_rust_string();
-            BytesView(self.0.borrow())
+            BytesView {
+                _no_gc: no_gc,
+                inner: self.0.borrow(),
+            }
         }
     }
 
     /// Tests if there are only ascii lowercase characters. Does not include special characters.
     pub fn is_ascii_lowercase(&self) -> bool {
-        match self.encoded_bytes() {
+        // This is safe as the bytes do not leave this function and no GC can happen.
+        let no_gc = unsafe { NoGC::new() };
+        match self.encoded_bytes(&no_gc) {
             EncodedBytes::Latin1(items) => items
+                .1
                 .iter()
                 .all(|c| (ASCII_LOWERCASE_A..=ASCII_LOWERCASE_Z).contains(c)),
-            EncodedBytes::Utf8(s) => s
+            EncodedBytes::Utf8(bytes) => bytes
+                .1
                 .iter()
                 .map(|c| c.to_u8().unwrap_or(ASCII_LOWERCASE_A - 1))
                 .all(|c| (ASCII_LOWERCASE_A..=ASCII_LOWERCASE_Z).contains(&c)),
@@ -689,15 +823,20 @@ impl DOMString {
 
     /// Is the string only ascii characters
     pub fn is_ascii(&self) -> bool {
-        self.encoded_bytes().bytes().is_ascii()
+        // This is safe as the bytes do not leave this function and no GC can happen.
+        let no_gc = unsafe { NoGC::new() };
+        self.encoded_bytes(&no_gc).bytes().is_ascii()
     }
 
     /// Returns true if the slice only contains bytes that are safe to use in cookie strings.
     /// <https://www.ietf.org/archive/id/draft-ietf-httpbis-rfc6265bis-15.html#section-5.6-6>
     /// Not using ServoCookie::is_valid_name_or_value to prevent dependency on the net crate.
     pub fn is_valid_for_cookie(&self) -> bool {
-        match self.encoded_bytes() {
+        // This is safe as the bytes do not leave this function and no GC can happen.
+        let no_gc = unsafe { NoGC::new() };
+        match self.encoded_bytes(&no_gc) {
             EncodedBytes::Latin1(items) | EncodedBytes::Utf8(items) => !items
+                .1
                 .iter()
                 .any(|c| *c == 0x7f || (*c <= 0x1f && *c != 0x09)),
         }
@@ -706,19 +845,22 @@ impl DOMString {
     /// Call the callback with a `&str` reference of the string stored in this [`DOMString`]. Note
     /// that if the [`DOMString`] cannot be interpreted as a Rust string a conversion will be done.
     fn with_str_reference<Result>(&self, callback: fn(&str) -> Result) -> Result {
-        match self.encoded_bytes() {
+        // This is safe as the bytes do not leave this function and no GC can happen. The result always has a
+        // different lifetime which is enforced by creating the no_gc in this scope.
+        let no_gc = unsafe { NoGC::new() };
+        match self.encoded_bytes(&no_gc) {
             // If the Latin1 string is all ASCII bytes, then it is safe to interpret it as UTF-8.
             EncodedBytes::Latin1(latin1_bytes) => {
-                if latin1_bytes.iter().all(|character| character.is_ascii()) {
+                if latin1_bytes.1.iter().all(|character| character.is_ascii()) {
                     // SAFETY: All characters are ASCII, so it is safe to interpret this string as
                     // UTF-8.
-                    return callback(unsafe { str::from_utf8_unchecked(&latin1_bytes) });
+                    return callback(unsafe { str::from_utf8_unchecked(&latin1_bytes.1) });
                 }
             },
             EncodedBytes::Utf8(utf8_bytes) => {
                 // SAFETY: These are the bytes of a UTF-8 string already, so they can be interpreted
                 // as UTF-8.
-                return callback(unsafe { str::from_utf8_unchecked(&utf8_bytes) });
+                return callback(unsafe { str::from_utf8_unchecked(&utf8_bytes.1) });
             },
         };
         callback(self.str().deref())
@@ -776,36 +918,45 @@ pub fn parse_floating_point_number(input: &str) -> Option<f64> {
     })
 }
 
-pub struct BytesView<'a>(Ref<'a, DOMStringType>);
+pub struct BytesView<'a> {
+    _no_gc: &'a NoGC,
+    inner: Ref<'a, DOMStringType>,
+}
 
 impl Deref for BytesView<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        // This does the correct thing by the construction of BytesView in `DOMString::as_bytes`.
-        self.0.as_raw_bytes()
+        // The lifetime of BytesView is bounded by the lifetime of a `NoGC` token.
+        unsafe { self.inner.as_raw_bytes() }
     }
 }
 
-impl Ord for DOMString {
+impl Ord for TracedDOMString {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.str().cmp(&other.str())
     }
 }
 
-impl PartialOrd for DOMString {
+impl PartialOrd for TracedDOMString {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.str().partial_cmp(&other.str())
     }
 }
 
-impl Extend<char> for DOMString {
+impl PartialOrd for DOMString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+impl Extend<char> for TracedDOMString {
     fn extend<T: IntoIterator<Item = char>>(&mut self, iter: T) {
         self.0.borrow_mut().ensure_rust_string().extend(iter)
     }
 }
 
-impl ToJSValConvertible for DOMString {
+impl ToJSValConvertible for TracedDOMString {
     fn to_jsval(&self, cx: &mut JSContext, mut rval: MutableHandleValue) {
         let val = self.0.borrow();
         match *val {
@@ -829,9 +980,27 @@ impl ToJSValConvertible for DOMString {
     }
 }
 
+impl ToJSValConvertible for DOMString {
+    fn to_jsval(&self, cx: &mut JSContext, rval: MutableHandleValue) {
+        self.0.to_jsval(cx, rval);
+    }
+}
+
+impl std::hash::Hash for TracedDOMString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.str().hash(state);
+    }
+}
+
 impl std::hash::Hash for DOMString {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.str().hash(state);
+    }
+}
+
+impl std::fmt::Display for TracedDOMString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.str().deref(), f)
     }
 }
 
@@ -841,56 +1010,91 @@ impl std::fmt::Display for DOMString {
     }
 }
 
-impl std::cmp::PartialEq<str> for DOMString {
+impl std::cmp::PartialEq<str> for TracedDOMString {
     fn eq(&self, other: &str) -> bool {
         if other.is_ascii() {
-            *other.as_bytes() == *self.encoded_bytes().bytes()
+            // This is safe as the bytes do not leave this function and no GC can happen.
+            let no_gc = unsafe { NoGC::new() };
+            *other.as_bytes() == *self.encoded_bytes(&no_gc).bytes()
         } else {
             self.str().deref() == other
         }
     }
 }
 
-impl std::cmp::PartialEq<&str> for DOMString {
+impl std::cmp::PartialEq<str> for DOMString {
+    fn eq(&self, other: &str) -> bool {
+        self.0.eq(other)
+    }
+}
+
+impl std::cmp::PartialEq<&str> for TracedDOMString {
     fn eq(&self, other: &&str) -> bool {
         self.eq(*other)
     }
 }
 
-impl std::cmp::PartialEq<String> for DOMString {
+impl std::cmp::PartialEq<&str> for DOMString {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.eq(*other)
+    }
+}
+
+impl std::cmp::PartialEq<String> for TracedDOMString {
     fn eq(&self, other: &String) -> bool {
         self.eq(other.as_str())
     }
 }
 
+impl std::cmp::PartialEq<String> for DOMString {
+    fn eq(&self, other: &String) -> bool {
+        self.0.eq(other.as_str())
+    }
+}
+
+impl std::cmp::PartialEq<TracedDOMString> for String {
+    fn eq(&self, other: &TracedDOMString) -> bool {
+        other.eq(self)
+    }
+}
+
 impl std::cmp::PartialEq<DOMString> for String {
     fn eq(&self, other: &DOMString) -> bool {
+        other.0.eq(self)
+    }
+}
+
+impl std::cmp::PartialEq<TracedDOMString> for str {
+    fn eq(&self, other: &TracedDOMString) -> bool {
         other.eq(self)
     }
 }
 
 impl std::cmp::PartialEq<DOMString> for str {
     fn eq(&self, other: &DOMString) -> bool {
-        other.eq(self)
+        other.0.eq(self)
     }
 }
 
-impl std::cmp::PartialEq for DOMString {
-    fn eq(&self, other: &DOMString) -> bool {
-        let result = match (self.encoded_bytes(), other.encoded_bytes()) {
+impl std::cmp::PartialEq for TracedDOMString {
+    fn eq(&self, other: &TracedDOMString) -> bool {
+        let no_gc = unsafe { NoGC::new() };
+        let result = match (self.encoded_bytes(&no_gc), other.encoded_bytes(&no_gc)) {
             (EncodedBytes::Latin1(bytes), EncodedBytes::Latin1(other_bytes)) => {
-                Some(*bytes == *other_bytes)
+                Some(*bytes.1 == *other_bytes.1)
             },
             (EncodedBytes::Latin1(bytes), EncodedBytes::Utf8(other_bytes))
-                if other_bytes.is_ascii() =>
+                if other_bytes.1.is_ascii() =>
             {
-                Some(*bytes == *other_bytes)
+                Some(*bytes.1 == *other_bytes.1)
             },
-            (EncodedBytes::Utf8(bytes), EncodedBytes::Latin1(other_bytes)) if bytes.is_ascii() => {
-                Some(*bytes == *other_bytes)
+            (EncodedBytes::Utf8(bytes), EncodedBytes::Latin1(other_bytes))
+                if bytes.1.is_ascii() =>
+            {
+                Some(*bytes.1 == *other_bytes.1)
             },
             (EncodedBytes::Utf8(bytes), EncodedBytes::Utf8(other_bytes)) => {
-                Some(*bytes == *other_bytes)
+                Some(*bytes.1 == *other_bytes.1)
             },
             _ => None,
         };
@@ -903,11 +1107,19 @@ impl std::cmp::PartialEq for DOMString {
     }
 }
 
+impl std::cmp::PartialEq for DOMString {
+    fn eq(&self, other: &Self) -> bool {
+        *self.0 == *other.0
+    }
+}
+
+impl std::cmp::Eq for TracedDOMString {}
+
 impl std::cmp::Eq for DOMString {}
 
 impl From<std::string::String> for DOMString {
     fn from(string: String) -> Self {
-        DOMString(RefCell::new(DOMStringType::Rust(string)))
+        TracedDOMString(RefCell::new(DOMStringType::Rust(string))).root()
     }
 }
 
@@ -942,8 +1154,9 @@ impl From<DOMString> for Atom {
     }
 }
 
-impl From<DOMString> for String {
-    fn from(val: DOMString) -> Self {
+#[cfg_attr(crown, expect(crown::unrooted_must_root))]
+impl From<TracedDOMString> for String {
+    fn from(val: TracedDOMString) -> Self {
         val.ensure_rust_string();
         let inner = val.0.take();
         match inner {
@@ -956,8 +1169,15 @@ impl From<DOMString> for String {
     }
 }
 
-impl From<DOMString> for Vec<u8> {
+impl From<DOMString> for String {
     fn from(value: DOMString) -> Self {
+        String::from(value.traced())
+    }
+}
+
+#[cfg_attr(crown, expect(crown::unrooted_must_root))]
+impl From<TracedDOMString> for Vec<u8> {
+    fn from(value: TracedDOMString) -> Self {
         value.ensure_rust_string();
         let inner = value.0.take();
         match inner {
@@ -970,15 +1190,27 @@ impl From<DOMString> for Vec<u8> {
     }
 }
 
+impl From<DOMString> for Vec<u8> {
+    fn from(value: DOMString) -> Self {
+        Vec::<u8>::from(value.traced())
+    }
+}
+
 impl From<Cow<'_, str>> for DOMString {
     fn from(value: Cow<'_, str>) -> Self {
-        DOMString(RefCell::new(DOMStringType::Rust(value.into_owned())))
+        TracedDOMString(RefCell::new(DOMStringType::Rust(value.into_owned()))).root()
+    }
+}
+
+impl Zeroize for TracedDOMString {
+    fn zeroize(&mut self) {
+        self.0.get_mut().zeroize();
     }
 }
 
 impl Zeroize for DOMString {
     fn zeroize(&mut self) {
-        self.0.get_mut().zeroize();
+        self.0.zeroize()
     }
 }
 
@@ -1002,9 +1234,18 @@ macro_rules! match_domstring_ascii_inner {
     }
 }
 
+/// <https://html.spec.whatwg.org/multipage/#valid-floating-point-number>
+/// TODO(#39315): Use the validation rule from Stylo
+pub fn is_valid_floating_point_number_string(s: &str) -> bool {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^-?(?:\d+\.\d+|\d+|\.\d+)(?:(e|E)(\+|\-)?\d+)?$").unwrap());
+
+    RE.is_match(s)
+}
+
 /// Use this to match &str against lazydomstring efficiently.
 /// You are only allowed to match ascii strings otherwise this macro will
-/// lead to wrong results.
+/// lead to wrong results. Additionally, match_domstring_ascii cannot be nested.
 /// ```ignore
 /// let s = DOMString::from("test");
 /// let value = match_domstring!(s,
@@ -1023,8 +1264,11 @@ macro_rules! match_domstring_ascii {
     ($input:expr, $($tail:tt)*) => {
         {
             use $crate::domstring::EncodedBytes;
+            use js::context::NoGC;
 
-            let encoded_bytes = $input.encoded_bytes();
+            // This is safe as we compare to raw strings, meaning no GC can happen while this comparison is alive.
+            let no_gc = unsafe { NoGC::new() };
+            let encoded_bytes = $input.encoded_bytes(&no_gc);
             match encoded_bytes {
                 EncodedBytes::Latin1(_) => {
                     $crate::match_domstring_ascii_inner!(EncodedBytes::Latin1, encoded_bytes, $($tail)*)
@@ -1047,7 +1291,7 @@ mod tests {
     const LATIN1_POWER2: u8 = 0xB2;
 
     fn from_latin1(l1vec: Vec<u8>) -> DOMString {
-        DOMString(RefCell::new(DOMStringType::Latin1Vec(l1vec)))
+        TracedDOMString(RefCell::new(DOMStringType::Latin1Vec(l1vec))).root()
     }
 
     #[test]
@@ -1056,8 +1300,8 @@ mod tests {
         let s_copy = s.clone();
         assert_eq!(s.to_ascii_lowercase(), "abbcc❤&%$#");
         assert_eq!(s, s_copy);
-        assert_eq!(s.len(), 12);
-        assert_eq!(s_copy.len(), 12);
+        assert_eq!(s.len_utf8().0, 12);
+        assert_eq!(s_copy.len_utf8().0, 12);
         assert!(s.starts_with('A'));
         let s2 = DOMString::from("");
         assert!(s2.is_empty());
@@ -1079,7 +1323,7 @@ mod tests {
             let s = from_latin1(vec![
                 b'A', b'b', b'B', b'c', b'C', b'&', b'%', b'$', b'#', 0xB2,
             ]);
-            assert_eq!(s.len(), 11);
+            assert_eq!(s.len_utf8().0, 11);
             assert!(s.starts_with('A'));
         }
         {
@@ -1122,12 +1366,12 @@ mod tests {
         let s5_utf8 = String::from("àáâãäåæçèéêëìíîï");
         let s6_utf8 = String::from("ðñòóôõö÷øùúûüýþÿ");
 
-        assert_eq!(s1.len(), s1_utf8.len());
-        assert_eq!(s2.len(), s2_utf8.len());
-        assert_eq!(s3.len(), s3_utf8.len());
-        assert_eq!(s4.len(), s4_utf8.len());
-        assert_eq!(s5.len(), s5_utf8.len());
-        assert_eq!(s6.len(), s6_utf8.len());
+        assert_eq!(usize::from(s1.len_utf8()), s1_utf8.len());
+        assert_eq!(usize::from(s2.len_utf8()), s2_utf8.len());
+        assert_eq!(usize::from(s3.len_utf8()), s3_utf8.len());
+        assert_eq!(usize::from(s4.len_utf8()), s4_utf8.len());
+        assert_eq!(usize::from(s5.len_utf8()), s5_utf8.len());
+        assert_eq!(usize::from(s6.len_utf8()), s6_utf8.len());
 
         s1.ensure_rust_string();
         s2.ensure_rust_string();
@@ -1135,12 +1379,12 @@ mod tests {
         s4.ensure_rust_string();
         s5.ensure_rust_string();
         s6.ensure_rust_string();
-        assert_eq!(s1.len(), s1_utf8.len());
-        assert_eq!(s2.len(), s2_utf8.len());
-        assert_eq!(s3.len(), s3_utf8.len());
-        assert_eq!(s4.len(), s4_utf8.len());
-        assert_eq!(s5.len(), s5_utf8.len());
-        assert_eq!(s6.len(), s6_utf8.len());
+        assert_eq!(usize::from(s1.len_utf8()), s1_utf8.len());
+        assert_eq!(usize::from(s2.len_utf8()), s2_utf8.len());
+        assert_eq!(usize::from(s3.len_utf8()), s3_utf8.len());
+        assert_eq!(usize::from(s4.len_utf8()), s4_utf8.len());
+        assert_eq!(usize::from(s5.len_utf8()), s5_utf8.len());
+        assert_eq!(usize::from(s6.len_utf8()), s6_utf8.len());
     }
 
     #[test]
@@ -1165,11 +1409,12 @@ mod tests {
     fn encoded_latin1_bytes() {
         let original_latin1_bytes = vec![b'a', b'b', b'c', b'%', b'$', 0xB2];
         let dom_string = from_latin1(original_latin1_bytes.clone());
-        let string_latin1_bytes = match dom_string.encoded_bytes() {
+        let no_gc = unsafe { NoGC::new() };
+        let string_latin1_bytes = match dom_string.encoded_bytes(&no_gc) {
             EncodedBytes::Latin1(bytes) => bytes,
             _ => unreachable!("Expected Latin1 encoded bytes"),
         };
-        assert_eq!(*original_latin1_bytes, *string_latin1_bytes);
+        assert_eq!(*original_latin1_bytes, *string_latin1_bytes.1);
     }
 
     #[test]
@@ -1498,39 +1743,54 @@ mod tests {
 
         let v1 = vec![b'a', b'a', b'a', LATIN1_PILLCROW, b'a', b'a'];
         let s = from_latin1(v1.clone());
-        assert_eq!(
-            *s.as_bytes(),
-            [
-                ASCII_SMALL_A,
-                ASCII_SMALL_A,
-                ASCII_SMALL_A,
-                UTF8_PILLCROW[0],
-                UTF8_PILLCROW[1],
-                ASCII_SMALL_A,
-                ASCII_SMALL_A
-            ]
-        );
-
+        {
+            let no_gc = unsafe { NoGC::new() };
+            assert_eq!(
+                *s.as_bytes(&no_gc),
+                [
+                    ASCII_SMALL_A,
+                    ASCII_SMALL_A,
+                    ASCII_SMALL_A,
+                    UTF8_PILLCROW[0],
+                    UTF8_PILLCROW[1],
+                    ASCII_SMALL_A,
+                    ASCII_SMALL_A
+                ]
+            );
+        }
         let v2 = vec![b'a', b'a', b'a', b'a', b'z'];
         let s = from_latin1(v2.clone());
-        assert_eq!(
-            *s.as_bytes(),
-            [
-                ASCII_SMALL_A,
-                ASCII_SMALL_A,
-                ASCII_SMALL_A,
-                ASCII_SMALL_A,
-                ASCII_SMALL_Z
-            ]
-        );
+        {
+            let no_gc = unsafe { NoGC::new() };
+            assert_eq!(
+                *s.as_bytes(&no_gc),
+                [
+                    ASCII_SMALL_A,
+                    ASCII_SMALL_A,
+                    ASCII_SMALL_A,
+                    ASCII_SMALL_A,
+                    ASCII_SMALL_Z
+                ]
+            );
+        }
 
         let str = "abc%$²".to_owned();
         let s = DOMString::from(str.clone());
-        assert_eq!(&*s.as_bytes(), str.as_bytes());
+        {
+            let no_gc = unsafe { NoGC::new() };
+            assert_eq!(&*s.as_bytes(&no_gc), str.as_bytes());
+        }
         let str = "AbBcC❤&%$#".to_owned();
         let s = DOMString::from(str.clone());
-        assert_eq!(&*s.as_bytes(), str.as_bytes());
+        {
+            let no_gc = unsafe { NoGC::new() };
+            assert_eq!(&*s.as_bytes(&no_gc), str.as_bytes());
+        }
         let s = DOMString::from_static("AbBcC❤&%$#");
-        assert_eq!(&*s.as_bytes(), str.as_bytes());
+
+        {
+            let no_gc = unsafe { NoGC::new() };
+            assert_eq!(&*s.as_bytes(&no_gc), str.as_bytes());
+        }
     }
 }

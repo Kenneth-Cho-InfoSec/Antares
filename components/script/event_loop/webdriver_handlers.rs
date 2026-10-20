@@ -20,8 +20,7 @@ use js::jsapi::{HandleValueArray, JSITER_OWNONLY, JSType, PropertyDescriptor};
 use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
-    GetPropertyKeys, IsArgumentsObject, JS_CallFunctionName, JS_GetOwnPropertyDescriptorById,
-    JS_GetProperty, JS_GetPropertyById, JS_HasOwnProperty, JS_IsExceptionPending, JS_TypeOfValue,
+    IsArgumentsObject, JS_CallFunctionName, JS_HasOwnProperty, JS_TypeOfValue,
 };
 use js::rust::{HandleObject, HandleValue, IdVector};
 use net_traits::CookieSource::{HTTP, NonHTTP};
@@ -31,11 +30,17 @@ use script_bindings::codegen::GenericBindings::PermissionStatusBinding::{
 };
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::conversions::is_array_like;
+use script_bindings::js::{
+    GetPropertyKeys, JS_GetOwnPropertyDescriptorById, JS_GetProperty, JS_GetPropertyById,
+    JS_IsExceptionPending,
+};
 use script_bindings::num::Finite;
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
+use servo_base::Epoch;
 use servo_base::generic_channel::{self, GenericOneshotSender, GenericSend, GenericSender};
 use servo_base::id::{BrowsingContextId, PipelineId};
+use servo_config::pref;
 use webdriver::command::SetPermissionState;
 use webdriver::error::ErrorStatus;
 
@@ -305,7 +310,7 @@ fn matching_links<'a>(
             let content = node
                 .downcast::<HTMLElement>()
                 .map(|element| element.InnerText())
-                .map_or("".to_owned(), String::from)
+                .map_or(String::new(), String::from)
                 .trim()
                 .to_owned();
             if partial {
@@ -342,14 +347,14 @@ fn object_has_to_json_property(
     let mut found = false;
     if unsafe { JS_HasOwnProperty(cx, object, name.as_ptr(), &mut found) } && found {
         rooted!(&in(cx) let mut value = UndefinedValue());
-        let result = unsafe { JS_GetProperty(cx, object, name.as_ptr(), value.handle_mut()) };
+        let result = JS_GetProperty(cx, object, &name, value.handle_mut());
         if !result {
             throw_dom_exception(cx, global_scope, Error::JSFailed);
             false
         } else {
             result && unsafe { JS_TypeOfValue(cx, value.handle()) } == JSType::JSTYPE_FUNCTION
         }
-    } else if unsafe { JS_IsExceptionPending(cx) } {
+    } else if JS_IsExceptionPending(cx) {
         throw_dom_exception(cx, global_scope, Error::JSFailed);
         false
     } else {
@@ -490,7 +495,6 @@ fn jsval_to_webdriver_inner(
     }
 }
 
-#[expect(unsafe_code)]
 /// <https://w3c.github.io/webdriver/#dfn-clone-an-object>
 fn clone_an_object(
     cx: &mut CurrentRealm,
@@ -558,8 +562,7 @@ fn clone_an_object(
         let mut result = HashMap::new();
 
         let mut ids = IdVector::new(cx);
-        let succeeded =
-            unsafe { GetPropertyKeys(cx, object_handle, JSITER_OWNONLY, ids.handle_mut()) };
+        let succeeded = GetPropertyKeys(cx, object_handle, JSITER_OWNONLY, ids.handle_mut());
         if !succeeded {
             return Err(JavaScriptEvaluationError::SerializationError(
                 JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
@@ -570,15 +573,13 @@ fn clone_an_object(
             rooted!(&in(cx) let mut desc = PropertyDescriptor::default());
 
             let mut is_none = false;
-            let succeeded = unsafe {
-                JS_GetOwnPropertyDescriptorById(
-                    cx,
-                    object_handle,
-                    id.handle(),
-                    desc.handle_mut(),
-                    &mut is_none,
-                )
-            };
+            let succeeded = JS_GetOwnPropertyDescriptorById(
+                cx,
+                object_handle,
+                id.handle(),
+                desc.handle_mut(),
+                &mut is_none,
+            );
             if !succeeded {
                 return Err(JavaScriptEvaluationError::SerializationError(
                     JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
@@ -586,9 +587,8 @@ fn clone_an_object(
             }
 
             rooted!(&in(cx) let mut property = UndefinedValue());
-            let succeeded = unsafe {
-                JS_GetPropertyById(cx, object_handle, id.handle(), property.handle_mut())
-            };
+            let succeeded =
+                JS_GetPropertyById(cx, object_handle, id.handle(), property.handle_mut());
             if !succeeded {
                 return Err(JavaScriptEvaluationError::SerializationError(
                     JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
@@ -647,10 +647,10 @@ impl Callback for WebDriverExecuteScriptRejectionHandler {
 }
 
 pub(crate) fn handle_execute_script(
+    cx: &mut JSContext,
     window: Option<DomRoot<Window>>,
     eval: String,
     reply_sender: GenericSender<WebDriverJSResult>,
-    cx: &mut JSContext,
 ) {
     let Some(window) = window else {
         reply_sender
@@ -1364,10 +1364,10 @@ pub(crate) fn handle_will_send_keys(
     // using current text length for both the start and end parameters.
     if !element_has_focus {
         if let Some(input_element) = input_element {
-            let length = input_element.Value().len() as u32;
+            let length = input_element.Value().len_utf16().0;
             let _ = input_element.SetSelectionRange(length, length, None);
         } else if let Some(textarea_element) = element.downcast::<HTMLTextAreaElement>() {
-            let length = textarea_element.Value().len() as u32;
+            let length = textarea_element.Value().len_utf16().0;
             let _ = textarea_element.SetSelectionRange(length, length, None);
         }
     }
@@ -1396,13 +1396,19 @@ pub(crate) fn handle_get_computed_role(
     node_id: String,
     reply: GenericSender<Result<Option<String>, ErrorStatus>>,
 ) {
+    if !pref!(accessibility_enabled) {
+        return reply.send(Err(ErrorStatus::UnsupportedOperation)).unwrap();
+    }
     reply
         .send(
-            get_known_element(documents, pipeline, node_id)
-                // FIXME: Actually compute the role instead of using WAI-ARIA role.
-                // <https://github.com/servo/servo/issues/43734>
-                // The logic can then be shared with devtools accessibility inspector.
-                .map(|element| element.GetRole().map(String::from)),
+            get_known_element(documents, pipeline, node_id).map(|element| {
+                let document = element.upcast::<Node>().owner_doc();
+                let window = document.window();
+                window
+                    .layout()
+                    .set_accessibility_active(true, Epoch::default());
+                element.get_computed_role().map(String::from)
+            }),
         )
         .unwrap();
 }
@@ -1461,7 +1467,7 @@ pub(crate) fn handle_get_cookies(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/webdriver-spec.html#get-cookie
+/// <https://w3c.github.io/webdriver/webdriver-spec.html#get-cookie>
 pub(crate) fn handle_get_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1492,7 +1498,7 @@ pub(crate) fn handle_get_cookie(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/webdriver-spec.html#add-cookie
+/// <https://w3c.github.io/webdriver/webdriver-spec.html#add-cookie>
 pub(crate) fn handle_add_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1543,7 +1549,7 @@ pub(crate) fn handle_add_cookie(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/#delete-all-cookies
+/// <https://w3c.github.io/webdriver/#delete-all-cookies>
 pub(crate) fn handle_delete_cookies(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1565,7 +1571,7 @@ pub(crate) fn handle_delete_cookies(
     reply.send(Ok(())).unwrap();
 }
 
-// https://w3c.github.io/webdriver/#delete-cookie
+/// <https://w3c.github.io/webdriver/#delete-cookie>
 pub(crate) fn handle_delete_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1696,7 +1702,7 @@ pub(crate) fn handle_get_text(
                         element
                             .upcast::<Node>()
                             .GetTextContent()
-                            .map_or("".to_owned(), String::from)
+                            .map_or(String::new(), String::from)
                     })
             }),
         )
@@ -1746,12 +1752,12 @@ pub(crate) fn handle_get_attribute(
 }
 
 pub(crate) fn handle_get_property(
+    cx: &mut JSContext,
     documents: &DocumentCollection,
     pipeline: PipelineId,
     node_id: String,
     name: String,
     reply: GenericSender<Result<JSValue, ErrorStatus>>,
-    cx: &mut JSContext,
 ) {
     reply
         .send(
@@ -1861,7 +1867,7 @@ fn clear_a_resettable_element(cx: &mut JSContext, element: &Element) -> Result<(
 
     // Step 1 - 2. if element is a candidate for constraint
     // validation and value is empty, abort steps.
-    if html_element.is_candidate_for_constraint_validation() {
+    if html_element.is_candidate_for_constraint_validation(cx.no_gc()) {
         if let Some(input_element) = element.downcast::<HTMLInputElement>() {
             if input_element.Value().is_empty() {
                 return Ok(());
@@ -1976,7 +1982,7 @@ fn get_container(element: &Element) -> Option<DomRoot<Element>> {
     Some(DomRoot::from_ref(element))
 }
 
-// https://w3c.github.io/webdriver/#element-click
+/// <https://w3c.github.io/webdriver/#element-click>
 pub(crate) fn handle_element_click(
     cx: &mut JSContext,
     documents: &DocumentCollection,

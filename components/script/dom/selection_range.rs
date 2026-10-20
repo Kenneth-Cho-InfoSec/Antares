@@ -2,10 +2,87 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cmp::Ordering;
+
+use js::context::NoGC;
+use script_bindings::root::DomRoot;
+use servo_base::text::Utf32CodeUnitsOrNodeOffset;
+
 use crate::dom::abstractrange::BoundaryPoint;
 use crate::dom::bindings::root::Dom;
+use crate::dom::comparator::compare_dom_positions;
 use crate::dom::node::Node;
 use crate::dom::range::Range;
+use crate::dom::selection::compare_shadow_including_dom_positions;
+use crate::dom::traversal::FlatTreeForSelectionNoGcTraversal;
+
+/// A rooted selection boundary. This is similar to `SelectionBoundary`, but is rooted.
+/// This means it is appropriate to use in variables stored on the stack.
+#[derive(Clone, PartialEq)]
+pub(crate) struct RootedSelectionBoundary {
+    pub container: DomRoot<Node>,
+    pub offset: u32,
+}
+
+impl RootedSelectionBoundary {
+    pub(crate) fn start_of(node: &Node) -> Self {
+        Self {
+            container: DomRoot::from_ref(node),
+            offset: 0,
+        }
+    }
+
+    pub(crate) fn end_of(node: &Node) -> Self {
+        Self {
+            container: DomRoot::from_ref(node),
+            offset: node.len(),
+        }
+    }
+
+    pub(crate) fn new_with_utf16_offset(container: DomRoot<Node>, offset: u32) -> Self {
+        Self { container, offset }
+    }
+
+    pub(crate) fn new_with_utf32_offset(
+        container: DomRoot<Node>,
+        utf32_offset: Utf32CodeUnitsOrNodeOffset,
+    ) -> Self {
+        let offset = container.to_sibling_or_utf16_offset(utf32_offset);
+        Self { container, offset }
+    }
+
+    pub(crate) fn utf32_offset(&self) -> Utf32CodeUnitsOrNodeOffset {
+        self.container.to_sibling_or_utf32_offset(self.offset)
+    }
+
+    pub(crate) fn compare_dom_positions(&self, no_gc: &NoGC, other: &Self) -> Option<Ordering> {
+        compare_dom_positions::<FlatTreeForSelectionNoGcTraversal>(
+            no_gc,
+            &self.container,
+            self.offset,
+            &other.container,
+            other.offset,
+        )
+        .0
+    }
+
+    fn traced(&self) -> SelectionBoundary {
+        SelectionBoundary {
+            container: self.container.as_traced(),
+            offset: self.offset,
+        }
+    }
+
+    pub(crate) fn cmp(&self, no_gc: &NoGC, other: &Self) -> Ordering {
+        compare_shadow_including_dom_positions(
+            no_gc,
+            &self.container,
+            self.offset,
+            &other.container,
+            other.offset,
+        )
+    }
+}
 
 /// A selection boundary. This is similar to `BoundaryPoint`, but supports
 /// positions in the composed tree.
@@ -23,12 +100,18 @@ impl SelectionBoundary {
             offset,
         }
     }
+
+    pub(crate) fn rooted(&self) -> RootedSelectionBoundary {
+        RootedSelectionBoundary {
+            container: self.container.as_rooted(),
+            offset: self.offset,
+        }
+    }
 }
 
 impl PartialEq<BoundaryPoint> for SelectionBoundary {
     fn eq(&self, boundary_point: &BoundaryPoint) -> bool {
-        *self.container == *boundary_point.node().get() &&
-            self.offset as usize == boundary_point.offset().0
+        *self.container == *boundary_point.node().get() && self.offset == boundary_point.offset().0
     }
 }
 
@@ -43,6 +126,16 @@ impl SelectionRange {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn new(start: SelectionBoundary, end: SelectionBoundary) -> Self {
         Self { start, end }
+    }
+
+    pub(crate) fn new_from_rooted(
+        start: RootedSelectionBoundary,
+        end: RootedSelectionBoundary,
+    ) -> Self {
+        Self {
+            start: start.traced(),
+            end: end.traced(),
+        }
     }
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]

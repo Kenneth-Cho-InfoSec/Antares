@@ -8,11 +8,11 @@ enum AnimationPlayState { "idle", "running", "paused", "finished" };
 
 [Exposed=Window]
 interface Animation : EventTarget {
-  constructor(optional AnimationEffect? effect = null/*,
-              optional AnimationTimeline? timeline */);
+  constructor(optional AnimationEffect? effect = null,
+              optional AnimationTimeline? timeline);
   //          attribute DOMString                id;
               attribute AnimationEffect?         effect;
-  //          attribute AnimationTimeline?       timeline;
+              attribute AnimationTimeline?       timeline;
   //          attribute double?                  startTime;
   //          attribute double?                  currentTime;
   //          attribute double                   playbackRate;

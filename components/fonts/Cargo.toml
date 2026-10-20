@@ -44,7 +44,7 @@ malloc_size_of_derive = { workspace = true }
 memmap2 = { workspace = true }
 net_traits = { workspace = true }
 num-traits = { workspace = true }
-ohos-deviceinfo-sys = { workspace = true }
+ohos-deviceinfo = { workspace = true }
 paint_api = { workspace = true }
 parking_lot = { workspace = true }
 postcard = { workspace = true }
@@ -96,5 +96,5 @@ dwrote = { workspace = true }
 harfbuzz-sys = { workspace = true, features = ["directwrite"] }
 winapi = { workspace = true }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ohos_mock)'] }
+[lints]
+workspace = true

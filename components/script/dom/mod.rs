@@ -233,15 +233,15 @@ pub(crate) use self::clipboard::*;
 pub(crate) mod console;
 pub(crate) mod cookiestore;
 pub(crate) use self::cookiestore::*;
-pub(crate) mod cookiestoremanager;
-pub(crate) use self::cookiestoremanager::*;
 pub(crate) mod credentialmanagement;
 pub(crate) use self::credentialmanagement::*;
 pub(crate) mod css;
 pub(crate) use self::css::*;
 pub(crate) mod datatransfer;
 pub(crate) use self::datatransfer::*;
+#[cfg(feature = "devtools")]
 pub(crate) mod debugger;
+#[cfg(feature = "devtools")]
 pub(crate) use self::debugger::*;
 pub(crate) mod document;
 pub(crate) use self::document::*;

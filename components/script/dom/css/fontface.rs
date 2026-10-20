@@ -238,7 +238,7 @@ impl FontFace {
         global: &GlobalScope,
         proto: Option<HandleObject>,
     ) -> DomRoot<Self> {
-        let font_status_promise = Promise::new_rooted(cx, global);
+        let font_status_promise = Promise::new(cx, global);
         // If any of them fail to parse correctly, reject font face’s [[FontStatusPromise]] with a
         // DOMException named "SyntaxError"
         font_status_promise
@@ -366,7 +366,7 @@ impl FontFace {
         // > descriptors in the @font-face rule.
         let descriptors = serialize_parsed_descriptors(&font_face_rule.descriptors);
 
-        let font_status_promise = Promise::new_rooted(cx, global);
+        let font_status_promise = Promise::new(cx, global);
         Some(reflect_dom_object_with_proto(
             cx,
             Box::new(Self::new_inherited_for_web_font(
@@ -545,16 +545,6 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
         self.validate_and_set_descriptors(new_descriptors)
     }
 
-    /// <https://drafts.csswg.org/css-font-loading/#dom-fontface-stretch>
-    fn Stretch(&self) -> DOMString {
-        self.Width()
-    }
-
-    /// <https://drafts.csswg.org/css-font-loading/#dom-fontface-stretch>
-    fn SetStretch(&self, value: DOMString) -> ErrorResult {
-        self.SetWidth(value)
-    }
-
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontface-width>
     fn Width(&self) -> DOMString {
         self.descriptors.borrow().width.clone()
@@ -664,11 +654,11 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
         // Step 2. If font face’s [[Urls]] slot is null, or its status attribute is anything
         // other than "unloaded", return font face’s [[FontStatusPromise]] and abort these
         // steps.
-        let Some(sources) = self.urls.borrow_mut().take() else {
-            return self.font_status_promise.root();
+        let Some(sources) = self.urls.safe_borrow_mut(cx.no_gc()).take() else {
+            return self.font_status_promise.root(cx);
         };
         if self.status.get() != FontFaceLoadStatus::Unloaded {
-            return self.font_status_promise.root();
+            return self.font_status_promise.root(cx);
         }
 
         let global = self.global();
@@ -750,12 +740,12 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
             font_face_set.handle_font_face_status_changed(cx, self);
         }
 
-        self.font_status_promise.root()
+        self.font_status_promise.root(cx)
     }
 
     /// <https://drafts.csswg.org/css-font-loading/#dom-fontface-loaded>
-    fn Loaded(&self) -> RootedPromise {
-        self.font_status_promise.root()
+    fn Loaded(&self, cx: &JSContext) -> RootedPromise {
+        self.font_status_promise.root(cx)
     }
 
     /// <https://drafts.csswg.org/css-font-loading/#font-face-constructor>
@@ -792,7 +782,7 @@ impl FontFaceMethods<crate::DomTypeHolder> for FontFace {
         };
 
         // Set its internal [[FontStatusPromise]] slot to a fresh pending Promise object.
-        let font_status_promise = Promise::new_rooted(cx, global);
+        let font_status_promise = Promise::new(cx, global);
 
         let sources = parsed_font_face_rule.descriptors.src.clone();
         // Let font face be a fresh FontFace object.

@@ -4,6 +4,8 @@
 
 //! The set of animations for a document.
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +17,7 @@ use layout_api::AnimatingImages;
 use libc::c_void;
 use paint_api::ImageUpdate;
 use parking_lot::RwLock;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::refcounted::Trusted;
@@ -30,6 +32,7 @@ use style::dom::OpaqueNode;
 use style::selector_parser::PseudoElement;
 use timers::TimerId;
 
+use crate::dom::NodeFlags;
 use crate::dom::animationevent::AnimationEvent;
 use crate::dom::bindings::codegen::Bindings::AnimationEventBinding::AnimationEventInit;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventInit;
@@ -146,15 +149,17 @@ impl AnimationManager {
             self.start_pending_animations(key, set, now, pipeline_id);
 
             // When necessary, iterate our running animations to the next iteration.
-            for animation in set.animations.iter_mut() {
-                if animation.iterate_if_necessary(now) {
-                    self.add_animation_event(
-                        key,
-                        animation,
-                        TransitionOrAnimationEventType::AnimationIteration,
-                        now,
-                        pipeline_id,
-                    );
+            if now > self.timeline_value_at_last_dirty.get() {
+                for animation in set.animations.iter_mut() {
+                    if animation.iterate_if_necessary(now) {
+                        self.add_animation_event(
+                            key,
+                            animation,
+                            TransitionOrAnimationEventType::AnimationIteration,
+                            now,
+                            pipeline_id,
+                        );
+                    }
                 }
             }
 
@@ -166,8 +171,11 @@ impl AnimationManager {
 
     /// Cancel animations for the given node, if any exist.
     pub(crate) fn cancel_animations_for_node(&self, node: &Node) {
-        let opaque_node = node.to_opaque();
+        if !node.get_flag(NodeFlags::HAS_EVER_ANIMATED) {
+            return;
+        }
 
+        let opaque_node = node.to_opaque();
         let animation_keys = [
             AnimationSetKey::new_for_non_pseudo(opaque_node),
             AnimationSetKey::new_for_pseudo(opaque_node, PseudoElement::Before),
@@ -283,7 +291,7 @@ impl AnimationManager {
     fn root_nodes_with_newly_animating_images(&self) {
         let mut rooted_nodes = self.rooted_image_nodes.borrow_mut();
         for opaque_node in self.animating_images.read().node_to_state_map.keys() {
-            root_node(&mut rooted_nodes, *opaque_node);
+            root_node_and_mark_as_having_animated(&mut rooted_nodes, *opaque_node);
         }
     }
 
@@ -489,7 +497,7 @@ impl AnimationManager {
     /// immediately after a restyle, to ensure that these addresses are still valid.
     fn root_newly_animating_dom_nodes(
         &self,
-        sets: &FxHashMap<AnimationSetKey, ElementAnimationSet>,
+        sets: &style::FxHashMap<AnimationSetKey, ElementAnimationSet>,
     ) {
         let mut rooted_nodes = self.rooted_animation_nodes.borrow_mut();
         for (key, set) in sets.iter() {
@@ -501,15 +509,15 @@ impl AnimationManager {
             if set.animations.iter().any(|animation| animation.is_new) ||
                 set.transitions.iter().any(|transition| transition.is_new)
             {
-                root_node(&mut rooted_nodes, opaque_node);
+                root_node_and_mark_as_having_animated(&mut rooted_nodes, opaque_node);
             }
         }
     }
 
     // Unroot any nodes that we have rooted but are no longer tracking animations for.
-    fn unroot_unused_nodes(&self, sets: &FxHashMap<AnimationSetKey, ElementAnimationSet>) {
+    fn unroot_unused_nodes(&self, sets: &style::FxHashMap<AnimationSetKey, ElementAnimationSet>) {
         let pending_events = self.pending_events.borrow();
-        let nodes: FxHashSet<OpaqueNode> = sets.keys().map(|key| key.node).collect();
+        let nodes: style::FxHashSet<OpaqueNode> = sets.keys().map(|key| key.node).collect();
         self.rooted_animation_nodes.borrow_mut().retain(|node, _| {
             nodes.contains(&node.0) || pending_events.iter().any(|event| event.node == node.0)
         });
@@ -766,7 +774,7 @@ pub(crate) struct TransitionOrAnimationEvent {
 
 /// Inserts [opaque_node] into [rooted_nodes], if it isn't already present. This should be
 /// called immediately after a restyle, to ensure that these addresses are still valid.
-fn root_node(
+fn root_node_and_mark_as_having_animated(
     rooted_nodes: &mut FxHashMap<NoTrace<OpaqueNode>, Dom<Node>>,
     opaque_node: OpaqueNode,
 ) {
@@ -775,6 +783,8 @@ fn root_node(
         // SAFETY: This should be safe as this method is run directly after layout,
         // which should not remove any nodes.
         let address = UntrustedNodeAddress(opaque_node.0 as *const c_void);
-        unsafe { Dom::from_ref(&*from_untrusted_node_address(address)) }
+        let node = unsafe { DomRoot::from_ref(&*from_untrusted_node_address(address)) };
+        node.set_flag(NodeFlags::HAS_EVER_ANIMATED, true);
+        node.as_traced()
     });
 }

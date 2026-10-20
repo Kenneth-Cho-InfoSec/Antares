@@ -3,8 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use js::gc::HandleValue;
-use script_bindings::reflector::{DomObject, reflect_dom_object_with_cx};
+use script_bindings::reflector::{DomObject, reflect_dom_object};
 use servo_base::generic_channel::{GenericCallback, GenericSender};
+use servo_base::text::Utf8CodeUnits;
 use servo_bluetooth_traits::{BluetoothError, BluetoothRequest, GATTType};
 use servo_bluetooth_traits::{BluetoothResponse, BluetoothResponseResult};
 use servo_bluetooth_traits::blocklist::{Blocklist, uuid_is_blocklisted};
@@ -12,6 +13,7 @@ use servo_bluetooth_traits::scanfilter::{BluetoothScanfilter, BluetoothScanfilte
 use servo_bluetooth_traits::scanfilter::{RequestDeviceoptions, ServiceUUIDSequence};
 use js::realm::CurrentRealm;
 use script_bindings::cformat;
+use script_bindings::domstring::{DOMString, TracedDOMString};
 use js::context::JSContext;
 use crate::conversions::Convert;
 use script_bindings::cell::{Ref, DomRefCell};
@@ -29,7 +31,6 @@ use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
-use crate::dom::bindings::str::DOMString;
 use crate::dom::bluetoothdevice::BluetoothDevice;
 use crate::dom::bluetoothpermissionresult::BluetoothPermissionResult;
 use crate::dom::bluetoothuuid::{BluetoothServiceUUID, BluetoothUUID, UUID};
@@ -54,7 +55,7 @@ const MANUFACTURER_DATA_ERROR: &CStr =
     c"'manufacturerData', if present, must be non-empty to filter devices.";
 const MASK_LENGTH_ERROR: &CStr = c"`mask`, if present, must have the same length as `dataPrefix`.";
 // 248 is the maximum number of UTF-8 code units in a Bluetooth Device Name.
-const MAX_DEVICE_NAME_LENGTH: usize = 248;
+const MAX_DEVICE_NAME_LENGTH: Utf8CodeUnits = Utf8CodeUnits(248);
 const NAME_PREFIX_ERROR: &CStr = c"'namePrefix', if present, must be nonempty.";
 const NAME_TOO_LONG_ERROR: &CStr = c"A device name can't be longer than 248 bytes.";
 const SERVICE_DATA_ERROR: &CStr =
@@ -67,12 +68,23 @@ const BT_DESC_CONVERSION_ERROR: &CStr =
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[expect(non_snake_case)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct AllowedBluetoothDevice {
-    pub(crate) deviceId: DOMString,
+    pub(crate) deviceId: TracedDOMString,
     pub(crate) mayUseGATT: bool,
 }
 
+impl AllowedBluetoothDevice {
+    pub(crate) fn new(device_id: String) -> Self {
+        Self {
+            deviceId: TracedDOMString::from(device_id),
+            mayUseGATT: true,
+        }
+    }
+}
+
 #[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct BluetoothExtraPermissionData {
     allowed_devices: DomRefCell<Vec<AllowedBluetoothDevice>>,
 }
@@ -84,19 +96,21 @@ impl BluetoothExtraPermissionData {
         }
     }
 
-    pub(crate) fn add_new_allowed_device(&self, allowed_device: AllowedBluetoothDevice) {
-        self.allowed_devices.borrow_mut().push(allowed_device);
+    pub(crate) fn add_new_allowed_device(&self, device_id: String) {
+        self.allowed_devices
+            .borrow_mut()
+            .push(AllowedBluetoothDevice::new(device_id));
     }
 
     fn get_allowed_devices(&self) -> Ref<'_, Vec<AllowedBluetoothDevice>> {
         self.allowed_devices.borrow()
     }
 
-    pub(crate) fn allowed_devices_contains_id(&self, id: DOMString) -> bool {
+    pub(crate) fn allowed_devices_contains_id(&self, id: &TracedDOMString) -> bool {
         self.allowed_devices
             .borrow()
             .iter()
-            .any(|d| d.deviceId == id)
+            .any(|d| d.deviceId == *id)
     }
 }
 
@@ -158,7 +172,7 @@ impl Bluetooth {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Bluetooth> {
-        reflect_dom_object_with_cx(Box::new(Bluetooth::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(Bluetooth::new_inherited()), global)
     }
 
     fn get_bluetooth_thread(&self) -> GenericSender<BluetoothRequest> {
@@ -287,7 +301,7 @@ pub(crate) fn response_async<T: AsyncBluetoothListener + DomObject + 'static>(
 }
 
 // https://webbluetoothcg.github.io/web-bluetooth/#getgattchildren
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn get_gatt_children<T, F>(
     cx: &mut CurrentRealm,
     attribute: &T,
@@ -302,7 +316,7 @@ where
     T: AsyncBluetoothListener + DomObject + 'static,
     F: FnOnce(StringOrUnsignedLong) -> Fallible<UUID>,
 {
-    let p = Promise::new_in_realm_rooted(cx);
+    let p = Promise::new_in_realm(cx);
 
     let result_uuid = if let Some(u) = uuid {
         // Step 1.
@@ -395,8 +409,7 @@ fn canonicalize_filter(filter: &BluetoothLEScanFilterInit) -> Fallible<Bluetooth
     let name = match filter.name {
         Some(ref name) => {
             // Step 4.1.
-            // Note: DOMString::len() gives back the size in bytes.
-            if name.len() > MAX_DEVICE_NAME_LENGTH {
+            if name.len_utf8() > MAX_DEVICE_NAME_LENGTH {
                 return Err(Type(NAME_TOO_LONG_ERROR.to_owned()));
             }
 
@@ -413,7 +426,7 @@ fn canonicalize_filter(filter: &BluetoothLEScanFilterInit) -> Fallible<Bluetooth
             if name_prefix.is_empty() {
                 return Err(Type(NAME_PREFIX_ERROR.to_owned()));
             }
-            if name_prefix.len() > MAX_DEVICE_NAME_LENGTH {
+            if name_prefix.len_utf8() > MAX_DEVICE_NAME_LENGTH {
                 return Err(Type(NAME_TOO_LONG_ERROR.to_owned()));
             }
 
@@ -540,7 +553,7 @@ impl Convert<Error> for BluetoothError {
 impl BluetoothMethods<crate::DomTypeHolder> for Bluetooth {
     /// <https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetooth-requestdevice>
     fn RequestDevice(&self, cx: &mut CurrentRealm, option: &RequestDeviceOptions) -> RootedPromise {
-        let p = Promise::new_in_realm_rooted(cx);
+        let p = Promise::new_in_realm(cx);
         // Step 1.
         if (option.filters.is_some() && option.acceptAllDevices) ||
             (option.filters.is_none() && !option.acceptAllDevices)
@@ -558,7 +571,7 @@ impl BluetoothMethods<crate::DomTypeHolder> for Bluetooth {
 
     /// <https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetooth-getavailability>
     fn GetAvailability(&self, cx: &mut CurrentRealm) -> RootedPromise {
-        let p = Promise::new_in_realm_rooted(cx);
+        let p = Promise::new_in_realm(cx);
         // Step 1. We did not override the method
         // Step 2 - 3. in handle_response
         let sender = response_async(&p, self);
@@ -607,10 +620,7 @@ impl AsyncBluetoothListener for Bluetooth {
                 self.global()
                     .as_window()
                     .bluetooth_extra_permission_data()
-                    .add_new_allowed_device(AllowedBluetoothDevice {
-                        deviceId: DOMString::from(device.id),
-                        mayUseGATT: true,
-                    });
+                    .add_new_allowed_device(device.id);
                 // https://webbluetoothcg.github.io/web-bluetooth/#dom-bluetooth-requestdevice
                 // Step 5.
                 promise.resolve_native(cx, &bt_device);
@@ -675,7 +685,7 @@ impl PermissionAlgorithm for Bluetooth {
         for allowed_device in allowed_devices.iter() {
             // Step 6.1.
             if let Some(ref id) = descriptor.deviceId &&
-                &allowed_device.deviceId != id
+                allowed_device.deviceId != **id
             {
                 continue;
             }
@@ -772,9 +782,8 @@ impl PermissionAlgorithm for Bluetooth {
         let bluetooth = status.get_bluetooth(cx);
         let device_map = bluetooth.get_device_map().borrow();
         for (id, device) in device_map.iter() {
-            let id = DOMString::from(id.clone());
             // Step 2.1.
-            if allowed_devices.iter().any(|d| d.deviceId == id) &&
+            if allowed_devices.iter().any(|d| d.deviceId == *id) &&
                 !device.is_represented_device_null()
             {
                 // Note: We don't need to update the allowed_services,

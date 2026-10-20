@@ -5,17 +5,22 @@
 use std::cell::{Cell, LazyCell};
 use std::cmp::Ordering;
 
+use atomic_refcell::{AtomicRef, AtomicRefCell};
 use bitflags::bitflags;
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
-use rustc_hash::FxHashSet;
+use layout_api::QueryMsg;
+use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::dom::UnrootedDom;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
-use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset};
+use servo_base::text::{
+    AssumeUnder4GB, RangeAny, Utf16CodeUnits, Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset,
+};
 
 use crate::dom::abstractrange::bp_position;
+use crate::dom::bindings::cell::AtomicSafeBorrowMut;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::{GetRootNodeOptions, NodeMethods};
 use crate::dom::bindings::codegen::Bindings::RangeBinding::RangeMethods;
 use crate::dom::bindings::codegen::Bindings::SelectionBinding::{
@@ -33,11 +38,21 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::iterators::{PrePostIteration, UnrootedFollowingFlatTreeNodesTraversal};
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::range::Range;
-use crate::dom::selection_range::{SelectionBoundary, SelectionRange};
+use crate::dom::selection_range::{RootedSelectionBoundary, SelectionBoundary, SelectionRange};
 use crate::dom::staticrange::StaticRange;
 use crate::dom::traversal::FlatTreeForSelectionNoGcTraversal;
 use crate::dom::types::ShadowRoot;
 use crate::dom::{CharacterData, FlatTreeParent, NodeDamage, NodeFlags, StartOrEnd};
+
+/// Used value of [`user-select`](https://drafts.csswg.org/css-ui-4/#propdef-user-select):
+/// like the computed value but excludes `auto`.
+#[derive(Copy, Clone, PartialEq)]
+pub(crate) enum UsedUserSelect {
+    Text,
+    None,
+    Contain,
+    All,
+}
 
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf)]
 pub(crate) enum Direction {
@@ -60,7 +75,8 @@ pub(crate) struct Selection {
     ///
     /// * It is `None` if the selection is unrenderable.
     /// * Boundaries are in flat tree order.
-    visible_range: DomRefCell<Option<SelectionRange>>,
+    #[custom_trace]
+    visible_range: AtomicRefCell<Option<SelectionRange>>,
     /// The [`Direction`] of this [`Selection`] which determines which endpoint of
     /// [`Self::range`] is the anchor and which is the focus.
     direction: Cell<Direction>,
@@ -95,6 +111,13 @@ impl Selection {
 
     pub(crate) fn visible_selection_dirty(&self) -> bool {
         self.visible_selection_dirty.get()
+    }
+
+    pub(crate) fn collapsed(&self) -> bool {
+        self.range
+            .borrow()
+            .as_ref()
+            .is_none_or(|range| range.collapsed())
     }
 
     fn clear_cached_live_range(&self) {
@@ -301,8 +324,8 @@ impl Selection {
         })
     }
 
-    fn set_visible_range(&self, flat_tree_selection: Option<FlatTreeSelection>) {
-        *self.visible_range.borrow_mut() = flat_tree_selection.map(|selection| {
+    fn set_visible_range(&self, no_gc: &NoGC, flat_tree_selection: Option<FlatTreeSelection>) {
+        *self.visible_range.safe_borrow_mut(no_gc) = flat_tree_selection.map(|selection| {
             SelectionRange::new(
                 SelectionBoundary::new(&selection.start.container, selection.start.offset),
                 SelectionBoundary::new(&selection.end.container, selection.end.offset),
@@ -325,7 +348,7 @@ impl Selection {
             flat_tree_selection.as_ref(),
             &self.document,
         );
-        self.set_visible_range(flat_tree_selection);
+        self.set_visible_range(no_gc, flat_tree_selection);
     }
 
     /// <https://w3c.github.io/selection-api/#dfn-schedule-a-selectionchange-event>
@@ -465,13 +488,16 @@ impl Selection {
         self.visible_selection_dirty.set(true);
     }
 
-    fn composed_anchor_position(&self) -> Option<(DomRoot<Node>, u32)> {
+    pub(crate) fn composed_anchor_position(&self) -> Option<RootedSelectionBoundary> {
         let range = self.range.borrow();
         let range = range.as_ref()?;
-        Some(match self.direction.get() {
+        let (container, offset) = match self.direction.get() {
             Direction::Forwards => (range.start.container.as_rooted(), range.start.offset),
             _ => (range.end.container.as_rooted(), range.end.offset),
-        })
+        };
+        Some(RootedSelectionBoundary::new_with_utf16_offset(
+            container, offset,
+        ))
     }
 
     /// <https://w3c.github.io/selection-api/#dfn-anchor>
@@ -727,34 +753,43 @@ impl Selection {
     pub(crate) fn collapse_to_dom_position(
         &self,
         cx: &mut JSContext,
-        container: &Node,
-        offset: Utf32CodeUnitsOrNodeOffset,
+        boundary: &RootedSelectionBoundary,
     ) {
-        let _ = self.Collapse(
-            cx,
-            Some(container),
-            container.to_sibling_or_utf16_offset(offset),
-        );
+        let _ = self.Collapse(cx, Some(&boundary.container), boundary.offset);
     }
 
     pub(crate) fn collapse_or_extend_to_dom_position(
         &self,
         cx: &mut JSContext,
-        container: &Node,
-        offset: Utf32CodeUnitsOrNodeOffset,
+        boundary: &RootedSelectionBoundary,
     ) {
-        let offset = container.to_sibling_or_utf16_offset(offset);
-        let is_anchor =
-            self.composed_anchor_position()
-                .is_some_and(|(anchor_node, anchor_offset)| {
-                    &*anchor_node == container && anchor_offset == offset
-                });
+        let is_anchor = self
+            .composed_anchor_position()
+            .is_some_and(|anchor| anchor == *boundary);
 
         if self.range.borrow().is_none() || is_anchor {
-            let _ = self.Collapse(cx, Some(container), offset);
+            let _ = self.Collapse(cx, Some(&boundary.container), boundary.offset);
         } else {
-            let _ = self.Extend(cx, container, offset);
+            let _ = self.Extend(cx, &boundary.container, boundary.offset);
         }
+    }
+
+    /// Call [`Selection::SetBaseAndExtent`] with the given `anchor` and `focus`
+    /// arguments. Like `SetBaseAndExtent` the selection direction is determined by the
+    /// order of `anchor` and `focus` in the DOM.
+    pub(crate) fn set_anchor_and_focus(
+        &self,
+        cx: &mut JSContext,
+        anchor: &RootedSelectionBoundary,
+        focus: &RootedSelectionBoundary,
+    ) {
+        let _ = self.SetBaseAndExtent(
+            cx,
+            &anchor.container,
+            anchor.offset,
+            &focus.container,
+            focus.offset,
+        );
     }
 }
 
@@ -1110,7 +1145,7 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         // newFocus be the boundary point (node, offset).
         //
         // Note: oldFocus is unused, so we do not set it here.
-        let (old_anchor_node, old_anchor_offset) = self
+        let old_anchor = self
             .composed_anchor_position()
             .expect("has range, therefore has anchor node");
 
@@ -1135,8 +1170,8 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
             let is_old_anchor_before_or_equal = matches!(
                 compare_shadow_including_dom_positions(
                     cx.no_gc(),
-                    &old_anchor_node,
-                    old_anchor_offset,
+                    &old_anchor.container,
+                    old_anchor.offset,
                     node,
                     offset
                 ),
@@ -1148,7 +1183,7 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
                 self.set_range(
                     cx.no_gc(),
                     Some(SelectionRange::new(
-                        SelectionBoundary::new(&old_anchor_node, old_anchor_offset),
+                        SelectionBoundary::new(&old_anchor.container, old_anchor.offset),
                         SelectionBoundary::new(node, offset),
                     )),
                 );
@@ -1160,7 +1195,7 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
                     cx.no_gc(),
                     Some(SelectionRange::new(
                         SelectionBoundary::new(node, offset),
-                        SelectionBoundary::new(&old_anchor_node, old_anchor_offset),
+                        SelectionBoundary::new(&old_anchor.container, old_anchor.offset),
                     )),
                 );
                 direction = Direction::Backwards;
@@ -1377,20 +1412,40 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         // >
         // > If the selection is within a textarea or input element, it must return the
         // > selected substring in its value.
-        //
-        // TODO: This implementation should be examined in depth. Does rendered text take
-        // into account `display: none`. The case for textarea and input elements is
-        // completely unhandled here.
-        self.GetRangeAt(cx, 0)
-            .map(|range| range.Stringifier(cx.no_gc()))
-            .unwrap_or_default()
+        let Some(visible_selection) =
+            FlatTreeSelection::from_selection_if_renderable(cx.no_gc(), self)
+        else {
+            return DOMString::new();
+        };
+
+        // Flush all layout before stringifying so that rendered text is up-to-date.
+        self.document.window().layout_reflow(QueryMsg::StyleQuery);
+
+        let mut user_select_cache = Default::default();
+        let mut string = DOMString::new();
+        for node in visible_selection.traversal() {
+            let Some(character_data) = node.downcast::<CharacterData>() else {
+                continue;
+            };
+
+            if node.used_user_select(cx.no_gc(), &mut user_select_cache) == UsedUserSelect::None {
+                continue;
+            }
+
+            let range = visible_selection.range_for_character_data(character_data);
+            let Some(text) = character_data.rendered_text(range) else {
+                continue;
+            };
+            string.push_str(&text);
+        }
+
+        string
     }
 }
 
 impl<'dom> LayoutDom<'dom, Selection> {
-    #[expect(unsafe_code)]
-    pub(crate) fn range_for_layout(&self) -> &Option<SelectionRange> {
-        unsafe { self.unsafe_get().visible_range.borrow_for_layout() }
+    pub(crate) fn range_for_layout(&self) -> Option<AtomicRef<'dom, SelectionRange>> {
+        AtomicRef::filter_map(self.unsafe_get().visible_range.borrow(), Option::as_ref)
     }
 }
 
@@ -1447,12 +1502,30 @@ fn position_in_flat_tree_for_selection(
 impl Node {
     /// Get the `Utf16CodeUnits` offset for the given offset if `self` is a
     /// `CharacterData` or else return the offset in the child list.
-    fn to_sibling_or_utf16_offset(&self, offset: Utf32CodeUnitsOrNodeOffset) -> u32 {
+    pub(crate) fn to_sibling_or_utf16_offset(&self, offset: Utf32CodeUnitsOrNodeOffset) -> u32 {
         if let Some(character_data) = self.downcast::<CharacterData>() {
-            offset.to_utf16_code_units_in(&character_data.data()).0 as u32
+            // TODO: ensure that each `CharacterData` holds no more than 4 GiB?
+            offset
+                .to_utf16_code_units_in(AssumeUnder4GB, &character_data.data())
+                .0
         } else {
-            offset.0 as u32
+            offset.0
         }
+    }
+
+    /// Get the `Utf32CodeUnitsOrNodeOffset` for `self` and the given UTF-16 offset if
+    /// `self` is `CharacterData` or else return the offset in the child list.
+    pub(crate) fn to_sibling_or_utf32_offset(&self, offset: u32) -> Utf32CodeUnitsOrNodeOffset {
+        Utf32CodeUnitsOrNodeOffset(
+            if let Some(character_data) = self.downcast::<CharacterData>() {
+                // TODO: ensure that each `CharacterData` holds no more than 4 GiB?
+                Utf16CodeUnits(offset)
+                    .to_utf32_code_units_in(&character_data.data())
+                    .0
+            } else {
+                offset
+            },
+        )
     }
 }
 
@@ -1501,7 +1574,7 @@ fn project_into_shared_tree<'a>(
 /// Compare two shadow-including DOM positions by first projecting them into
 /// a shared root and then comparing the two positions. This function assumes
 /// that the two positions share a [`Document`].
-fn compare_shadow_including_dom_positions(
+pub(crate) fn compare_shadow_including_dom_positions(
     no_gc: &NoGC,
     container_a: &Node,
     offset_a: u32,
@@ -1595,12 +1668,12 @@ impl<'no_gc> FlatTreeSelection<'no_gc> {
     fn range_for_character_data(&self, character_data: &CharacterData) -> RangeAny<Utf32CodeUnits> {
         let text = character_data.data();
         let node: &Node = character_data.upcast();
-        RangeAny {
-            start: (node == &**self.start.container)
-                .then(|| Utf16CodeUnits(self.start.offset as usize).to_utf32_code_units_in(&text)),
-            end: (node == &**self.end.container)
-                .then(|| Utf16CodeUnits(self.end.offset as usize).to_utf32_code_units_in(&text)),
-        }
+        RangeAny::new(
+            (node == &**self.start.container)
+                .then(|| Utf16CodeUnits(self.start.offset).to_utf32_code_units_in(&text)),
+            (node == &**self.end.container)
+                .then(|| Utf16CodeUnits(self.end.offset).to_utf32_code_units_in(&text)),
+        )
     }
 
     fn traversal(&self) -> VisibleSelectionTraversal<'no_gc> {
@@ -1674,6 +1747,8 @@ struct VisibleSelectionFlagUpdate<'no_gc> {
     /// Hash keys are pointer addresses which are not directly controlled by web content
     /// so we don’t need HashDoS resistance and can use a faster hasher than `std`’s default
     previously_flagged_nodes: FxHashSet<UnrootedDom<'no_gc, Node>>,
+    /// Cache shared between calls to [`Node::used_user_select`]
+    used_user_select_cache: FxHashMap<UnrootedDom<'no_gc, Node>, UsedUserSelect>,
     /// Whether or not this update requires a display list update.
     needs_new_display_list: bool,
 }
@@ -1688,6 +1763,7 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
         let mut update = Self {
             no_gc,
             previously_flagged_nodes,
+            used_user_select_cache: Default::default(),
             needs_new_display_list: false,
         };
 
@@ -1716,19 +1792,21 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
             self.previously_flagged_nodes.remove(node);
         }
 
-        if let Some(character_data) = node.downcast::<CharacterData>() {
-            self.set_character_data_selection(
-                character_data,
-                Some(flat_tree_selection.range_for_character_data(character_data)),
-            );
-        }
+        // TODO: We should ensure that the style is up-to-date before reading the
+        // `user-select` property and changes to `user-select` should trigger new visual
+        // selection updates. Not doing this means that the calculations here are one
+        // layout old and are never run again until the selection changes.
+        let user_select = node.used_user_select(self.no_gc, &mut self.used_user_select_cache);
+        let inhibited = user_select == UsedUserSelect::None;
+        node.set_flag(NodeFlags::SELECTION_INHIBITED, inhibited);
+
+        self.set_node_selection(node, (!inhibited).then_some(flat_tree_selection));
     }
 
     fn clear(&mut self, node: &Node) {
         node.set_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION, false);
-        if let Some(character_data) = node.downcast::<CharacterData>() {
-            self.set_character_data_selection(character_data, None)
-        }
+        node.set_flag(NodeFlags::SELECTION_INHIBITED, false);
+        self.set_node_selection(node, None);
     }
 
     fn set_character_data_selection(
@@ -1746,6 +1824,17 @@ impl<'no_gc> VisibleSelectionFlagUpdate<'no_gc> {
             character_data
                 .upcast::<Node>()
                 .dirty(self.no_gc, NodeDamage::ContentOrHeritage);
+        }
+    }
+
+    fn set_node_selection(&mut self, node: &Node, flat_tree_selection: Option<&FlatTreeSelection>) {
+        if let Some(character_data) = node.downcast::<CharacterData>() {
+            let range = flat_tree_selection.map(|flat_tree_selection| {
+                flat_tree_selection.range_for_character_data(character_data)
+            });
+            self.set_character_data_selection(character_data, range);
+        } else if node.set_element_selection(flat_tree_selection.is_some()) {
+            self.needs_new_display_list = true;
         }
     }
 

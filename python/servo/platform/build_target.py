@@ -291,7 +291,7 @@ class OpenHarmonyTarget(CrossBuildTarget):
     # will bump the schema version in cargo-ohos.
     CARGO_OHOS_EXPECTED_SCHEMA_VERSION = 1
     # Pin a cargo-ohos semver version for bootstrap
-    REQUESTED_CARGO_OHOS_VERSION = "0.3.2"
+    REQUESTED_CARGO_OHOS_VERSION = "0.3.3"
 
     cargo_ohos_info: Optional[dict[str, Any]] = None
 
@@ -363,6 +363,10 @@ class OpenHarmonyTarget(CrossBuildTarget):
         # instead, so we remove this from the environment. It probably would make sense to migrate
         # mach towards also using the encoded form.
         ohos_env["env"].pop("CARGO_ENCODED_RUSTFLAGS")
+        env_var_name = f"CARGO_TARGET_{self.target_triple.upper().replace('-', '_')}_RUNNER"
+        # This variable is only used for cargo test / run / bench commands, so we don't check
+        # if ohos-test-runner is installed here.
+        ohos_env["env"][env_var_name] = "ohos-test-runner"
 
         self.cargo_ohos_info = ohos_env
         return ohos_env

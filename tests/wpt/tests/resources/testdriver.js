@@ -928,6 +928,38 @@
                         params);
                 },
                 /**
+                 * Overrides the values of various media features for the
+                 * specified browsing contexts.
+                 * Matches the `emulation.setMediaFeaturesOverride
+                 * <https://w3c.github.io/webdriver-bidi/#command-emulation-setMediaFeaturesOverride>`_
+                 * WebDriver BiDi command.
+                 *
+                 * @example
+                 * await test_driver.bidi.emulation.set_media_features_override({
+                 *     features: {
+                 *         "prefers-color-scheme": "dark"
+                 *     }
+                 * });
+                 *
+                 * @param {object} params - Parameters for the command.
+                 * @param {null|object} [params.features] - An object mapping media feature
+                 * names to their overridden values (or null to reset a feature).
+                 * If null or omitted, all media features overrides will be removed.
+                 * @param {null|Array.<(Context)>} [params.contexts] The
+                 * optional contexts parameter specifies which browsing contexts
+                 * to set the media features override on. It should be either an
+                 * array of Context objects (window or browsing context id), or
+                 * null. If null or omitted, the override will be set on the
+                 * current browsing context.
+                 * @returns {Promise<void>} Resolves when the media features
+                 * override is successfully set.
+                 */
+                set_media_features_override: function (params) {
+                    assertBidiIsEnabled();
+                    return window.test_driver_internal.bidi.emulation.set_media_features_override(
+                        params);
+                },
+                /**
                  * Overrides the screen orientation for the specified browsing
                  * contexts.
                  * Matches the `emulation.setScreenOrientationOverride
@@ -990,6 +1022,37 @@
                 set_touch_override: function (params) {
                     assertBidiIsEnabled();
                     return window.test_driver_internal.bidi.emulation.set_touch_override(
+                        params);
+                },
+                /**
+                 * Overrides whether the browser respects the
+                 * `<meta name=viewport>` tag for the specified browsing
+                 * contexts.
+                 * Matches the `emulation.setViewportMetaOverride
+                 * <https://w3c.github.io/webdriver-bidi/#command-emulation-setViewportMetaOverride>`_
+                 * WebDriver BiDi command.
+                 *
+                 * @example
+                 * await test_driver.bidi.emulation.set_viewport_meta_override({
+                 *     viewportMeta: true
+                 * });
+                 *
+                 * @param {object} params - Parameters for the command.
+                 * @param {null|true} params.viewportMeta - Whether to enable
+                 * viewport meta tag parsing (`true`). If `null` or omitted, the
+                 * override will be removed.
+                 * @param {null|Array.<(Context)>} [params.contexts] The
+                 * optional contexts parameter specifies which browsing contexts
+                 * to set the viewport meta override on. It should be either an
+                 * array of Context objects (window or browsing context id), or
+                 * null. If null or omitted, the override will be set on the
+                 * current browsing context.
+                 * @returns {Promise<void>} Resolves when the viewport meta
+                 * override is successfully set.
+                 */
+                set_viewport_meta_override: function (params) {
+                    assertBidiIsEnabled();
+                    return window.test_driver_internal.bidi.emulation.set_viewport_meta_override(
                         params);
                 },
             },
@@ -1423,6 +1486,33 @@
         },
 
         /**
+         * Creates a new top-level browsing context, as if the user requested
+         * a new tab or window from the browser.
+         *
+         * Matches the behaviour of the `New Window
+         * <https://www.w3.org/TR/webdriver/#new-window>`_
+         * WebDriver command.
+         *
+         * The new window is opened with `about:blank`,
+         * the test does not get a ``WindowProxy`` for it,
+         * and the returned WebDriver window handle is its only identifier.
+         *
+         * @param {String} type - Type hint for the new browsing context,
+         *                        either "tab" or "window" or null for the
+         *                        implementation default.
+         * @param {WindowProxy} context - Browsing context in which
+         *                                to run the call, or null to use the current
+         *                                browsing context.
+         *
+         * @returns {Promise} fulfilled with the WebDriver window handle
+         *                    (a string) of the new browsing context, or
+         *                    rejected if the WebDriver command errors.
+         */
+        create_window: function(type=null, context=null) {
+            return window.test_driver_internal.create_window(type, context);
+        },
+
+        /**
          * Minimizes the browser window.
          *
          * Matches the behaviour of the `Minimize
@@ -1477,6 +1567,33 @@
          */
         get_window_rect: function(context=null) {
             return window.test_driver_internal.get_window_rect(context);
+        },
+
+        /**
+         * Navigates the top-level browsing context to the given absolute URL.
+         *
+         * Matches the behaviour of the `Navigate To
+         * <https://www.w3.org/TR/webdriver/#navigate-to>`_
+         * WebDriver command.
+         *
+         * Navigating the browsing context in which the
+         * test is running will unload the test.
+         *
+         * @param {String} url - The URL to navigate to. This must be absolute.
+         * @param {(String|WindowProxy)} context - Browsing context in which
+         *                                         to run the call: a
+         *                                         ``WindowProxy``, a WebDriver
+         *                                         window handle as returned by
+         *                                         :js:func:`create_window`, or
+         *                                         null to use the current
+         *                                         browsing context.
+         *
+         * @returns {Promise} fulfilled when the WebDriver command returns, which
+         *                    depends on the session's page load strategy, or
+         *                    rejected if the WebDriver command errors.
+         */
+        navigate: function(url, context=null) {
+            return window.test_driver_internal.navigate(url, context);
         },
 
         /**
@@ -2377,6 +2494,10 @@
         /**
          * Gets the current globally-applied privacy control status
          *
+         * Matches the `Get Global Privacy Control
+         * <https://www.w3.org/TR/gpc/#get-global-privacy-control>`_
+         * WebDriver command.
+         *
          * @returns {Promise} Fulfils with an object with boolean property `gpc`
          *                    that encodes the current "do not sell or share"
          *                    signal the browser is configured to convey.
@@ -2386,11 +2507,15 @@
         },
 
         /**
-         * Gets the current globally-applied privacy control status
+         * Sets and then gets the current globally-applied privacy control status
          *
-         * @param {bool} newValue - The a boolean that is true if the browers
-         *                          should convey a "do not sell or share" signal
-         *                          and false otherwise
+         * Matches the `Set Global Privacy Control
+         * <https://www.w3.org/TR/gpc/#set-global-privacy-control>`_
+         * WebDriver command.
+         *
+         * @param {boolean} newValue - A boolean that is true if the browser
+         *                             should convey a "do not sell or share" signal
+         *                             and false otherwise
          *
          * @returns {Promise} Fulfils with an object with boolean property `gpc`
          *                    that encodes the new "do not sell or share"
@@ -2515,6 +2640,10 @@
                     throw new Error(
                         "bidi.emulation.set_locale_override is not implemented by testdriver-vendor.js");
                 },
+                set_media_features_override: function (params) {
+                    throw new Error(
+                        "bidi.emulation.set_media_features_override is not implemented by testdriver-vendor.js");
+                },
                 set_screen_orientation_override: function (params) {
                     throw new Error(
                         "bidi.emulation.set_screen_orientation_override is not implemented by testdriver-vendor.js");
@@ -2522,6 +2651,10 @@
                 set_touch_override: function (params) {
                     throw new Error(
                         "bidi.emulation.set_touch_override is not implemented by testdriver-vendor.js");
+                },
+                set_viewport_meta_override: function (params) {
+                    throw new Error(
+                        "bidi.emulation.set_viewport_meta_override is not implemented by testdriver-vendor.js");
                 }
             },
             user_agent_client_hints: {
@@ -2634,6 +2767,14 @@
 
         async freeze(context=null) {
             throw new Error("freeze() is not implemented by testdriver-vendor.js");
+        },
+
+        async create_window(type=null, context=null) {
+            throw new Error("create_window() is not implemented by testdriver-vendor.js");
+        },
+
+        async navigate(url, context=null) {
+            throw new Error("navigate() is not implemented by testdriver-vendor.js");
         },
 
         async minimize_window(context=null) {

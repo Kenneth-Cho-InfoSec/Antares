@@ -46,7 +46,9 @@ use style::values::computed::{
     FontVariantNumeric, FontWeight, FontWidth,
 };
 use unicode_script::Script;
-use webrender_api::{FontInstanceFlags, FontInstanceKey, FontVariation};
+use webrender_api::{
+    FontInstanceFlags, FontInstanceKey, FontInstancePlatformOptions, FontVariation,
+};
 
 use crate::font_feature_values::ResolvedFontVariantAlternates;
 use crate::platform::font::{FontTable, PlatformFont};
@@ -168,8 +170,13 @@ pub trait PlatformFontMethods: Sized {
     fn table_for_tag(&self, _: Tag) -> Option<FontTable>;
     fn typographic_bounds(&self, _: GlyphId) -> Rect<f32>;
 
-    /// Get the necessary [`FontInstanceFlags`]` for this font.
+    /// Get the necessary [`FontInstanceFlags`] for this font.
     fn webrender_font_instance_flags(&self) -> FontInstanceFlags;
+
+    /// Get the necessary [`FontInstancePlatformOptions`] for this font.
+    fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
+        Default::default()
+    }
 
     /// Return all the variation values that the font was instantiated with.
     fn variations(&self) -> &[FontVariation];
@@ -272,7 +279,7 @@ impl malloc_size_of::MallocSizeOf for CachedShapeData {
 pub struct Font {
     pub(crate) handle: PlatformFont,
     pub(crate) template: FontTemplateRef,
-    pub metrics: Arc<FontMetrics>,
+    pub metrics: OnceLock<Arc<FontMetrics>>,
     pub descriptor: FontDescriptor,
 
     /// The data for this font. And the index of the font within the data (in case it's a TTC)
@@ -328,7 +335,8 @@ impl malloc_size_of::MallocSizeOf for Font {
         // TODO: Collect memory usage for platform fonts and for shapers.
         // This skips the template, because they are already stored in the template cache.
 
-        self.metrics.size_of(ops) +
+        let metrics_size = self.metrics.get().map_or(0, |metrics| metrics.size_of(ops));
+        metrics_size +
             self.descriptor.size_of(ops) +
             self.cached_shape_data.read().size_of(ops) +
             self.font_instance_key
@@ -362,7 +370,7 @@ impl Font {
         let variation_axes = VariationAxes::from_platform_font(&handle);
 
         // Compute and apply the OpenType variations
-        let handle = if servo_config::pref!(layout_variable_fonts_enabled) &&
+        let handle = if servo_config::pref!(layout_css_font_variations_enabled) &&
             variation_axes.contains(VariationAxes::IS_VARIABLE)
         {
             let used_variations = compute_variations(&descriptor, &template, variation_axes);
@@ -371,12 +379,10 @@ impl Font {
             handle
         };
 
-        let metrics = Arc::new(handle.metrics());
-
         Ok(Font {
             handle,
             template,
-            metrics,
+            metrics: OnceLock::new(),
             descriptor,
             data_and_index: data
                 .map(|data| OnceLock::from(FontDataAndIndex { data, index: 0 }))
@@ -396,8 +402,16 @@ impl Font {
         self.template.identifier()
     }
 
+    pub fn metrics(&self) -> &Arc<FontMetrics> {
+        self.metrics.get_or_init(|| Arc::new(self.handle.metrics()))
+    }
+
     pub(crate) fn webrender_font_instance_flags(&self) -> FontInstanceFlags {
         self.handle.webrender_font_instance_flags()
+    }
+
+    pub(crate) fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
+        self.handle.webrender_font_instance_platform_options()
     }
 
     pub(crate) fn has_color_bitmap_or_colr_table(&self) -> bool {
@@ -618,6 +632,13 @@ impl Font {
         let codepoint = match self.descriptor.variant {
             font_variant_caps::T::SmallCaps => codepoint.to_ascii_uppercase(),
             font_variant_caps::T::Normal => codepoint,
+            // The other values are behind `layout.css.font-variant-caps.all-values.enabled`
+            // which Servo does not enable, so they are never parsed.
+            font_variant_caps::T::AllSmallCaps |
+            font_variant_caps::T::PetiteCaps |
+            font_variant_caps::T::AllPetiteCaps |
+            font_variant_caps::T::Unicase |
+            font_variant_caps::T::TitlingCaps => unreachable!(),
         };
         let glyph_index = self.handle.glyph_index(codepoint);
 

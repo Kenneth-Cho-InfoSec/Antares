@@ -68,7 +68,8 @@ use crate::dom::types::{EventTarget, GlobalScope};
 use crate::fetch::network_listener::{
     FetchResponseListener, ResourceTimingListener, submit_timing,
 };
-use crate::modules::script_module::{ScriptFetchOptions, fetch_a_modulepreload_module};
+use crate::scripting::fetching_options::ScriptFetchOptions;
+use crate::scripting::script_module::fetch_a_modulepreload_module;
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf, PartialEq)]
@@ -214,7 +215,6 @@ impl HTMLLinkElement {
                     Some(self.upcast::<Element>()),
                     DOMString::from_static("text/css"),
                     Some(self.Href().into()),
-                    None, // todo handle title
                     sheet,
                     None, // constructor_document
                 )
@@ -287,7 +287,7 @@ impl VirtualMethods for HTMLLinkElement {
         // For stylesheets, we should only refetch when the actual attribute value
         // has been changed.
         if self.relations.get().contains(LinkRelations::STYLESHEET) &&
-            let AttributeMutation::Set(Some(previous_value), _) = mutation &&
+            let AttributeMutation::Set(Some(previous_value)) = mutation &&
             **previous_value == **attr.value()
         {
             return;
@@ -338,7 +338,7 @@ impl VirtualMethods for HTMLLinkElement {
                 // When the href attribute of the link element of an external resource link
                 // that is already browsing-context connected is changed.
                 if self.relations.get().contains(LinkRelations::PRELOAD) {
-                    self.handle_preload_url();
+                    self.handle_preload_url(cx.no_gc());
                 }
 
                 // https://html.spec.whatwg.org/multipage/#link-type-modulepreload
@@ -349,7 +349,7 @@ impl VirtualMethods for HTMLLinkElement {
             local_name!("imagesrcset") => {
                 self.source_set
                     .borrow_mut()
-                    .update_source_set(self.upcast::<Element>());
+                    .update_source_set(cx.no_gc(), self.upcast::<Element>());
             },
             local_name!("imagesizes") => {
                 if self
@@ -358,7 +358,7 @@ impl VirtualMethods for HTMLLinkElement {
                 {
                     self.source_set
                         .borrow_mut()
-                        .update_source_set(self.upcast::<Element>());
+                        .update_source_set(cx.no_gc(), self.upcast::<Element>());
                 }
             },
             local_name!("sizes") if self.relations.get().contains(LinkRelations::ICON) => {
@@ -384,9 +384,9 @@ impl VirtualMethods for HTMLLinkElement {
                 // When the as attribute of the link element of an external resource link
                 // that is already browsing-context connected is changed.
                 if self.relations.get().contains(LinkRelations::PRELOAD) &&
-                    let AttributeMutation::Set(Some(_), _) = mutation
+                    let AttributeMutation::Set(Some(_)) = mutation
                 {
-                    self.handle_preload_url();
+                    self.handle_preload_url(cx.no_gc());
                 }
             },
             local_name!("type") => {
@@ -409,7 +409,7 @@ impl VirtualMethods for HTMLLinkElement {
                 if self.relations.get().contains(LinkRelations::PRELOAD) &&
                     !self.previous_type_matched.get()
                 {
-                    self.handle_preload_url();
+                    self.handle_preload_url(cx.no_gc());
                 }
             },
             local_name!("media") => {
@@ -421,8 +421,8 @@ impl VirtualMethods for HTMLLinkElement {
                     !self.previous_media_environment_matched.get()
                 {
                     match mutation {
-                        AttributeMutation::Removed | AttributeMutation::Set(Some(_), _) => {
-                            self.handle_preload_url()
+                        AttributeMutation::Removed | AttributeMutation::Set(Some(_)) => {
+                            self.handle_preload_url(cx.no_gc())
                         },
                         _ => {},
                     };
@@ -434,7 +434,7 @@ impl VirtualMethods for HTMLLinkElement {
                     let mut guard = shared_lock.write();
                     let media = stylesheet.media.write_with(&mut guard);
                     match mutation {
-                        AttributeMutation::Set(..) => {
+                        AttributeMutation::Set(_) => {
                             *media = MediaList::parse_media_list(&attr.value(), document.window())
                         },
                         AttributeMutation::Removed => *media = StyleMediaList::empty(),
@@ -501,7 +501,7 @@ impl VirtualMethods for HTMLLinkElement {
             }
 
             if relations.contains(LinkRelations::PRELOAD) {
-                self.handle_preload_url();
+                self.handle_preload_url(cx.no_gc());
             }
         }
     }
@@ -521,8 +521,11 @@ impl HTMLLinkElement {
         // representing the state of el's as attribute.
         let element = self.upcast::<Element>();
         element
-            .get_attribute_string_value(&local_name!("as"))
-            .and_then(|attr| LinkProcessingOptions::translate_a_preload_destination(&attr))
+            .get_attribute_string_ref(&local_name!("as"))
+            .and_then(|attr| {
+                let attr = attr.as_attr_ref().value();
+                LinkProcessingOptions::translate_a_preload_destination(&attr)
+            })
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-link-options-from-element>
@@ -542,7 +545,7 @@ impl HTMLLinkElement {
             cryptographic_nonce_metadata: self.upcast::<Element>().nonce_value(),
             cross_origin: cors_setting_for_element(element),
             referrer_policy: referrer_policy_for_element(element),
-            policy_container: document.policy_container().to_owned(),
+            policy_container: document.policy_container().clone(),
             source_set: Some(self.source_set.borrow().clone()),
             origin: document.borrow().origin().immutable().to_owned(),
             base_url: document.borrow().base_url(),
@@ -674,7 +677,6 @@ impl HTMLLinkElement {
         let fetch_context = LinkFetchContext {
             url,
             link: Some(Trusted::new(self)),
-            global: Trusted::new(&document.global()),
             type_: LinkFetchContextType::Prefetch,
             response_body: BytesMut::new(),
         };
@@ -720,10 +722,13 @@ impl HTMLLinkElement {
         // Step 3
         let cors_setting = cors_setting_for_element(element);
 
-        let mq_str = element
-            .get_attribute_string_value(&local_name!("media"))
+        let media_query_string = element
+            .get_attribute_string_ref(&local_name!("media"))
             .unwrap_or_default();
-        let media = MediaList::parse_media_list(&mq_str, document.window());
+        let media = MediaList::parse_media_list(
+            &media_query_string.as_attr_ref().value(),
+            document.window(),
+        );
         let media = Arc::new(document.style_shared_author_lock().wrap(media));
 
         let integrity_metadata = element
@@ -780,7 +785,7 @@ impl HTMLLinkElement {
 
         let cache_result = window.image_cache().get_cached_image_status(
             href,
-            window.origin().immutable().clone(),
+            window.origin().immutable(),
             cors_setting_for_element(self.upcast()),
         );
 
@@ -816,7 +821,6 @@ impl HTMLLinkElement {
                     url: self.owner_document().base_url(),
                     image_cache: window.image_cache(),
                     id,
-                    link: Trusted::new(self),
                 };
                 document.fetch_background(request, fetch_context);
             },
@@ -918,11 +922,11 @@ impl HTMLLinkElement {
 
     /// <https://html.spec.whatwg.org/multipage/#link-type-preload:fetch-and-process-the-linked-resource-2>
     /// and type matching destination steps of <https://html.spec.whatwg.org/multipage/#preload>
-    fn handle_preload_url(&self) {
+    fn handle_preload_url(&self, no_gc: &NoGC) {
         // Step 1. Update the source set for el.
         self.source_set
             .borrow_mut()
-            .update_source_set(self.upcast::<Element>());
+            .update_source_set(no_gc, self.upcast::<Element>());
         // Step 2. Let options be the result of creating link options from el.
         let mut options = self.processing_options();
         // Step 3. Let destination be the result of translating the keyword
@@ -979,7 +983,10 @@ impl HTMLLinkElement {
         // Step 2. Let destination be the current state of el's as attribute (a destination), or "script" if it is in no state.
         let destination = el
             .get_attribute_string_value(&local_name!("as"))
-            .map(|value| value.to_ascii_lowercase())
+            .map(|mut value| {
+                value.make_ascii_lowercase();
+                value
+            })
             .and_then(|value| match value.as_str() {
                 // `Destination::from_str` will map an empty string to `Destination::None`
                 "" => None,
@@ -1290,8 +1297,6 @@ impl HTMLLinkElementMethods<crate::DomTypeHolder> for HTMLLinkElement {
 }
 
 struct FaviconFetchContext {
-    /// The `<link>` element that caused this fetch operation
-    link: Trusted<HTMLLinkElement>,
     image_cache: std::sync::Arc<dyn ImageCache>,
     id: PendingImageId,
 
@@ -1300,11 +1305,12 @@ struct FaviconFetchContext {
 }
 
 impl FetchResponseListener for FaviconFetchContext {
-    fn process_request_body(&mut self, _: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -1317,6 +1323,7 @@ impl FetchResponseListener for FaviconFetchContext {
     fn process_response_chunk(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         request_id: RequestId,
         chunk: Bytes,
     ) {
@@ -1329,6 +1336,7 @@ impl FetchResponseListener for FaviconFetchContext {
     fn process_response_eof(
         self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         request_id: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -1337,16 +1345,16 @@ impl FetchResponseListener for FaviconFetchContext {
             self.id,
             FetchResponseMsg::ProcessResponseEOF(request_id, response.clone(), timing.clone()),
         );
-        submit_timing(cx, &self, &response, &timing);
+        submit_timing(cx, global, &self, &response, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 
@@ -1360,13 +1368,6 @@ impl FetchResponseListener for FaviconFetchContext {
 
 impl ResourceTimingListener for FaviconFetchContext {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
-        (
-            InitiatorType::LocalName("link".to_string()),
-            self.url.clone(),
-        )
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.link.root().upcast::<Node>().owner_doc().global()
+        (InitiatorType::LocalName("link".into()), self.url.clone())
     }
 }

@@ -4,23 +4,24 @@
 
 use std::cell::Cell;
 use std::ptr::{self};
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::jsapi::{Heap, IsPromiseObject, JSObject};
+use js::jsapi::{Heap, JSObject};
 use js::jsval::{JSVal, ObjectValue, UndefinedValue};
 use js::realm::CurrentRealm;
-use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue, IntoHandle};
+use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use rustc_hash::FxHashMap;
 use script_bindings::callback::ExceptionHandling;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
+use script_bindings::structuredclone::StructuredData;
 use servo_base::id::{MessagePortId, MessagePortIndex};
 use servo_constellation_traits::TransformStreamData;
 
 use super::readablestream::CrossRealmTransformReadable;
 use super::writablestream::CrossRealmTransformWritable;
+use crate::dom::bindings::callback::RootedCallback;
 use crate::dom::bindings::codegen::Bindings::QueuingStrategyBinding::{
     QueuingStrategy, QueuingStrategySize,
 };
@@ -30,7 +31,6 @@ use crate::dom::bindings::conversions::ConversionResult;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::messageport::MessagePort;
@@ -41,7 +41,7 @@ use crate::dom::stream::countqueuingstrategy::{extract_high_water_mark, extract_
 use crate::dom::stream::transformstreamdefaultcontroller::TransformerType;
 use crate::dom::stream::underlyingsourcecontainer::UnderlyingSourceType;
 use crate::dom::stream::writablestream::create_writable_stream;
-use crate::dom::stream::writablestreamdefaultcontroller::UnderlyingSinkType;
+use crate::dom::stream::writablestreamdefaultcontroller::UnderlyingSinkTypeRef;
 use crate::dom::types::{PromiseNativeHandler, TransformStreamDefaultController, WritableStream};
 use crate::realms::enter_auto_realm;
 
@@ -176,7 +176,7 @@ impl Callback for CancelPromiseFulfillment {
             rooted!(&in(cx) let mut error = UndefinedValue());
             self.readable.get_stored_error(error.handle_mut());
             self.controller
-                .get_finish_promise()
+                .get_finish_promise(cx)
                 .expect("finish promise is not set")
                 .reject_native(cx, &error.handle());
         } else {
@@ -190,7 +190,7 @@ impl Callback for CancelPromiseFulfillment {
 
             // Resolve controller.[[finishPromise]] with undefined.
             self.controller
-                .get_finish_promise()
+                .get_finish_promise(cx)
                 .expect("finish promise is not set")
                 .resolve_native(cx, &());
         }
@@ -216,7 +216,7 @@ impl Callback for CancelPromiseRejection {
 
         // Reject controller.[[finishPromise]] with r.
         self.controller
-            .get_finish_promise()
+            .get_finish_promise(cx)
             .expect("finish promise is not set")
             .reject(cx, v);
     }
@@ -242,7 +242,7 @@ impl Callback for SourceCancelPromiseFulfillment {
         // If cancelPromise was fulfilled, then:
         let finish_promise = self
             .controller
-            .get_finish_promise()
+            .get_finish_promise(cx)
             .expect("finish promise is not set");
 
         let global = &self.writeable.global();
@@ -296,7 +296,7 @@ impl Callback for SourceCancelPromiseRejection {
 
         // Reject controller.[[finishPromise]] with r.
         self.controller
-            .get_finish_promise()
+            .get_finish_promise(cx)
             .expect("finish promise is not set")
             .reject(cx, v);
     }
@@ -319,7 +319,7 @@ impl Callback for FlushPromiseFulfillment {
         // If flushPromise was fulfilled, then:
         let finish_promise = self
             .controller
-            .get_finish_promise()
+            .get_finish_promise(cx)
             .expect("finish promise is not set");
 
         // If readable.[[state]] is "errored", reject controller.[[finishPromise]] with readable.[[storedError]].
@@ -358,7 +358,7 @@ impl Callback for FlushPromiseRejection {
 
         // Reject controller.[[finishPromise]] with r.
         self.controller
-            .get_finish_promise()
+            .get_finish_promise(cx)
             .expect("finish promise is not set")
             .reject(cx, v);
     }
@@ -455,7 +455,7 @@ impl TransformStream {
         // NOTE: These steps are implemented in `TransformStreamDefaultController::new`
 
         // Step 8. Let startPromise be a promise resolved with undefined.
-        let start_promise = Promise::new_resolved_rooted(cx, global, ());
+        let start_promise = Promise::new_resolved(cx, global, ());
 
         // Step 9. Perform ! InitializeTransformStream(stream, startPromise,
         // writableHighWaterMark, writableSizeAlgorithm, readableHighWaterMark,
@@ -505,9 +505,9 @@ impl TransformStream {
         global: &GlobalScope,
         start_promise: &RootedPromise,
         writable_high_water_mark: f64,
-        writable_size_algorithm: Rc<QueuingStrategySize>,
+        writable_size_algorithm: RootedCallback<QueuingStrategySize>,
         readable_high_water_mark: f64,
-        readable_size_algorithm: Rc<QueuingStrategySize>,
+        readable_size_algorithm: RootedCallback<QueuingStrategySize>,
     ) -> Fallible<()> {
         // Let startAlgorithm be an algorithm that returns startPromise.
         // Let writeAlgorithm be the following steps, taking a chunk argument:
@@ -525,7 +525,7 @@ impl TransformStream {
             global,
             writable_high_water_mark,
             writable_size_algorithm,
-            UnderlyingSinkType::Transform(Dom::from_ref(self), start_promise.to_traced()),
+            UnderlyingSinkTypeRef::Transform(self, start_promise),
         )?;
         self.writable.set(Some(&writable));
 
@@ -579,8 +579,7 @@ impl TransformStream {
         }
 
         // Set stream.[[backpressureChangePromise]] to a new promise.;
-        *self.backpressure_change_promise.borrow_mut() =
-            Some(Promise::new_rooted(cx, global).to_traced());
+        *self.backpressure_change_promise.borrow_mut() = Some(Promise::new(cx, global).to_traced());
 
         // Set stream.[[backpressure]] to backpressure.
         self.backpressure.set(backpressure);
@@ -675,7 +674,7 @@ impl TransformStream {
             assert!(backpressure_change_promise.is_some());
 
             // Return the result of reacting to backpressureChangePromise with the following fulfillment steps:
-            let result_promise = Promise::new_rooted(cx, global);
+            let result_promise = Promise::new(cx, global);
             rooted!(&in(cx) let mut fulfillment_handler = Some(TransformBackPressureChangePromiseFulfillment {
                 controller: Dom::from_ref(&controller),
                 writable: Dom::from_ref(&self.writable.get().expect("writable stream")),
@@ -716,7 +715,7 @@ impl TransformStream {
         let controller = self.controller.get().expect("controller is not set");
 
         // If controller.[[finishPromise]] is not undefined, return controller.[[finishPromise]].
-        if let Some(finish_promise) = controller.get_finish_promise() {
+        if let Some(finish_promise) = controller.get_finish_promise(cx) {
             return Ok(finish_promise);
         }
 
@@ -724,7 +723,7 @@ impl TransformStream {
         let readable = self.readable.get().expect("readable stream is not set");
 
         // Let controller.[[finishPromise]] be a new promise.
-        controller.set_finish_promise(&Promise::new_rooted(cx, global));
+        controller.set_finish_promise(&Promise::new(cx, global));
 
         // Let cancelPromise be the result of performing controller.[[cancelAlgorithm]], passing reason.
         let cancel_promise = controller.perform_cancel(cx, global, reason)?;
@@ -752,7 +751,7 @@ impl TransformStream {
 
         // Return controller.[[finishPromise]].
         let finish_promise = controller
-            .get_finish_promise()
+            .get_finish_promise(cx)
             .expect("finish promise is not set");
         Ok(finish_promise)
     }
@@ -770,7 +769,7 @@ impl TransformStream {
             .ok_or(Error::Type(c"controller is not set".to_owned()))?;
 
         // If controller.[[finishPromise]] is not undefined, return controller.[[finishPromise]].
-        if let Some(finish_promise) = controller.get_finish_promise() {
+        if let Some(finish_promise) = controller.get_finish_promise(cx) {
             return Ok(finish_promise);
         }
 
@@ -781,7 +780,7 @@ impl TransformStream {
             .ok_or(Error::Type(c"readable stream is not set".to_owned()))?;
 
         // Let controller.[[finishPromise]] be a new promise.
-        controller.set_finish_promise(&Promise::new_rooted(cx, global));
+        controller.set_finish_promise(&Promise::new(cx, global));
 
         // Let flushPromise be the result of performing controller.[[flushAlgorithm]].
         let flush_promise = controller.perform_flush(cx, global)?;
@@ -803,12 +802,15 @@ impl TransformStream {
             })),
         );
 
-        let mut realm = enter_auto_realm(cx, global);
-        let realm = &mut realm.current_realm();
-        flush_promise.append_native_handler(realm, &handler);
+        {
+            let mut realm = enter_auto_realm(cx, global);
+            let realm = &mut realm.current_realm();
+            flush_promise.append_native_handler(realm, &handler);
+        }
+
         // Return controller.[[finishPromise]].
         let finish_promise = controller
-            .get_finish_promise()
+            .get_finish_promise(cx)
             .expect("finish promise is not set");
         Ok(finish_promise)
     }
@@ -827,7 +829,7 @@ impl TransformStream {
             .ok_or(Error::Type(c"controller is not set".to_owned()))?;
 
         // If controller.[[finishPromise]] is not undefined, return controller.[[finishPromise]].
-        if let Some(finish_promise) = controller.get_finish_promise() {
+        if let Some(finish_promise) = controller.get_finish_promise(cx) {
             return Ok(finish_promise);
         }
 
@@ -838,7 +840,7 @@ impl TransformStream {
             .ok_or(Error::Type(c"writable stream is not set".to_owned()))?;
 
         // Let controller.[[finishPromise]] be a new promise.
-        controller.set_finish_promise(&Promise::new_rooted(cx, global));
+        controller.set_finish_promise(&Promise::new(cx, global));
 
         // Let cancelPromise be the result of performing controller.[[cancelAlgorithm]], passing reason.
         let cancel_promise = controller.perform_cancel(cx, global, reason)?;
@@ -863,13 +865,14 @@ impl TransformStream {
             })),
         );
 
-        // Return controller.[[finishPromise]].
-        let finish_promise = controller
-            .get_finish_promise()
-            .expect("finish promise is not set");
         let mut realm = enter_auto_realm(cx, global);
         let cx = &mut realm.current_realm();
         cancel_promise.append_native_handler(cx, &handler);
+
+        // Return controller.[[finishPromise]].
+        let finish_promise = controller
+            .get_finish_promise(cx)
+            .expect("finish promise is not set");
         Ok(finish_promise)
     }
 
@@ -894,7 +897,7 @@ impl TransformStream {
             .borrow()
             .as_ref()
             .expect("Promise must be some by now.")
-            .root())
+            .root(cx))
     }
 
     /// <https://streams.spec.whatwg.org/#transform-stream-error-writable-and-unblock-write>
@@ -938,7 +941,6 @@ impl TransformStream {
 
 impl TransformStreamMethods<crate::DomTypeHolder> for TransformStream {
     /// <https://streams.spec.whatwg.org/#ts-constructor>
-    #[expect(unsafe_code)]
     fn Constructor(
         cx: &mut JSContext,
         global: &GlobalScope,
@@ -968,12 +970,12 @@ impl TransformStreamMethods<crate::DomTypeHolder> for TransformStream {
         };
 
         // If transformerDict["readableType"] exists, throw a RangeError exception.
-        if !transformer_dict.readableType.handle().is_undefined() {
+        if !transformer_dict.readableType.get().is_undefined() {
             return Err(Error::Range(c"readableType is set".to_owned()));
         }
 
         // If transformerDict["writableType"] exists, throw a RangeError exception.
-        if !transformer_dict.writableType.handle().is_undefined() {
+        if !transformer_dict.writableType.get().is_undefined() {
             return Err(Error::Range(c"writableType is set".to_owned()));
         }
 
@@ -990,7 +992,7 @@ impl TransformStreamMethods<crate::DomTypeHolder> for TransformStream {
         let writable_size_algorithm = extract_size_algorithm(cx, writable_strategy);
 
         // Let startPromise be a new promise.
-        let start_promise = Promise::new_rooted(cx, global);
+        let start_promise = Promise::new(cx, global);
 
         // Perform ! InitializeTransformStream(this, startPromise, writableHighWaterMark,
         // writableSizeAlgorithm, readableHighWaterMark, readableSizeAlgorithm).
@@ -1017,7 +1019,6 @@ impl TransformStreamMethods<crate::DomTypeHolder> for TransformStream {
         // result of invoking transformerDict["start"]
         // with argument list « this.[[controller]] » and callback this value transformer.
         if let Some(start) = &transformer_dict.start {
-            rooted!(&in(cx) let mut result_object = ptr::null_mut::<JSObject>());
             rooted!(&in(cx) let mut result: JSVal);
             rooted!(&in(cx) let this_object = transformer_obj.get());
             start.Call_(
@@ -1027,19 +1028,7 @@ impl TransformStreamMethods<crate::DomTypeHolder> for TransformStream {
                 result.handle_mut(),
                 ExceptionHandling::Rethrow,
             )?;
-            let is_promise = unsafe {
-                if result.is_object() {
-                    result_object.set(result.to_object());
-                    IsPromiseObject(result_object.handle().into_handle())
-                } else {
-                    false
-                }
-            };
-            let promise = if is_promise {
-                Promise::new_with_js_promise(cx, result_object.handle())
-            } else {
-                Promise::new_resolved(cx, global, result.get())
-            };
+            let promise = Promise::resolve_or_wrap_promise(cx, result.handle(), global);
             start_promise.resolve_native(cx, &promise);
         } else {
             // Otherwise, resolve startPromise with undefined.

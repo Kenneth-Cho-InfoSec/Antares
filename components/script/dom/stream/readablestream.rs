@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ptr::{self};
@@ -9,7 +11,7 @@ use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::conversions::{FromJSValConvertible, ToJSValConvertible};
+use js::conversions::ToJSValConvertible;
 use js::jsapi::{Heap, JSObject};
 use js::jsval::{JSVal, ObjectValue, UndefinedValue};
 use js::realm::CurrentRealm;
@@ -33,6 +35,7 @@ use crate::dom::domexception::{DOMErrorName, DOMException};
 use crate::dom::encoding::textdecoderstream::TextDecoderStream;
 use script_bindings::codegen::GenericBindings::TextDecoderStreamBinding::TextDecoderStreamMethods;
 use script_bindings::conversions::{is_array_like, StringificationBehavior};
+use crate::dom::bindings::callback::RootedCallback;
 use crate::dom::bindings::codegen::Bindings::QueuingStrategyBinding::QueuingStrategySize;
 use crate::dom::abortsignal::{AbortAlgorithm, AbortSignal};
 use crate::dom::bindings::codegen::Bindings::ReadableStreamDefaultReaderBinding::ReadableStreamDefaultReaderMethods;
@@ -65,7 +68,7 @@ use crate::dom::messageport::MessagePort;
 use crate::realms::{enter_auto_realm};
 use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::bindings::transferable::Transferable;
-use crate::dom::bindings::structuredclone::StructuredData;
+use script_bindings::structuredclone::StructuredData;
 
 use super::readablestreambyobreader::ReadIntoRequest;
 use crate::dom::bindings::buffer_source::{HeapBufferSource, create_buffer_source};
@@ -373,7 +376,7 @@ impl PipeTo {
             *state = PipeToState::PendingReady;
         }
 
-        let ready_promise = self.writer.Ready();
+        let ready_promise = self.writer.Ready(cx);
         if ready_promise.is_fulfilled() {
             self.read_chunk(cx, global);
         } else {
@@ -388,7 +391,7 @@ impl PipeTo {
             // Note: if the writer is not ready,
             // in order to ensure progress we must
             // also react to the closure of the source(because source may close empty).
-            let closed_promise = self.reader.Closed();
+            let closed_promise = self.reader.Closed(cx);
             closed_promise.append_native_handler(cx, &handler);
         }
     }
@@ -407,7 +410,7 @@ impl PipeTo {
 
         // Note: in order to ensure progress we must
         // also react to the closure of the destination.
-        let ready_promise = self.writer.Closed();
+        let ready_promise = self.writer.Closed(cx);
         ready_promise.append_native_handler(cx, &handler);
     }
 
@@ -673,7 +676,7 @@ impl PipeTo {
                         dest.abort(cx, global, error.handle())
                     } else {
                         // Otherwise, return a promise resolved with undefined.
-                        Promise::new_resolved_rooted(cx, global, ())
+                        Promise::new_resolved(cx, global, ())
                     };
                     actions.push(promise);
                 }
@@ -688,7 +691,7 @@ impl PipeTo {
                         source.cancel(cx, global, error.handle())
                     } else {
                         // Otherwise, return a promise resolved with undefined.
-                        Promise::new_resolved_rooted(cx, global, ())
+                        Promise::new_resolved(cx, global, ())
                     };
                     actions.push(promise);
                 }
@@ -843,7 +846,7 @@ pub(crate) fn create_readable_stream(
     cx: &mut JSContext,
     global: &GlobalScope,
     underlying_source_type: UnderlyingSourceType,
-    queuing_strategy: Option<Rc<QueuingStrategySize>>,
+    queuing_strategy: Option<RootedCallback<QueuingStrategySize>>,
     high_water_mark: Option<f64>,
 ) -> DomRoot<ReadableStream> {
     // If highWaterMark was not passed, set it to 1.
@@ -1627,11 +1630,11 @@ impl ReadableStream {
 
         // If stream.[[state]] is "closed", return a promise resolved with undefined.
         if self.is_closed() {
-            return Promise::new_resolved_rooted(cx, global, ());
+            return Promise::new_resolved(cx, global, ());
         }
         // If stream.[[state]] is "errored", return a promise rejected with stream.[[storedError]].
         if self.is_errored() {
-            let promise = Promise::new_rooted(cx, global);
+            let promise = Promise::new(cx, global);
             rooted!(&in(cx) let mut rval = UndefinedValue());
             self.stored_error.to_jsval(cx, rval.handle_mut());
             promise.reject_native(cx, &rval.handle());
@@ -1673,7 +1676,7 @@ impl ReadableStream {
         // Create a new promise,
         // and setup a handler in order to react to the fulfillment of sourceCancelPromise.
         let global = self.global();
-        let result_promise = Promise::new_rooted(cx, &global);
+        let result_promise = Promise::new(cx, &global);
         rooted!(&in(cx) let mut fulfillment_handler = Some(SourceCancelPromiseFulfillmentHandler::new(&result_promise)));
         rooted!(&in(cx) let mut rejection_handler = Some(SourceCancelPromiseRejectionHandler::new(&result_promise)));
         let handler = PromiseNativeHandler::new(
@@ -1734,7 +1737,7 @@ impl ReadableStream {
         let reason_2 = Rc::new(Heap::default());
 
         // Let cancelPromise be a new promise.
-        let cancel_promise = Promise::new_rooted(cx, &self.global());
+        let cancel_promise = Promise::new(cx, &self.global());
         let reader_version = Rc::new(Cell::new(0));
 
         let byte_tee_source_1 = ByteTeeUnderlyingSource::new(
@@ -1826,7 +1829,7 @@ impl ReadableStream {
         // Let reason2 be undefined.
         let reason_2 = Rc::new(Heap::default());
         // Let cancelPromise be a new promise.
-        let cancel_promise = Promise::new_rooted(cx, &self.global());
+        let cancel_promise = Promise::new(cx, &self.global());
 
         let tee_source_1 = DefaultTeeUnderlyingSource::new(
             cx,
@@ -1948,7 +1951,7 @@ impl ReadableStream {
         // Done below with default.
 
         // Let promise be a new promise.
-        let promise = Promise::new_rooted(cx, global);
+        let promise = Promise::new(cx, global);
 
         // In parallel, but not really, using reader and writer, read all chunks from source and write them to dest.
         rooted!(&in(cx) let pipe_to = PipeTo {
@@ -2029,7 +2032,7 @@ impl ReadableStream {
         &self,
         cx: &mut JSContext,
         global: &GlobalScope,
-        underlying_source_dict: JsUnderlyingSource,
+        underlying_source_dict: &JsUnderlyingSource,
         underlying_source_handle: SafeHandleObject,
         stream: &ReadableStream,
         strategy_hwm: f64,
@@ -2159,7 +2162,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
             stream.set_up_byte_controller(
                 cx,
                 global,
-                underlying_source_dict,
+                &underlying_source_dict,
                 underlying_source_obj.handle(),
                 &stream,
                 strategy_hwm,
@@ -2174,7 +2177,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
             let controller = ReadableStreamDefaultController::new(
                 cx,
                 global,
-                UnderlyingSourceType::Js(underlying_source_dict),
+                UnderlyingSourceType::Js(&underlying_source_dict),
                 high_water_mark,
                 size_algorithm,
             );
@@ -2201,7 +2204,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
         if self.is_locked() {
             // If ! IsReadableStreamLocked(this) is true,
             // return a promise rejected with a TypeError exception.
-            let promise = Promise::new_rooted(cx, &global);
+            let promise = Promise::new(cx, &global);
             promise.reject_error(cx, Error::Type(c"stream is locked".to_owned()));
             promise
         } else {
@@ -2249,7 +2252,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
         // If ! IsReadableStreamLocked(this) is true,
         if self.is_locked() {
             // return a promise rejected with a TypeError exception.
-            let promise = Promise::new_rooted(cx, &global);
+            let promise = Promise::new(cx, &global);
             promise.reject_error(cx, Error::Type(c"Source stream is locked".to_owned()));
             return promise;
         }
@@ -2257,7 +2260,7 @@ impl ReadableStreamMethods<crate::DomTypeHolder> for ReadableStream {
         // If ! IsWritableStreamLocked(destination) is true,
         if destination.is_locked() {
             // return a promise rejected with a TypeError exception.
-            let promise = Promise::new_rooted(cx, &global);
+            let promise = Promise::new(cx, &global);
             promise.reject_error(cx, Error::Type(c"Destination stream is locked".to_owned()));
             return promise;
         }
@@ -2462,20 +2465,6 @@ pub(crate) fn get_read_promise_bytes(
         ConversionBehavior::EnforceRange,
     )?
     .ok_or(Error::Type(c"Promise has no value property.".to_owned()))
-}
-
-/// Convert a raw stream `chunk` JS value to `Vec<u8>`.
-/// This mirrors the conversion used inside `get_read_promise_bytes`,
-/// but operates on the raw chunk (no `{ value, done }` wrapper).
-pub(crate) fn bytes_from_chunk_jsval(
-    cx: &mut JSContext,
-    chunk: &RootedTraceableBox<Heap<JSVal>>,
-) -> Result<Vec<u8>, Error> {
-    match Vec::<u8>::from_jsval(cx, chunk.handle(), ConversionBehavior::EnforceRange) {
-        Ok(ConversionResult::Success(vec)) => Ok(vec),
-        Ok(ConversionResult::Failure(error)) => Err(Error::Type(error.into_owned())),
-        _ => Err(Error::Type(c"Unknown format for bytes read.".to_owned())),
-    }
 }
 
 /// <https://streams.spec.whatwg.org/#rs-transfer>

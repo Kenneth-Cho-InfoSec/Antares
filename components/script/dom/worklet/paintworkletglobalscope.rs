@@ -4,7 +4,6 @@
 
 use std::cell::Cell;
 use std::ptr::{NonNull, null_mut};
-use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -17,14 +16,14 @@ use js::context::JSContext;
 use js::jsapi::{HandleValueArray, Heap, IsCallable, IsConstructor, JSObject, Value};
 use js::jsval::{JSVal, ObjectValue, UndefinedValue};
 use js::realm::AutoRealm;
-use js::rust::wrappers2::{
-    Call, Construct1, JS_ClearPendingException, JS_IsExceptionPending, NewArrayObject,
-};
+use js::rust::wrappers2::{Call, Construct1, JS_ClearPendingException, NewArrayObject};
 use js::rust::{HandleValue, MutableHandle};
 use net_traits::image_cache::ImageCache;
 use pixels::PixelFormat;
+use script_bindings::callback::{HasCallbackHolder, RootedCallback};
 use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::HasOrigin;
+use script_bindings::js::JS_IsExceptionPending;
 use script_bindings::reflector::DomObject;
 use script_traits::{DrawAPaintImageResult, PaintWorkletError, Painter};
 use servo_base::id::PipelineId;
@@ -34,7 +33,6 @@ use style_traits::{CSSPixel, SpeculativePainter};
 use stylo_atoms::Atom;
 use webrender_api::units::DevicePixel;
 
-use crate::dom::bindings::callback::CallbackContainer;
 use crate::dom::bindings::codegen::Bindings::PaintWorkletGlobalScopeBinding;
 use crate::dom::bindings::codegen::Bindings::PaintWorkletGlobalScopeBinding::PaintWorkletGlobalScopeMethods;
 use crate::dom::bindings::codegen::Bindings::VoidFunctionBinding::VoidFunction;
@@ -221,7 +219,7 @@ impl PaintWorkletGlobalScope {
             Construct1(cx, class_constructor, &args, result.handle_mut());
         }
         paint_instance.set(ObjectValue(result.get()));
-        if unsafe { JS_IsExceptionPending(cx) } {
+        if JS_IsExceptionPending(cx) {
             debug!("Paint constructor threw an exception {}.", name);
             unsafe {
                 JS_ClearPendingException(cx);
@@ -348,7 +346,7 @@ impl PaintWorkletGlobalScope {
         let missing_image_urls = rendering_context.take_missing_image_urls();
 
         // Step 13.
-        if unsafe { JS_IsExceptionPending(cx) } {
+        if JS_IsExceptionPending(cx) {
             debug!("Paint function threw an exception {}.", name);
             unsafe {
                 JS_ClearPendingException(cx);
@@ -572,7 +570,7 @@ impl PaintWorkletGlobalScopeMethods<crate::DomTypeHolder> for PaintWorkletGlobal
         &self,
         cx: &mut JSContext,
         name: DOMString,
-        paint_ctor: Rc<VoidFunction>,
+        paint_ctor: RootedCallback<VoidFunction>,
     ) -> Fallible<()> {
         let name = Atom::from(name);
         rooted!(&in(cx) let paint_obj = paint_ctor.callback_holder().get());

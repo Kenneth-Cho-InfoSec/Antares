@@ -8,6 +8,8 @@
 
 #![deny(unsafe_code)]
 
+mod accessibility;
+mod container_timing_record;
 mod largest_contentful_paint_candidate;
 mod layout_damage;
 mod layout_dom;
@@ -22,14 +24,20 @@ use std::sync::atomic::AtomicIsize;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+pub use accessibility::{
+    ACCESSKIT_ROLE_TO_ARIA_ROLE, ARIA_ROLE_TO_ACCESSKIT_ROLE, AccessibilityDamage,
+    SUPPORTED_ARIA_ROLES,
+};
+use accesskit::{Action, ActionData, ActionRequest};
 use app_units::Au;
 use background_hang_monitor_api::BackgroundHangMonitorRegister;
 use bitflags::bitflags;
+pub use container_timing_record::ContainerTimingRecord;
 use embedder_traits::{Cursor, ScriptToEmbedderChan, Theme, UntrustedNodeAddress, ViewportDetails};
 use euclid::{Point2D, Rect};
 use fonts::{FontContext, WebFontDocumentContext, WebFontSetDifference};
 pub use largest_contentful_paint_candidate::LCPCandidate;
-pub use layout_damage::{AccessibilityDamage, LayoutDamage};
+pub use layout_damage::LayoutDamage;
 pub use layout_dom::{
     DangerousStyleElementOf, DangerousStyleNodeOf, LayoutDomTypeBundle, LayoutElementOf,
     LayoutNodeOf,
@@ -42,6 +50,7 @@ use malloc_size_of_derive::MallocSizeOf;
 use net_traits::image_cache::{ImageCache, ImageCacheFactory, PendingImageId};
 use net_traits::request::InternalRequest;
 use paint_api::CrossProcessPaintApi;
+use paint_api::display_list::PaintTimingInfo;
 use parking_lot::RwLock;
 use pixels::{RasterImage, Repeat};
 use profile_traits::mem::Report;
@@ -58,7 +67,7 @@ use servo_base::text::{RangeAny, Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::Atom;
 use style::animation::DocumentAnimationSet;
-use style::attr::{AttrValue, parse_integer, parse_unsigned_integer};
+use style::attr::{AttrValue, parse_double};
 use style::context::QuirksMode;
 use style::data::ElementDataWrapper;
 use style::device::Device;
@@ -83,6 +92,14 @@ pub trait GenericLayoutDataTrait: Any + MallocSizeOfTrait + Send + Sync + 'stati
 
     /// Returns whether `new_range` was successfully set on an existing text run
     fn set_text_run_selection(&self, new_range: Option<RangeAny<Utf32CodeUnits>>) -> bool;
+
+    /// Set whether or not this node is selected when it is an element. Returns `true`
+    /// if anything changed that requires a new display list.
+    fn set_element_selection(&self, selected: bool) -> bool;
+
+    /// Get the text rendered by this node, if it is a `CharacterData` node and produces
+    /// a `TextRun` in the box tree.
+    fn rendered_text(&self, range: RangeAny<Utf32CodeUnits>) -> Option<String>;
 }
 
 pub trait LayoutDataTrait: GenericLayoutDataTrait + Default {}
@@ -153,26 +170,30 @@ pub struct SVGElementData<'dom> {
     pub width: Option<&'dom AttrValue>,
     pub height: Option<&'dom AttrValue>,
     pub svg_id: Uuid,
+    /// <https://www.w3.org/TR/SVG11/coords.html#ViewBoxAttribute>
     pub view_box: Option<&'dom AttrValue>,
 }
 
 impl SVGElementData<'_> {
+    /// <https://www.w3.org/TR/SVG11/coords.html#ViewBoxAttribute>
     pub fn ratio_from_view_box(&self) -> Option<f32> {
-        let mut iter = self.view_box?.chars();
-        let _min_x = parse_integer(&mut iter).ok()?;
-        let _min_y = parse_integer(&mut iter).ok()?;
+        let mut iter = self
+            .view_box?
+            .split(|c| char_is_whitespace(c) || c == ',')
+            .filter(|part| !part.is_empty());
+        let _min_x = parse_double(iter.next()?).ok()?;
+        let _min_y = parse_double(iter.next()?).ok()?;
 
-        let width = parse_unsigned_integer(&mut iter).ok()?;
-        if width == 0 {
+        let width = parse_double(iter.next()?).ok()?;
+        if width == 0f64 {
             return None;
         }
 
-        let height = parse_unsigned_integer(&mut iter).ok()?;
-        if height == 0 {
+        let height = parse_double(iter.next()?).ok()?;
+        if height == 0f64 {
             return None;
         }
 
-        let mut iter = iter.skip_while(|c| char_is_whitespace(*c));
         iter.next().is_none().then(|| width as f32 / height as f32)
     }
 }
@@ -236,7 +257,14 @@ pub struct MediaMetadata {
 pub struct HTMLMediaData {
     pub current_frame: Option<MediaFrame>,
     pub metadata: Option<MediaMetadata>,
-    pub poster_url: Option<ServoUrl>,
+    pub poster_or_src_url: Option<ServoUrl>,
+}
+
+#[derive(Debug)]
+pub struct AccessibilityActionRequest {
+    pub action: Action,
+    pub target: OpaqueNode,
+    pub data: Option<ActionData>,
 }
 
 pub struct LayoutConfig {
@@ -353,7 +381,7 @@ pub trait Layout {
         root: TrustedNodeAddress,
         possible_descendant: TrustedNodeAddress,
     ) -> bool;
-    fn query_padding(&self, node: TrustedNodeAddress) -> Option<PhysicalSides>;
+    fn query_padding(&self, node: TrustedNodeAddress) -> Option<PhysicalSides<Au>>;
     fn query_box_area(
         &self,
         node: TrustedNodeAddress,
@@ -380,6 +408,9 @@ pub trait Layout {
         animations: DocumentAnimationSet,
         animation_timeline_value: f64,
     ) -> String;
+
+    fn query_accesskit_node(&self, node: TrustedNodeAddress) -> Option<accesskit::Node>;
+
     fn query_resolved_font_style(
         &self,
         node: TrustedNodeAddress,
@@ -396,6 +427,17 @@ pub trait Layout {
         node: TrustedNodeAddress,
         point_in_viewport: Point2D<Au, CSSPixel>,
     ) -> Option<(OpaqueNode, Utf32CodeUnits)>;
+    /// Find the text segment of the given [`SegmentGranularity`] at the given `offset` in the
+    /// given node. Returns `None` when `node` is not a text node or due to any other failure.
+    fn query_text_segment(
+        &self,
+        node: TrustedNodeAddress,
+        offset: Utf32CodeUnitsOrNodeOffset,
+        granularity: SegmentGranularity,
+    ) -> Option<(
+        (OpaqueNode, Utf32CodeUnitsOrNodeOffset),
+        (OpaqueNode, Utf32CodeUnitsOrNodeOffset),
+    )>;
     fn hit_test(&self, flags: HitTestFlags, point: LayoutPoint) -> HitTestResult;
     fn query_effective_overflow(&self, node: TrustedNodeAddress) -> Option<AxesOverflow>;
     fn stylist_mut(&mut self) -> &mut Stylist;
@@ -407,19 +449,36 @@ pub trait Layout {
     /// Returns whether accessibility is active for this Layout.
     fn accessibility_active(&self) -> bool;
 
-    /// Whether the accessibility tree must be updated. This is set to true when
-    /// - accessibility is activated; or
-    /// - a page is loaded after accesibility is activated.
+    /// Whether the accessibility tree must be updated. This is true when accessibility is
+    /// activated, and at least one of the following conditions is met:
+    /// - the accessibility tree has not yet been built after activating accessibility;
+    /// - set_force_accessibility_update_if_active() has been called since the accessibility tree
+    ///   was last updated (for example, if a scroll occurred, or the focused element changed);
+    /// - there are pending actions from assistive technology.
     ///
-    /// Checked in can_skip_reflow_request_entirely(), as a dirty accessibility tree
-    /// should force a reflow, and handle_accessibility_tree_update() to determine whether to
-    /// update the accessibility tree during reflow.
-    fn force_accessibility_update(&self) -> bool;
+    /// Checked in can_skip_reflow_request_entirely(), as a pending accessibility tree update
+    /// should force a reflow, and during reflow to determine whether to update the
+    /// accessibility tree.
+    fn needs_accessibility_update(&self) -> bool;
 
-    /// See [Self::force_accessibility_update()].
-    fn set_force_accessibility_update(&self);
+    /// If accessibility is active, force an accessibility update on the next reflow.
+    /// See [Self::needs_accessibility_update()].
+    fn set_force_accessibility_update_if_active(&self);
+
+    /// Handle an accessibility action.
+    fn handle_accessibility_action(&self, action_request: ActionRequest);
 
     fn font_context(&self) -> &Arc<FontContext>;
+}
+
+/// The granularity of the text boundaries to find.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, MallocSizeOf, PartialEq, Serialize)]
+pub enum SegmentGranularity {
+    /// A Unicode word boundary.
+    Word,
+    /// A hard line break. If no hard line break is found, this is the entire
+    /// containing inline formatting context's text.
+    HardLineBreak,
 }
 
 /// This trait is part of `layout_api` because it depends on both `script_traits`
@@ -459,13 +518,7 @@ pub enum NodeRenderingType {
     NotRendered,
 }
 
-#[derive(Default)]
-pub struct PhysicalSides {
-    pub left: Au,
-    pub top: Au,
-    pub right: Au,
-    pub bottom: Au,
-}
+pub type PhysicalSides<U> = euclid::SideOffsets2D<U, CSSPixel>;
 
 #[derive(Clone, Default)]
 pub struct OffsetParentResponse {
@@ -501,8 +554,8 @@ impl Default for AxesOverflow {
 impl From<&ComputedValues> for AxesOverflow {
     fn from(style: &ComputedValues) -> Self {
         Self {
-            x: style.clone_overflow_x(),
-            y: style.clone_overflow_y(),
+            x: style.slow_clone_overflow_x(),
+            y: style.slow_clone_overflow_y(),
         }
     }
 }
@@ -548,9 +601,10 @@ pub enum QueryMsg {
     ResolvedStyleQuery(PropertyId),
     ScrollingAreaOrOffsetQuery,
     StyleQuery,
-    TextIndexQuery,
+    TextIndexOrSegmentQuery,
     PaddingQuery,
     FlushForUpdateTheRenderingQuery,
+    AccessKitNodeQuery,
 }
 
 /// The goal of a reflow request.
@@ -630,6 +684,10 @@ pub struct ReflowResult {
     pub changed_web_fonts: WebFontSetDifference,
     /// The LCP candidate during this layout pass, if any.
     pub lcp_candidate: Option<LCPCandidate>,
+    /// Actions which have been requested by assistive technology, if any.
+    pub pending_accessibility_actions: Vec<AccessibilityActionRequest>,
+    /// The containers whose painted area grew during this layout pass, if any.
+    pub container_timing_records: Vec<ContainerTimingRecord>,
 }
 
 bitflags! {
@@ -692,6 +750,20 @@ pub struct ReflowRequestRestyle {
     pub pending_restyles: Vec<(TrustedNodeAddress, PendingRestyle)>,
 }
 
+/// Information needed for a script-initiated reflow that requires the accessibility tree to be
+/// updated.
+#[derive(Debug)]
+pub struct ReflowRequestAccessibility {
+    /// Damage to the accessibility tree from DOM mutations.
+    pub damage: Vec<(TrustedNodeAddress, AccessibilityDamage)>,
+    /// The document's focused element at the time of the reflow, if any.
+    pub focused_element: Option<OpaqueNode>,
+    /// Nodes which were removed from the DOM tree since the last reflow, which were rooted in
+    /// [`AccessibilityData`]. Only set if [`pref::expensive_accessibility_test_assertions_enabled`]
+    /// is set.
+    pub rooted_nodes_for_integrity_check: Option<FxHashSet<OpaqueNode>>,
+}
+
 /// Information needed for a script-initiated reflow.
 #[derive(Debug)]
 pub struct ReflowRequest {
@@ -699,7 +771,7 @@ pub struct ReflowRequest {
     pub document: TrustedNodeAddress,
     /// The current layout [`Epoch`] managed by the script thread.
     pub epoch: Epoch,
-    /// If a restyle is necessary, all of the informatio needed to do that restyle.
+    /// If a restyle is necessary, all of the information needed to do that restyle.
     pub restyle: Option<ReflowRequestRestyle>,
     /// The current [`ViewportDetails`] to use for this reflow.
     pub viewport_details: ViewportDetails,
@@ -715,18 +787,23 @@ pub struct ReflowRequest {
     pub animating_images: Arc<RwLock<AnimatingImages>>,
     /// The node highlighted by the devtools, if any
     pub highlighted_dom_node: Option<OpaqueNode>,
+    /// Whether or not this document has system focus and is the focused frame
+    /// in the frame tree.
+    pub frame_focused: bool,
     /// Whether LCP computation should be halted for this reflow.
     /// From <https://www.w3.org/TR/largest-contentful-paint/#limitations>:
     /// > The LargestContentfulPaint ... algorithm halts ... inputs.
     pub halt_lcp: bool,
+    /// Whether the document's browsing context is paint-timing eligible.
+    /// <https://www.w3.org/TR/paint-timing/#paint-timing-eligible>
+    pub paint_timing_eligible: bool,
+    /// The [`PaintTimingInfo`] for this reflow.
+    /// <https://www.w3.org/TR/paint-timing/#paint-timing-info>
+    pub paint_timing_info: PaintTimingInfo,
     /// The current font context.
     pub document_context: WebFontDocumentContext,
-    /// Damage to the accessibility tree from DOM mutations.
-    pub accessibility_damage: Option<Vec<(TrustedNodeAddress, AccessibilityDamage)>>,
-    /// Nodes which were removed from the DOM tree since the last reflow, which were rooted in
-    /// [`AccessibilityData`]. Only set if [`pref::expensive_accessibility_test_assertions_enabled`]
-    /// is set.
-    pub rooted_nodes_for_accessibility_integrity_check: Option<FxHashSet<OpaqueNode>>,
+    /// If an accessibility tree update is necessary, all the information needed to do the update.
+    pub accessibility: Option<ReflowRequestAccessibility>,
 }
 
 impl ReflowRequest {
@@ -1038,6 +1115,7 @@ mod test {
             bytes: Arc::new(vec![1]),
             frames: image_frames,
             cors_status: CorsStatus::Unsafe,
+            load_time: None,
             loop_count: Some(Repeat::Infinite),
             is_opaque: false,
         };
@@ -1079,6 +1157,7 @@ mod test {
             bytes: Arc::new(vec![1]),
             frames: image_frames,
             cors_status: CorsStatus::Unsafe,
+            load_time: None,
             loop_count: Some(Repeat::Finite(NonZeroU32::new(1).unwrap())),
             is_opaque: false,
         };

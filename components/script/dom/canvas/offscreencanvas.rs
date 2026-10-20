@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Cell;
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use euclid::default::Size2D;
@@ -18,6 +17,7 @@ use script_bindings::inheritance::Castable;
 #[cfg(feature = "webgl")]
 use script_bindings::reflector::DomObject;
 use script_bindings::reflector::reflect_dom_object_with_proto;
+use script_bindings::structuredclone::StructuredData;
 use script_bindings::weakref::WeakRef;
 use servo_base::id::{OffscreenCanvasId, OffscreenCanvasIndex};
 #[cfg(feature = "webgl")]
@@ -27,6 +27,7 @@ use servo_constellation_traits::{BlobImpl, TransferableOffscreenCanvas};
 use crate::canvas_context::{CanvasContext, OffscreenRenderingContext};
 #[cfg(feature = "webgl")]
 use crate::conversions::Convert;
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasRenderingContext2DSettings;
 use crate::dom::bindings::codegen::Bindings::OffscreenCanvasBinding::{
     ImageEncodeOptions, OffscreenCanvasMethods,
@@ -40,7 +41,6 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::blob::Blob;
 use crate::dom::eventtarget::EventTarget;
@@ -538,7 +538,7 @@ impl OffscreenCanvasMethods<crate::DomTypeHolder> for OffscreenCanvas {
         &self,
         cx: &mut js::context::JSContext,
         options: &ImageEncodeOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 5. Let result be a new promise object.
         let mut realm = CurrentRealm::assert(cx);
         let promise = Promise::new_in_realm(&mut realm);
@@ -579,7 +579,7 @@ impl OffscreenCanvasMethods<crate::DomTypeHolder> for OffscreenCanvas {
         // Step 7.2. Queue a global task on the canvas blob serialization task
         // source given global to run these steps:
         let trusted_this = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
 
         let image_type = EncodedImageType::from(&options.type_.str() as &str);
         let quality = options.quality;

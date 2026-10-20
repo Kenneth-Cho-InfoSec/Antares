@@ -14,9 +14,9 @@ use js::conversions::{
     ConversionResult, FromJSValConvertible, ToJSValConvertible, jsstr_to_string,
 };
 use js::gc::{HandleValue, RootedVec};
-use js::jsapi::{HandleId, Heap, JS_GetPropertyById, JSITER_OWNONLY, JSObject, JSPROP_ENUMERATE};
+use js::jsapi::{Heap, JS_GetPropertyById, JSITER_OWNONLY, JSObject};
 use js::jsval::{ObjectValue, UndefinedValue};
-use js::rust::wrappers2::{GetPropertyKeys, JS_DefineProperty, JS_IdToValue, JS_NewObject};
+use js::rust::wrappers2::JS_NewObject;
 use js::rust::{
     ForOfIterationFailure, HandleObject, IdVector, IntoHandle, IntoMutableHandle, for_of,
 };
@@ -30,6 +30,7 @@ use script_bindings::codegen::GenericUnionTypes::UnrestrictedDoubleOrKeyframeEff
 use script_bindings::conversions::StringificationBehavior;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::inheritance::Castable;
+use script_bindings::js::{GetPropertyKeys, JS_DefineProperty, JS_IdToValue, PropertyFlags};
 use script_bindings::num::Finite;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::root::DomRoot;
@@ -139,8 +140,7 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
         cx: &mut JSContext,
         result: &mut RootedVec<'_, Box<Heap<*mut JSObject>>>,
     ) -> Fallible<()> {
-        let mut layout = self.upcast::<AnimationEffect>().window().layout_mut();
-        let stylist = layout.stylist_mut();
+        let window = self.upcast::<AnimationEffect>().window();
 
         // Step 1. Let result be an empty sequence of objects.
         debug_assert!(result.is_empty());
@@ -187,16 +187,16 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
                 // Step 3.3.2 Let IDL value be the result of serializing the property value of declaration
                 // by passing declaration to the algorithm to serialize a CSS value [CSSOM].
                 let mut value_string = String::new();
-                if property_value_pair
-                    .block
-                    .single_value_to_css(
+                let is_single_value_value_to_css = {
+                    let mut layout = window.layout_mut();
+                    property_value_pair.block.single_value_to_css(
                         &property_value_pair.property_id,
                         &mut value_string,
                         None,
-                        stylist,
+                        layout.stylist_mut(),
                     )
-                    .is_err()
-                {
+                };
+                if is_single_value_value_to_css.is_err() {
                     continue;
                 }
 
@@ -211,15 +211,15 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
                     continue;
                 };
 
-                let success = unsafe {
-                    JS_DefineProperty(
-                        cx,
-                        output_keyframe.handle(),
-                        property_name.as_ptr(),
-                        value.handle(),
-                        JSPROP_ENUMERATE as u32,
-                    )
-                };
+                let success = JS_DefineProperty(
+                    cx,
+                    output_keyframe.handle(),
+                    &property_name,
+                    value.handle(),
+                    PropertyFlags::ENUMERABLE |
+                        PropertyFlags::WRITABLE |
+                        PropertyFlags::CONFIGURABLE,
+                );
                 if !success {
                     if cfg!(debug_assertions) {
                         unreachable!("Setting a property on output_keyframe should never fail");
@@ -268,21 +268,25 @@ fn process_a_keyframes_argument(
     rooted!(&in(cx) let iterable = ObjectValue(keyframes));
     let mut keyframes = Vec::new();
     let result = for_of(cx, iterable.handle(), |cx, iterator_element| {
+        // Step 5.3.4 Let nextItem be IteratorValue(next).
+        // Step 5.3.5 Check the completion record of nextItem.
+        // Note: This happens inside the "for_of" call.
+
         // Step 5.3.6 If Type(nextItem) is not Undefined, Null or Object, then throw a TypeError
         // and abort these steps.
-        //
-        // Note: nextItem is later passed to "process a keyframe like object" which cannot handle undefined
-        // or null values. This seems to be a bug in the specification which is tracked by
-        // https://github.com/w3c/csswg-drafts/issues/14113
-        if !iterator_element.is_object() {
+        if !iterator_element.is_null_or_undefined() && !iterator_element.is_object() {
             return Err(ForOfIterationFailure::Other(Error::Type(
-                c"Keyframe must be an object".to_owned(),
+                c"Keyframe must be an object, null or undefined".to_owned(),
             )));
         }
 
         // Step 5.3.7 Append to processed keyframes the result of running the procedure to process a
         // keyframe-like object passing nextItem as the keyframe input with the allow lists flag set to false.
-        keyframes.push(keyframe_from_value(cx, document, iterator_element)?);
+        keyframes.push(process_a_keyframe_like_object(
+            cx,
+            document,
+            iterator_element,
+        )?);
 
         Ok(ControlFlow::Continue(()))
     });
@@ -316,33 +320,11 @@ struct KeyframePropertyDeclaration {
     block: PropertyDeclarationBlock,
 }
 
-/// Step 5 (for iterable keyframes) of <https://drafts.csswg.org/web-animations-1/#process-a-keyframes-argument>.
-fn keyframe_from_value(
-    cx: &mut JSContext,
-    document: &Document,
-    value: HandleValue<'_>,
-) -> Fallible<Keyframe> {
-    // Step 3.4 Let nextItem be IteratorValue(next).
-    // NOTE: This is "current_value"
-    // Step 3.5 Check the completion record of nextItem.
-
-    // Step 3.6 If Type(nextItem) is not Undefined, Null or Object,
-    // then throw a TypeError and abort these steps.
-    if !value.is_null_or_undefined() && !value.is_object() {
-        return Err(Error::Type(c"Invalid keyframe value".to_owned()));
-    }
-
-    // Step 3.7 Append to processed keyframes the result of running the procedure to process
-    // a keyframe-like object passing nextItem as the keyframe input with the allow lists
-    // flag set to false.
-    process_a_keyframe_like_object(cx, document, value)
-}
-
 /// <https://drafts.csswg.org/web-animations-1/#process-a-keyframe-like-object>
 fn process_a_keyframe_like_object(
     cx: &mut JSContext,
     document: &Document,
-    value: HandleValue,
+    keyframe_input: HandleValue,
 ) -> Fallible<Keyframe> {
     // Step 1. Run the procedure to convert an ECMAScript value to a dictionary type [WEBIDL] with keyframe input
     // as the ECMAScript value, and the dictionary type depending on the value of the allow lists flag as follows:
@@ -368,38 +350,45 @@ fn process_a_keyframe_like_object(
     //
     // Note: 'allow lists' is currently never true.
     // Use the following dictionary type:
-    let Ok(keyframe_output) = BaseKeyframe::from_jsval(cx, value, ()) else {
+    let Ok(keyframe_output) = BaseKeyframe::from_jsval(cx, keyframe_input, ()) else {
         return Err(Error::JSFailed);
     };
     let ConversionResult::Success(keyframe_output) = keyframe_output else {
         return Err(Error::Operation(None));
     };
+    let mut keyframe_output = Keyframe {
+        offset: keyframe_output.offset,
+        easing_function: keyframe_output.easing,
+        composite: keyframe_output.composite,
+        declarations: Vec::new(),
+    };
 
-    // From Step 2 onwards our implementation diverges from the specification. The spec
+    // Step 2. If keyframe input is null or undefined, return keyframe output.
+    if keyframe_input.is_null_or_undefined() {
+        return Ok(keyframe_output);
+    }
+
+    // From Step 3 onwards our implementation diverges from the specification. The spec
     // wants us to build a list of animatable CSS properties and a list of properties on
     // the object, then compute the union between the two.
     //
     // Instead, we iterate over all properties on the object and then check if they correspond
     // to an animatable property.
     let urlextradata = document.url().into_url().into();
-    let parser_context = parser_context_for_document(
+    let mut parser_context = parser_context_for_document(
         document,
         CssRuleType::Style,
         ParsingMode::DEFAULT,
         &urlextradata,
     );
-    rooted!(&in(cx) let object = value.to_object());
+    rooted!(&in(cx) let object = keyframe_input.to_object());
 
     // Steps 2 - 6 are in get_property_declarations
-    let declarations = get_property_declarations(cx, object.handle(), &parser_context)?;
+    keyframe_output.declarations =
+        get_property_declarations(cx, object.handle(), &mut parser_context)?;
 
     // Step 7. Return keyframe output.
-    Ok(Keyframe {
-        offset: keyframe_output.offset,
-        easing_function: keyframe_output.easing,
-        composite: keyframe_output.composite,
-        declarations,
-    })
+    Ok(keyframe_output)
 }
 
 /// Implements Step 2-6 of  <https://drafts.csswg.org/web-animations-1/#process-a-keyframe-like-object>.
@@ -407,13 +396,13 @@ fn process_a_keyframe_like_object(
 fn get_property_declarations(
     cx: &mut JSContext,
     object: HandleObject,
-    parser_context: &ParserContext<'_>,
+    parser_context: &mut ParserContext<'_>,
 ) -> Fallible<Vec<KeyframePropertyDeclaration>> {
     // The spec tells us to iterate over all animatable properties and see if they're defined
     // on the object. Instead we can iterate over the own properties of the object and see
     // if they're animated properties, that's easier.
     let mut ids = IdVector::new(cx);
-    if !unsafe { GetPropertyKeys(cx, object, JSITER_OWNONLY, ids.handle_mut()) } {
+    if !GetPropertyKeys(cx, object, JSITER_OWNONLY, ids.handle_mut()) {
         return Ok(Vec::new());
     }
 
@@ -426,8 +415,7 @@ fn get_property_declarations(
             continue;
         }
         rooted!(&in(cx) let mut key_value = UndefinedValue());
-        let raw_id: HandleId = id.handle().into();
-        if !unsafe { JS_IdToValue(cx, *raw_id.ptr, key_value.handle_mut()) } {
+        if !JS_IdToValue(cx, id.handle().get(), key_value.handle_mut()) {
             continue;
         }
         rooted!(&in(cx) let js_string = key_value.to_string());
@@ -503,7 +491,7 @@ fn get_property_declarations(
 fn parse_single_property_declaration(
     property: NonCustomPropertyId,
     input: &str,
-    parser_context: &ParserContext<'_>,
+    parser_context: &mut ParserContext<'_>,
 ) -> Option<KeyframePropertyDeclaration> {
     let mut declaration = SourcePropertyDeclaration::default();
     let mut parser = Parser::new(input);

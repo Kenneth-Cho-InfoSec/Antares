@@ -74,7 +74,7 @@ impl<D: Equivalence> GPURenderBundle<D> {
         }
     }
 
-    pub fn new(
+    pub(crate) fn new(
         cx: &mut JSContext,
         global: &D::GlobalScope,
         render_bundle: WebGPURenderBundle,
@@ -83,6 +83,7 @@ impl<D: Equivalence> GPURenderBundle<D> {
         label: USVString,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_wrap::<D, _, _>(
+            cx,
             Box::new(GPURenderBundle::new_inherited(
                 render_bundle,
                 device,
@@ -90,14 +91,13 @@ impl<D: Equivalence> GPURenderBundle<D> {
                 label,
             )),
             global,
-            cx,
             GPURenderBundleWrap::<D>,
         )
     }
 }
 
 impl<D: DomTypes> GPURenderBundle<D> {
-    pub fn id(&self) -> WebGPURenderBundle {
+    pub(crate) fn id(&self) -> WebGPURenderBundle {
         self.droppable.render_bundle
     }
 }

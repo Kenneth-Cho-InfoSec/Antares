@@ -216,7 +216,8 @@ pub struct RequestClient {
     /// <https://html.spec.whatwg.org/multipage/#map-of-preloaded-resources>
     pub preloaded_resources: PreloadedResources,
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-policy-container>
-    pub policy_container: PolicyContainer,
+    #[conditional_malloc_size_of]
+    pub policy_container: Arc<PolicyContainer>,
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-origin>
     pub origin: Origin,
     /// <https://html.spec.whatwg.org/multipage/#nested-browsing-context>
@@ -507,7 +508,7 @@ pub struct RequestBuilder {
     pub cryptographic_nonce_metadata: String,
 
     /// <https://fetch.spec.whatwg.org/#concept-request-url-list>
-    pub url_list: Vec<ServoUrl>,
+    pub url_list: Vec<UrlWithBlobClaim>,
 
     /// <https://fetch.spec.whatwg.org/#concept-request-parser-metadata>
     pub parser_metadata: ParserMetadata,
@@ -652,7 +653,7 @@ impl RequestBuilder {
     }
 
     /// <https://fetch.spec.whatwg.org/#concept-request-url-list>
-    pub fn url_list(mut self, url_list: Vec<ServoUrl>) -> RequestBuilder {
+    pub fn url_list(mut self, url_list: Vec<UrlWithBlobClaim>) -> RequestBuilder {
         self.url_list = url_list;
         self
     }
@@ -697,7 +698,7 @@ impl RequestBuilder {
     }
 
     /// <https://fetch.spec.whatwg.org/#concept-request-policy-container>
-    pub fn policy_container(mut self, policy_container: PolicyContainer) -> RequestBuilder {
+    pub fn policy_container(mut self, policy_container: Arc<PolicyContainer>) -> RequestBuilder {
         self.policy_container = RequestPolicyContainer::PolicyContainer(policy_container);
         self
     }
@@ -756,11 +757,7 @@ impl RequestBuilder {
         request.cache_mode = self.cache_mode;
         request.referrer_policy = self.referrer_policy;
         request.redirect_mode = self.redirect_mode;
-        let mut url_list: Vec<_> = self
-            .url_list
-            .into_iter()
-            .map(UrlWithBlobClaim::from_url_without_having_claimed_blob)
-            .collect();
+        let mut url_list = self.url_list;
         if url_list.is_empty() {
             url_list.push(self.url);
         }
@@ -1023,7 +1020,7 @@ impl Request {
             } else {
                 // Step 3.2. Otherwise, set request’s policy container to a new policy container.
                 self.policy_container =
-                    RequestPolicyContainer::PolicyContainer(PolicyContainer::default());
+                    RequestPolicyContainer::PolicyContainer(Arc::new(PolicyContainer::default()));
             }
         }
     }

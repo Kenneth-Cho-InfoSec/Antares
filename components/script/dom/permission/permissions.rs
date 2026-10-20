@@ -10,7 +10,7 @@ use js::jsapi::JSObject;
 use js::jsval::{ObjectValue, UndefinedValue};
 use js::realm::CurrentRealm;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::generic_channel;
 use servo_config::pref;
 
@@ -76,12 +76,12 @@ impl Permissions {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<Permissions> {
-        reflect_dom_object_with_cx(Box::new(Permissions::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(Permissions::new_inherited()), global)
     }
 
-    // https://w3c.github.io/permissions/#dom-permissions-query
-    // https://w3c.github.io/permissions/#dom-permissions-request
-    // https://w3c.github.io/permissions/#dom-permissions-revoke
+    /// <https://w3c.github.io/permissions/#dom-permissions-query>
+    /// <https://w3c.github.io/permissions/#dom-permissions-request>
+    /// <https://w3c.github.io/permissions/#dom-permissions-revoke>
     fn manipulate(
         &self,
         cx: &mut CurrentRealm,
@@ -97,7 +97,7 @@ impl Permissions {
         // (Query, Request) Step 3.
         let p = match promise {
             Some(promise) => promise,
-            None => Promise::new_in_realm_rooted(cx),
+            None => Promise::new_in_realm(cx),
         };
 
         // (Query, Request, Revoke) Step 1.

@@ -3,12 +3,13 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cmp::min;
+use std::sync::Arc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::{CustomAutoRooterGuard, HandleObject};
 use js::typedarray::{Float32, Float32Array, HeapFloat32Array};
-use script_bindings::cell::{DomRefCell, Ref};
+use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use script_bindings::trace::RootedTraceableBox;
 use servo_media::audio::buffer_source_node::AudioBuffer as ServoMediaAudioBuffer;
@@ -46,7 +47,8 @@ pub(crate) struct AudioBuffer {
     /// Aggregates the data from js_channels.
     /// This is `Some<T>` iff the buffers in js_channels are detached.
     #[no_trace]
-    shared_channels: DomRefCell<Option<ServoMediaAudioBuffer>>,
+    #[conditional_malloc_size_of]
+    shared_channels: DomRefCell<Option<Arc<ServoMediaAudioBuffer>>>,
     /// <https://webaudio.github.io/web-audio-api/#dom-audiobuffer-samplerate>
     sample_rate: f32,
     /// <https://webaudio.github.io/web-audio-api/#dom-audiobuffer-length>
@@ -97,6 +99,23 @@ impl AudioBuffer {
         )
     }
 
+    /// Initialize a buffer by taking ownership of already rendered channel data.
+    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
+    pub(crate) fn new_with_channel_data(
+        cx: &mut JSContext,
+        global: &Window,
+        length: u32,
+        sample_rate: f32,
+        channels: Vec<Vec<f32>>,
+    ) -> DomRoot<AudioBuffer> {
+        let buffer = AudioBuffer::new_inherited(channels.len() as u32, length, sample_rate);
+        let buffer = reflect_dom_object_with_proto(cx, Box::new(buffer), global, None);
+        *buffer.shared_channels.safe_borrow_mut(cx.no_gc()) = Some(Arc::new(
+            ServoMediaAudioBuffer::from_buffers(channels, sample_rate),
+        ));
+        buffer
+    }
+
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn new_with_proto(
         cx: &mut JSContext,
@@ -127,7 +146,7 @@ impl AudioBuffer {
                 None => vec![0.; self.length as usize],
             };
         }
-        *self.shared_channels.borrow_mut() = Some(channels);
+        *self.shared_channels.borrow_mut() = Some(Arc::new(channels));
     }
 
     fn restore_js_channel_data(&self, cx: &mut JSContext) -> bool {
@@ -150,7 +169,7 @@ impl AudioBuffer {
             }
         }
 
-        *self.shared_channels.borrow_mut() = None;
+        *self.shared_channels.safe_borrow_mut(cx.no_gc()) = None;
 
         true
     }
@@ -175,17 +194,14 @@ impl AudioBuffer {
         Some(result)
     }
 
-    pub(crate) fn get_channels(
-        &self,
-        cx: &mut JSContext,
-    ) -> Ref<'_, Option<ServoMediaAudioBuffer>> {
+    pub(crate) fn get_channels(&self, cx: &mut JSContext) -> Option<Arc<ServoMediaAudioBuffer>> {
         if self.shared_channels.borrow().is_none() {
-            let channels = self.acquire_contents(cx);
+            let channels = self.acquire_contents(cx).map(Arc::new);
             if channels.is_some() {
                 *self.shared_channels.safe_borrow_mut(cx.no_gc()) = channels;
             }
         }
-        self.shared_channels.borrow()
+        self.shared_channels.borrow().clone()
     }
 }
 

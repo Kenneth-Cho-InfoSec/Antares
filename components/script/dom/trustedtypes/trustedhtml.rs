@@ -5,7 +5,8 @@
 use std::fmt;
 
 use dom_struct::dom_struct;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 
 use crate::conversions::Convert;
 use crate::dom::bindings::codegen::Bindings::TrustedHTMLBinding::TrustedHTMLMethods;
@@ -25,14 +26,14 @@ use crate::dom::trustedtypes::trustedtypepolicyfactory::{
 pub struct TrustedHTML {
     reflector_: Reflector,
 
-    data: DOMString,
+    data: TracedDOMString,
 }
 
 impl TrustedHTML {
     fn new_inherited(data: DOMString) -> Self {
         Self {
             reflector_: Reflector::new(),
-            data,
+            data: data.traced(),
         }
     }
 
@@ -41,7 +42,7 @@ impl TrustedHTML {
         data: DOMString,
         global: &GlobalScope,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_cx(Box::new(Self::new_inherited(data)), global, cx)
+        reflect_dom_object(cx, Box::new(Self::new_inherited(data)), global)
     }
 
     pub(crate) fn get_trusted_type_compliant_string(
@@ -62,11 +63,11 @@ impl TrustedHTML {
                 )
             },
 
-            TrustedHTMLOrString::TrustedHTML(trusted_html) => Ok(trusted_html.data.clone()),
+            TrustedHTMLOrString::TrustedHTML(trusted_html) => Ok(trusted_html.data.clone().root()),
         }
     }
 
-    pub(crate) fn data(&self) -> &DOMString {
+    pub(crate) fn data(&self) -> &TracedDOMString {
         &self.data
     }
 }
@@ -81,12 +82,12 @@ impl fmt::Display for TrustedHTML {
 impl TrustedHTMLMethods<crate::DomTypeHolder> for TrustedHTML {
     /// <https://www.w3.org/TR/trusted-types/#trustedhtml-stringification-behavior>
     fn Stringifier(&self) -> DOMString {
-        self.data.clone()
+        self.data.clone().root()
     }
 
     /// <https://www.w3.org/TR/trusted-types/#dom-trustedhtml-tojson>
     fn ToJSON(&self) -> DOMString {
-        self.data.clone()
+        self.data.clone().root()
     }
 }
 

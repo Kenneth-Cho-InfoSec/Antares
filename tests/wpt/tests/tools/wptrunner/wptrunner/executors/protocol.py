@@ -5,7 +5,7 @@ import traceback
 from http.client import HTTPConnection
 
 from abc import ABCMeta, abstractmethod
-from typing import Any, Awaitable, Callable, ClassVar, Dict, List, Mapping, Optional, \
+from typing import Any, Awaitable, Callable, ClassVar, Dict, List, Literal, Mapping, Optional, \
     Tuple, Type, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -656,6 +656,12 @@ class BidiEmulationProtocolPart(ProtocolPart):
         pass
 
     @abstractmethod
+    async def set_media_features_override(self,
+            features: Optional[Mapping[str, Any]],
+            contexts: List[str]) -> None:
+        pass
+
+    @abstractmethod
     async def set_screen_orientation_override(self,
             screen_orientation: Optional[Mapping[str, Any]],
             contexts: List[str]) -> None:
@@ -664,6 +670,12 @@ class BidiEmulationProtocolPart(ProtocolPart):
     @abstractmethod
     async def set_touch_override(self,
             max_touch_points: Optional[int],
+            contexts: List[str]) -> None:
+        pass
+
+    @abstractmethod
+    async def set_viewport_meta_override(self,
+            viewport_meta: Optional[Literal[True]],
             contexts: List[str]) -> None:
         pass
 
@@ -748,6 +760,15 @@ class WindowProtocolPart(ProtocolPart):
     __metaclass__ = ABCMeta
 
     name = "window"
+
+    @abstractmethod
+    def create(self, type_hint=None):
+        """Create a new top-level browsing context without switching to it.
+
+        :param type_hint: Optional hint, either "tab" or "window", for the
+                          type of top-level browsing context to create.
+        :returns: A handle string identifying the new top-level browsing context."""
+        pass
 
     @abstractmethod
     def set_rect(self, rect):
@@ -866,9 +887,12 @@ class TestDriverProtocolPart(ProtocolPart):
         pass
 
     def switch_to_window(self, wptrunner_id, initial_window=None):
-        """Switch to a window given a wptrunner window id
+        """Switch to a window given a wptrunner window id or a WebDriver
+        window handle
 
-        :param str wptrunner_id: Testdriver-specific id for the target window
+        :param str wptrunner_id: Testdriver-specific id for the target window,
+                                 or the WebDriver window handle of a top-level
+                                 browsing context
         :param str initial_window: WebDriver window id for the test window"""
         if wptrunner_id is None:
             return
@@ -877,6 +901,14 @@ class TestDriverProtocolPart(ProtocolPart):
             initial_window = self.parent.base.current_window
 
         stack = [str(item) for item in self.parent.base.window_handles()]
+
+        if wptrunner_id in stack:
+            # A WebDriver window handle is a direct identification of
+            # a top-level browsing context, so search is not needed
+            if wptrunner_id != initial_window:
+                self.parent.base.set_window(wptrunner_id)
+            return
+
         first = True
         while stack:
             item = stack.pop()

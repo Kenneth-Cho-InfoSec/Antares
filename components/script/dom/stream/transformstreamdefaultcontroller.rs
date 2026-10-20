@@ -7,16 +7,15 @@ use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::jsapi::{
-    ExceptionStackBehavior, Heap, JS_IsExceptionPending, JS_SetPendingException, JSObject,
-};
+use js::jsapi::{ExceptionStackBehavior, Heap, JSObject};
 use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use script_bindings::cell::DomRefCell;
+use script_bindings::js::{JS_IsExceptionPending, JS_SetPendingException};
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 
-use crate::dom::bindings::callback::ExceptionHandling;
+use crate::dom::bindings::callback::{ExceptionHandling, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::TransformStreamDefaultControllerBinding::TransformStreamDefaultControllerMethods;
 use crate::dom::bindings::codegen::Bindings::TransformerBinding::{
     Transformer, TransformerCancelCallback, TransformerFlushCallback, TransformerTransformCallback,
@@ -69,16 +68,13 @@ pub(crate) enum TransformerType {
     /// Algorithms provided by Js callbacks
     Js {
         /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
-        #[conditional_malloc_size_of]
-        cancel: RefCell<Option<Rc<TransformerCancelCallback>>>,
+        cancel: RefCell<Option<TracedCallback<TransformerCancelCallback>>>,
 
         /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
-        #[conditional_malloc_size_of]
-        flush: RefCell<Option<Rc<TransformerFlushCallback>>>,
+        flush: RefCell<Option<TracedCallback<TransformerFlushCallback>>>,
 
         /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
-        #[conditional_malloc_size_of]
-        transform: RefCell<Option<Rc<TransformerTransformCallback>>>,
+        transform: RefCell<Option<TracedCallback<TransformerTransformCallback>>>,
 
         /// The JS object used as `this` when invoking sink algorithms.
         #[ignore_malloc_size_of = "mozjs"]
@@ -170,11 +166,11 @@ impl TransformStreamDefaultController {
         self.stream.set(Some(stream));
     }
 
-    pub(crate) fn get_finish_promise(&self) -> Option<RootedPromise> {
+    pub(crate) fn get_finish_promise(&self, cx: &JSContext) -> Option<RootedPromise> {
         self.finish_promise
             .borrow()
             .as_ref()
-            .map(|promise| promise.root())
+            .map(|promise| promise.root(cx))
     }
 
     pub(crate) fn set_finish_promise(&self, promise: &RootedPromise) {
@@ -227,8 +223,8 @@ impl TransformStreamDefaultController {
                 // chunk and returns the result of invoking
                 // transformerDict["transform"] with argument list « chunk,
                 // controller » and callback this value transformer.
-                let algo = transform.borrow().clone();
-                if let Some(transform) = algo {
+                rooted!(&in(cx) let algo = transform.borrow().clone());
+                if let Some(ref transform) = *algo {
                     rooted!(&in(cx) let this_object = transform_obj.get());
                     transform
                         .Call_(
@@ -239,7 +235,7 @@ impl TransformStreamDefaultController {
                             ExceptionHandling::Rethrow,
                         )
                         .unwrap_or_else(|e| {
-                            let p = Promise::new_rooted(cx, global);
+                            let p = Promise::new(cx, global);
                             p.reject_error(cx, e);
                             p
                         })
@@ -250,10 +246,10 @@ impl TransformStreamDefaultController {
                     if let Err(error) = self.enqueue(cx, global, chunk) {
                         rooted!(&in(cx) let mut error_val = UndefinedValue());
                         error.to_jsval(cx, global, error_val.handle_mut());
-                        Promise::new_rejected_rooted(cx, global, error_val.handle())
+                        Promise::new_rejected(cx, global, error_val.handle())
                     } else {
                         // Otherwise, return a promise resolved with undefined.
-                        Promise::new_resolved_rooted(cx, global, ())
+                        Promise::new_resolved(cx, global, ())
                     }
                 }
             },
@@ -269,13 +265,13 @@ impl TransformStreamDefaultController {
                     // Step 5.2 If result is a Promise, then return result.
                     // Note: not applicable, the spec does NOT require deode_and_enqueue_a_chunk() to return a Promise
                     // Step 5.3 Return a promise resolved with undefined.
-                    .map(|_| Promise::new_resolved_rooted(cx, global, ()))
+                    .map(|_| Promise::new_resolved(cx, global, ()))
                     .unwrap_or_else(|e| {
                         // <https://streams.spec.whatwg.org/#transformstream-set-up>
                         // Step 5.1 If this throws an exception e,
                         let mut realm = enter_auto_realm(cx, self);
                         let realm = &mut realm.current_realm();
-                        let p = Promise::new_in_realm_rooted(realm);
+                        let p = Promise::new_in_realm(realm);
                         // return a promise rejected with e.
                         p.reject_error(realm, e);
                         p
@@ -292,13 +288,13 @@ impl TransformStreamDefaultController {
                     // Step 5.2 If result is a Promise, then return result.
                     // Note: not applicable, the spec does NOT require encode_and_enqueue_a_chunk() to return a Promise
                     // Step 5.3 Return a promise resolved with undefined.
-                    .map(|_| Promise::new_resolved_rooted(cx, global, ()))
+                    .map(|_| Promise::new_resolved(cx, global, ()))
                     .unwrap_or_else(|e| {
                         // <https://streams.spec.whatwg.org/#transformstream-set-up>
                         // Step 5.1 If this throws an exception e,
                         let mut realm = enter_auto_realm(cx, self);
                         let realm = &mut realm.current_realm();
-                        let p = Promise::new_in_realm_rooted(realm);
+                        let p = Promise::new_in_realm(realm);
                         // return a promise rejected with e.
                         p.reject_error(realm, e);
                         p
@@ -316,13 +312,13 @@ impl TransformStreamDefaultController {
                     // Note: not applicable, the spec does NOT require
                     // compress_and_enqueue_a_chunk() to return a Promise.
                     // Step 5.3 Return a promise resolved with undefined.
-                    .map(|_| Promise::new_resolved_rooted(cx, global, ()))
+                    .map(|_| Promise::new_resolved(cx, global, ()))
                     .unwrap_or_else(|e| {
                         // <https://streams.spec.whatwg.org/#transformstream-set-up>
                         // Step 5.1 If this throws an exception e,
                         let mut realm = enter_auto_realm(cx, self);
                         let realm = &mut realm.current_realm();
-                        let p = Promise::new_in_realm_rooted(realm);
+                        let p = Promise::new_in_realm(realm);
                         // return a promise rejected with e.
                         p.reject_error(realm, e);
                         p
@@ -340,13 +336,13 @@ impl TransformStreamDefaultController {
                     // Note: not applicable, the spec does NOT require
                     // decompress_and_enqueue_a_chunk() to return a Promise
                     // Step 5.3 Return a promise resolved with undefined.
-                    .map(|_| Promise::new_resolved_rooted(cx, global, ()))
+                    .map(|_| Promise::new_resolved(cx, global, ()))
                     .unwrap_or_else(|e| {
                         // <https://streams.spec.whatwg.org/#transformstream-set-up>
                         // Step 5.1 If this throws an exception e,
                         let mut realm = enter_auto_realm(cx, self);
                         let realm = &mut realm.current_realm();
-                        let p = Promise::new_in_realm_rooted(realm);
+                        let p = Promise::new_in_realm(realm);
                         // return a promise rejected with e.
                         p.reject_error(realm, e);
                         p
@@ -375,19 +371,19 @@ impl TransformStreamDefaultController {
                 // reason and returns the result of invoking
                 // transformerDict["cancel"] with argument list « reason » and
                 // callback this value transformer.
-                let algo = cancel.borrow().clone();
-                if let Some(cancel) = algo {
+                rooted!(&in(cx) let algo = cancel.borrow().clone());
+                if let Some(ref cancel) = *algo {
                     rooted!(&in(cx) let this_object = transform_obj.get());
                     cancel
                         .Call_(cx, &this_object.handle(), chunk, ExceptionHandling::Rethrow)
                         .unwrap_or_else(|e| {
-                            let p = Promise::new_rooted(cx, global);
+                            let p = Promise::new(cx, global);
                             p.reject_error(cx, e);
                             p
                         })
                 } else {
                     // Step 4. Let cancelAlgorithm be an algorithm which returns a promise resolved with undefined.
-                    Promise::new_resolved_rooted(cx, global, ())
+                    Promise::new_resolved(cx, global, ())
                 }
             },
             TransformerType::Decoder(_) => {
@@ -399,7 +395,7 @@ impl TransformStreamDefaultController {
                 // Step 7.2 If result is a Promise, then return result.
                 // Note: Not applicable.
                 // Step 7.3 Return a promise resolved with undefined.
-                Promise::new_resolved_rooted(cx, global, ())
+                Promise::new_resolved(cx, global, ())
             },
             TransformerType::Encoder(_) => {
                 // <https://streams.spec.whatwg.org/#transformstream-set-up>
@@ -410,7 +406,7 @@ impl TransformStreamDefaultController {
                 // Step 7.2 If result is a Promise, then return result.
                 // Note: Not applicable.
                 // Step 7.3 Return a promise resolved with undefined.
-                Promise::new_resolved_rooted(cx, global, ())
+                Promise::new_resolved(cx, global, ())
             },
             TransformerType::Compressor(_) => {
                 // <https://streams.spec.whatwg.org/#transformstream-set-up>
@@ -421,7 +417,7 @@ impl TransformStreamDefaultController {
                 // Step 7.2 If result is a Promise, then return result.
                 // Note: Not applicable.
                 // Step 7.3 Return a promise resolved with undefined.
-                Promise::new_resolved_rooted(cx, global, ())
+                Promise::new_resolved(cx, global, ())
             },
             TransformerType::Decompressor(_) => {
                 // <https://streams.spec.whatwg.org/#transformstream-set-up>
@@ -432,7 +428,7 @@ impl TransformStreamDefaultController {
                 // Step 7.2 If result is a Promise, then return result.
                 // Note: Not applicable.
                 // Step 7.3 Return a promise resolved with undefined.
-                Promise::new_resolved_rooted(cx, global, ())
+                Promise::new_resolved(cx, global, ())
             },
         };
 
@@ -455,19 +451,19 @@ impl TransformStreamDefaultController {
                 // algorithm which returns the result of invoking
                 // transformerDict["flush"] with argument list « controller »
                 // and callback this value transformer.
-                let algo = flush.borrow().clone();
-                if let Some(flush) = algo {
+                rooted!(&in(cx) let algo = flush.borrow().clone());
+                if let Some(ref flush) = *algo {
                     rooted!(&in(cx) let this_object = transform_obj.get());
                     flush
                         .Call_(cx, &this_object.handle(), self, ExceptionHandling::Rethrow)
                         .unwrap_or_else(|e| {
-                            let p = Promise::new_rooted(cx, global);
+                            let p = Promise::new(cx, global);
                             p.reject_error(cx, e);
                             p
                         })
                 } else {
                     // Step 3. Let flushAlgorithm be an algorithm which returns a promise resolved with undefined.
-                    Promise::new_resolved_rooted(cx, global, ())
+                    Promise::new_resolved(cx, global, ())
                 }
             },
             TransformerType::Decoder(decoder) => {
@@ -482,13 +478,13 @@ impl TransformStreamDefaultController {
                     // Step 6.2 If result is a Promise, then return result.
                     // Note: Not applicable. The spec does NOT require flush_and_enqueue algo to return a Promise
                     // Step 6.3 Return a promise resolved with undefined.
-                    .map(|_| Promise::new_resolved_rooted(cx, global, ()))
+                    .map(|_| Promise::new_resolved(cx, global, ()))
                     .unwrap_or_else(|e| {
                         // <https://streams.spec.whatwg.org/#transformstream-set-up>
                         // Step 6.1 If this throws an exception e,
                         let mut realm = enter_auto_realm(cx, self);
                         let realm = &mut realm.current_realm();
-                        let p = Promise::new_in_realm_rooted(realm);
+                        let p = Promise::new_in_realm(realm);
                         // return a promise rejected with e.
                         p.reject_error(realm, e);
                         p
@@ -505,13 +501,13 @@ impl TransformStreamDefaultController {
                     // Step 6.2 If result is a Promise, then return result.
                     // Note: Not applicable. The spec does NOT require encode_and_flush algo to return a Promise
                     // Step 6.3 Return a promise resolved with undefined.
-                    .map(|_| Promise::new_resolved_rooted(cx, global, ()))
+                    .map(|_| Promise::new_resolved(cx, global, ()))
                     .unwrap_or_else(|e| {
                         // <https://streams.spec.whatwg.org/#transformstream-set-up>
                         // Step 6.1 If this throws an exception e,
                         let mut realm = enter_auto_realm(cx, self);
                         let realm = &mut realm.current_realm();
-                        let p = Promise::new_in_realm_rooted(realm);
+                        let p = Promise::new_in_realm(realm);
                         // return a promise rejected with e.
                         p.reject_error(realm, e);
                         p
@@ -530,13 +526,13 @@ impl TransformStreamDefaultController {
                     // Note: Not applicable. The spec does NOT require compress_flush_and_enqueue
                     // algo to return a Promise.
                     // Step 6.3 Return a promise resolved with undefined.
-                    .map(|_| Promise::new_resolved_rooted(cx, global, ()))
+                    .map(|_| Promise::new_resolved(cx, global, ()))
                     .unwrap_or_else(|e| {
                         // <https://streams.spec.whatwg.org/#transformstream-set-up>
                         // Step 6.1 If this throws an exception e,
                         let mut realm = enter_auto_realm(cx, self);
                         let realm = &mut realm.current_realm();
-                        let p = Promise::new_in_realm_rooted(realm);
+                        let p = Promise::new_in_realm(realm);
                         // return a promise rejected with e.
                         p.reject_error(realm, e);
                         p
@@ -555,13 +551,13 @@ impl TransformStreamDefaultController {
                     // Note: Not applicable. The spec does NOT require decompress_flush_and_enqueue
                     // algo to return a Promise.
                     // Step 6.3 Return a promise resolved with undefined.
-                    .map(|_| Promise::new_resolved_rooted(cx, global, ()))
+                    .map(|_| Promise::new_resolved(cx, global, ()))
                     .unwrap_or_else(|e| {
                         // <https://streams.spec.whatwg.org/#transformstream-set-up>
                         // Step 6.1 If this throws an exception e,
                         let mut realm = enter_auto_realm(cx, self);
                         let realm = &mut realm.current_realm();
-                        let p = Promise::new_in_realm_rooted(realm);
+                        let p = Promise::new_in_realm(realm);
                         // return a promise rejected with e.
                         p.reject_error(realm, e);
                         p
@@ -573,7 +569,6 @@ impl TransformStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#transform-stream-default-controller-enqueue>
-    #[expect(unsafe_code)]
     pub(crate) fn enqueue(
         &self,
         cx: &mut JSContext,
@@ -606,17 +601,11 @@ impl TransformStreamDefaultController {
             stream.error_writable_and_unblock_write(cx, global, rooted_error.handle());
 
             // Throw stream.[[readable]].[[storedError]].
-            unsafe {
-                if !JS_IsExceptionPending(cx.raw_cx()) {
-                    rooted!(&in(cx) let mut stored_error = UndefinedValue());
-                    readable.get_stored_error(stored_error.handle_mut());
+            if !JS_IsExceptionPending(cx) {
+                rooted!(&in(cx) let mut stored_error = UndefinedValue());
+                readable.get_stored_error(stored_error.handle_mut());
 
-                    JS_SetPendingException(
-                        cx.raw_cx(),
-                        stored_error.handle().into(),
-                        ExceptionStackBehavior::Capture,
-                    );
-                }
+                JS_SetPendingException(cx, stored_error.handle(), ExceptionStackBehavior::Capture);
             }
             return Err(error);
         }

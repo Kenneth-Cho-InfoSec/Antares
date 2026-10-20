@@ -8,19 +8,20 @@ use js::jsapi::Heap;
 use js::jsval::JSVal;
 use js::rust::{HandleObject, HandleValue, MutableHandleValue};
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use stylo_atoms::Atom;
 
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
-use crate::dom::bindings::codegen::Bindings::MessageEventBinding;
-use crate::dom::bindings::codegen::Bindings::MessageEventBinding::MessageEventMethods;
+use crate::dom::bindings::codegen::Bindings::MessageEventBinding::{
+    MessageEventInit, MessageEventMethods,
+};
 use crate::dom::bindings::codegen::UnionTypes::WindowProxyOrMessagePortOrServiceWorker;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::frozenarray::CachedFrozenArray;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::root::{AsHandleValue, Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
@@ -58,9 +59,9 @@ pub(crate) struct MessageEvent {
     event: Event,
     #[ignore_malloc_size_of = "mozjs"]
     data: Heap<JSVal>,
-    origin: DomRefCell<DOMString>,
+    origin: DomRefCell<TracedDOMString>,
     source: DomRefCell<Option<SrcObject>>,
-    lastEventId: DomRefCell<DOMString>,
+    lastEventId: DomRefCell<TracedDOMString>,
     ports: DomRefCell<Vec<Dom<MessagePort>>>,
     #[ignore_malloc_size_of = "mozjs"]
     frozen_ports: CachedFrozenArray,
@@ -78,8 +79,8 @@ impl MessageEvent {
             event: Event::new_inherited(),
             data: Heap::default(),
             source: DomRefCell::new(source.map(|source| source.into())),
-            origin: DomRefCell::new(origin),
-            lastEventId: DomRefCell::new(lastEventId),
+            origin: DomRefCell::new(origin.traced()),
+            lastEventId: DomRefCell::new(lastEventId.traced()),
             ports: DomRefCell::new(
                 ports
                     .into_iter()
@@ -114,7 +115,7 @@ impl MessageEvent {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new_initialized(
         cx: &mut JSContext,
         global: &GlobalScope,
@@ -137,7 +138,7 @@ impl MessageEvent {
         ev
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         cx: &mut JSContext,
         global: &GlobalScope,
@@ -165,7 +166,7 @@ impl MessageEvent {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new_with_proto(
         cx: &mut JSContext,
         global: &GlobalScope,
@@ -225,14 +226,14 @@ impl MessageEvent {
     }
 
     pub(crate) fn dispatch_error(cx: &mut JSContext, target: &EventTarget, scope: &GlobalScope) {
-        let init = MessageEventBinding::MessageEventInit::empty();
+        let init = MessageEventInit::empty();
         let messageevent = MessageEvent::new(
             cx,
             scope,
             atom!("messageerror"),
             init.parent.bubbles,
             init.parent.cancelable,
-            init.data.handle(),
+            init.data.as_handle_value(),
             init.origin.clone(),
             init.source.as_ref(),
             init.lastEventId.clone(),
@@ -249,7 +250,7 @@ impl MessageEventMethods<crate::DomTypeHolder> for MessageEvent {
         global: &GlobalScope,
         proto: Option<HandleObject>,
         type_: DOMString,
-        init: RootedTraceableBox<MessageEventBinding::MessageEventInit>,
+        init: &MessageEventInit,
     ) -> Fallible<DomRoot<MessageEvent>> {
         let ev = MessageEvent::new_with_proto(
             cx,
@@ -258,7 +259,7 @@ impl MessageEventMethods<crate::DomTypeHolder> for MessageEvent {
             Atom::from(type_),
             init.parent.bubbles,
             init.parent.cancelable,
-            init.data.handle(),
+            init.data.as_handle_value(),
             init.origin.clone(),
             init.source.as_ref(),
             init.lastEventId.clone(),
@@ -274,7 +275,7 @@ impl MessageEventMethods<crate::DomTypeHolder> for MessageEvent {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-messageevent-origin>
     fn Origin(&self) -> DOMString {
-        self.origin.borrow().clone()
+        self.origin.borrow().clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-messageevent-source>
@@ -295,7 +296,7 @@ impl MessageEventMethods<crate::DomTypeHolder> for MessageEvent {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-messageevent-lasteventid>
     fn LastEventId(&self) -> DOMString {
-        self.lastEventId.borrow().clone()
+        self.lastEventId.borrow().clone().root()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>
@@ -333,9 +334,9 @@ impl MessageEventMethods<crate::DomTypeHolder> for MessageEvent {
         ports: Vec<DomRoot<MessagePort>>,
     ) {
         self.data.set(data.get());
-        *self.origin.safe_borrow_mut(cx.no_gc()) = origin;
+        *self.origin.safe_borrow_mut(cx.no_gc()) = origin.traced();
         *self.source.safe_borrow_mut(cx.no_gc()) = source.as_ref().map(|source| source.into());
-        *self.lastEventId.safe_borrow_mut(cx.no_gc()) = lastEventId;
+        *self.lastEventId.safe_borrow_mut(cx.no_gc()) = lastEventId.traced();
         *self.ports.safe_borrow_mut(cx.no_gc()) = ports
             .into_iter()
             .map(|port| Dom::from_ref(&*port))

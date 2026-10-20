@@ -131,7 +131,6 @@ q::after { content: close-quote; }
 br::before { content: "\A"; white-space: pre }
 
 nobr { white-space: nowrap; }
-wbr { display-outside: break-opportunity; } /* this also has bidi implications */
 nobr wbr { white-space: normal; }
 
 
@@ -420,4 +419,12 @@ marquee {
   inline-size: stretch;
   vertical-align: text-bottom;
   white-space: nowrap;
+}
+
+/* https://drafts.csswg.org/css-ui-4/#content-selection */
+button, meter, progress, select,
+/* https://github.com/w3c/csswg-drafts/issues/9709#issuecomment-2041439088 */
+input:is([type=color], [type=range], [type=reset], [type=button], [type=submit])
+{
+  user-select: none;
 }

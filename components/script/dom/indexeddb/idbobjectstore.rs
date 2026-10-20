@@ -199,12 +199,12 @@ impl IDBObjectStore {
         if !abort_state.newly_created_during_transaction &&
             let Some(name) = abort_state.rollback_name
         {
-            *self.name.borrow_mut() = name;
+            *self.name.safe_borrow_mut(cx.no_gc()) = name;
         }
 
         // Step 5.2. Set handle’s index set to the set of indexes that reference
         // its object store.
-        self.index_set.borrow_mut().clear();
+        self.index_set.safe_borrow_mut(cx.no_gc()).clear();
         for index in abort_state.rollback_indexes {
             self.add_index(
                 cx,
@@ -233,7 +233,7 @@ impl IDBObjectStore {
     }
 
     /// <https://www.w3.org/TR/IndexedDB-3/#clone>
-    fn clone_value_in_target_realm(
+    pub(crate) fn clone_value_in_target_realm(
         &self,
         cx: &mut JSContext,
         value: HandleValue,
@@ -318,11 +318,15 @@ impl IDBObjectStore {
     }
 
     /// <https://www.w3.org/TR/IndexedDB-3/#object-store-in-line-keys>
-    fn uses_inline_keys(&self) -> bool {
+    pub(crate) fn uses_inline_keys(&self) -> bool {
         self.key_path.is_some()
     }
 
-    fn verify_not_deleted(&self) -> ErrorResult {
+    pub(crate) fn key_path(&self) -> Option<&KeyPath> {
+        self.key_path.as_ref()
+    }
+
+    pub(crate) fn verify_not_deleted(&self) -> ErrorResult {
         let db = self.transaction.Db();
         if !db.object_store_exists(&self.name.borrow()) {
             return Err(Error::InvalidState(None));
@@ -591,7 +595,7 @@ impl IDBObjectStore {
             key_path,
         );
         self.index_set
-            .borrow_mut()
+            .safe_borrow_mut(cx.no_gc())
             .insert(name, Dom::from_ref(&index));
         index
     }

@@ -14,18 +14,20 @@ use js::jsapi::JSObject;
 use js::jsval::UndefinedValue;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use js::typedarray::Uint8;
+#[cfg(feature = "brotli-compression-stream")]
+use malloc_size_of::MallocShallowSizeOf;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
-use crate::dom::bindings::buffer_source::create_buffer_source;
+use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_slice};
 use crate::dom::bindings::codegen::Bindings::CompressionStreamBinding::CompressionFormat;
 use crate::dom::bindings::codegen::Bindings::DecompressionStreamBinding::DecompressionStreamMethods;
-use crate::dom::bindings::conversions::ToJSValConvertible;
+use crate::dom::bindings::codegen::UnionTypes::ArrayBufferViewOrArrayBuffer;
+use crate::dom::bindings::conversions::{FromJSValConvertible, ToJSValConvertible};
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::root::{Dom, DomRoot};
 #[cfg(feature = "brotli-compression-stream")]
 use crate::dom::stream::compressionstream::BROTLI_BUFFER_SIZE;
-use crate::dom::stream::compressionstream::convert_chunk_to_vec;
 use crate::dom::stream::transformstreamdefaultcontroller::TransformerType;
 use crate::dom::types::{
     GlobalScope, ReadableStream, TransformStream, TransformStreamDefaultController, WritableStream,
@@ -132,30 +134,36 @@ pub(crate) fn decompress_and_enqueue_a_chunk(
     controller: &TransformStreamDefaultController,
 ) -> Fallible<()> {
     // Step 1. If chunk is not a BufferSource type, then throw a TypeError.
-    let chunk = convert_chunk_to_vec(cx, chunk)?;
+    let conversion_result =
+        ArrayBufferViewOrArrayBuffer::from_jsval(cx, chunk, ()).map_err(|_| {
+            Error::Type(c"Unable to convert chunk into ArrayBuffer or ArrayBufferView".to_owned())
+        })?;
+    let buffer_source = conversion_result.get_success_value().ok_or_else(|| {
+        Error::Type(c"Unable to convert chunk into ArrayBuffer or ArrayBufferView".to_owned())
+    })?;
 
     // Step 2. Let buffer be the result of decompressing chunk with ds’s format and context. If
     // this results in an error, then throw a TypeError.
     // NOTE: In our implementation, the enum type of context already indicates the format.
-    let buffer = {
+    rooted!(&in(cx) let mut js_object = ptr::null_mut::<JSObject>());
+    let array = {
         let mut decompression_context = ds.context.borrow_mut();
         let buffer = decompression_context
-            .decompress(&chunk)
+            .decompress(get_buffer_source_slice(buffer_source, cx.no_gc()))
             .map_err(|_| Error::Type(c"Failed to decompress a chunk of compressed input".into()))?;
 
         // Step 3. If buffer is empty, return.
         if buffer.is_empty() {
             return Ok(());
         }
-        buffer
+        // Step 4. Let arrays be the result of splitting buffer into one or more non-empty pieces and
+        // converting them into Uint8Arrays.
+        // NOTE: We process the result in a single Uint8Array.
+        // Copy directly from the decoder, retaining its allocation for reuse.
+        create_buffer_source::<Uint8>(cx, buffer, js_object.handle_mut())
+            .map_err(|_| Error::Type(c"Cannot convert byte sequence to Uint8Array".to_owned()))?
     };
-    // Step 4. Let arrays be the result of splitting buffer into one or more non-empty pieces and
-    // converting them into Uint8Arrays.
     // Step 5. For each Uint8Array array of arrays, enqueue array in ds’s transform.
-    // NOTE: We process the result in a single Uint8Array.
-    rooted!(&in(cx) let mut js_object = ptr::null_mut::<JSObject>());
-    let array = create_buffer_source::<Uint8>(cx, &buffer, js_object.handle_mut())
-        .map_err(|_| Error::Type(c"Cannot convert byte sequence to Uint8Array".to_owned()))?;
     rooted!(&in(cx) let mut rval = UndefinedValue());
     array.to_jsval(cx, rval.handle_mut());
     controller.enqueue(cx, global, rval.handle())?;
@@ -181,21 +189,28 @@ pub(crate) fn decompress_flush_and_enqueue(
     // Step 1. Let buffer be the result of decompressing an empty input with ds’s format and
     // context, with the finish flag.
     // NOTE: In our implementation, the enum type of context already indicates the format.
-    let buffer = {
+    rooted!(&in(cx) let mut js_object = ptr::null_mut::<JSObject>());
+    let array = {
         let mut decompression_context = ds.context.borrow_mut();
-        decompression_context
+        let buffer = decompression_context
             .finalize()
-            .map_err(|_| Error::Type(c"Failed to finalize the decompression stream".into()))?
+            .map_err(|_| Error::Type(c"Failed to finalize the decompression stream".into()))?;
+        // Step 2. If buffer is empty, return.
+        if buffer.is_empty() {
+            None
+        } else {
+            // Step 2.1. Let arrays be the result of splitting buffer into one or more non-empty pieces
+            // and converting them into Uint8Arrays.
+            // NOTE: We process the result in a single Uint8Array.
+            Some(
+                create_buffer_source::<Uint8>(cx, buffer, js_object.handle_mut()).map_err(
+                    |_| Error::Type(c"Cannot convert byte sequence to Uint8Array".to_owned()),
+                )?,
+            )
+        }
     };
-    // Step 2. If buffer is empty, return.
-    if !buffer.is_empty() {
-        // Step 2.1. Let arrays be the result of splitting buffer into one or more non-empty pieces
-        // and converting them into Uint8Arrays.
+    if let Some(array) = array {
         // Step 2.2. For each Uint8Array array of arrays, enqueue array in ds’s transform.
-        // NOTE: We process the result in a single Uint8Array.
-        rooted!(&in(cx) let mut js_object = ptr::null_mut::<JSObject>());
-        let array = create_buffer_source::<Uint8>(cx, &buffer, js_object.handle_mut())
-            .map_err(|_| Error::Type(c"Cannot convert byte sequence to Uint8Array".to_owned()))?;
         rooted!(&in(cx) let mut rval = UndefinedValue());
         array.to_jsval(cx, rval.handle_mut());
         controller.enqueue(cx, global, rval.handle())?;
@@ -230,11 +245,10 @@ enum Decoder {
 }
 
 impl MallocSizeOf for Decoder {
-    #[cfg_attr(feature = "brotli-compression-stream", expect(unsafe_code))]
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         match self {
             #[cfg(feature = "brotli-compression-stream")]
-            Decoder::Brotli(decoder) => unsafe { ops.malloc_size_of(&**decoder) },
+            Decoder::Brotli(decoder) => decoder.shallow_size_of(ops),
             Decoder::Deflate(decoder) => decoder.size_of(ops),
             Decoder::DeflateRaw(decoder) => decoder.size_of(ops),
             Decoder::Gzip(decoder) => decoder.size_of(ops),
@@ -271,12 +285,12 @@ impl DecompressionContext {
         })
     }
 
-    fn decompress(&mut self, mut chunk: &[u8]) -> Result<Vec<u8>, io::Error> {
-        let mut result = Vec::new();
-
+    /// Returns the decompressed bytes produced by this chunk.
+    fn decompress(&mut self, mut chunk: &[u8]) -> Result<&[u8], io::Error> {
         match &mut self.decoder {
             #[cfg(feature = "brotli-compression-stream")]
             Decoder::Brotli(decoder) => {
+                decoder.get_mut().clear();
                 while !chunk.is_empty() {
                     let written = decoder.write(chunk)?;
                     if written == 0 {
@@ -286,9 +300,10 @@ impl DecompressionContext {
                     chunk = &chunk[written..];
                 }
                 decoder.flush()?;
-                result.append(decoder.get_mut());
+                Ok(decoder.get_ref().as_slice())
             },
             Decoder::Deflate(decoder) => {
+                decoder.get_mut().clear();
                 while !chunk.is_empty() {
                     let written = decoder.write(chunk)?;
                     if written == 0 {
@@ -298,9 +313,10 @@ impl DecompressionContext {
                     chunk = &chunk[written..];
                 }
                 decoder.flush()?;
-                result.append(decoder.get_mut());
+                Ok(decoder.get_ref().as_slice())
             },
             Decoder::DeflateRaw(decoder) => {
+                decoder.get_mut().clear();
                 while !chunk.is_empty() {
                     let written = decoder.write(chunk)?;
                     if written == 0 {
@@ -310,9 +326,10 @@ impl DecompressionContext {
                     chunk = &chunk[written..];
                 }
                 decoder.flush()?;
-                result.append(decoder.get_mut());
+                Ok(decoder.get_ref().as_slice())
             },
             Decoder::Gzip(decoder) => {
+                decoder.get_mut().clear();
                 while !chunk.is_empty() {
                     let written = decoder.write(chunk)?;
                     if written == 0 {
@@ -322,25 +339,25 @@ impl DecompressionContext {
                     chunk = &chunk[written..];
                 }
                 decoder.flush()?;
-                result.append(decoder.get_mut());
+                Ok(decoder.get_ref().as_slice())
             },
         }
-
-        Ok(result)
     }
 
-    fn finalize(&mut self) -> Result<Vec<u8>, io::Error> {
-        let mut result = Vec::new();
-
+    /// Returns the final decompressed bytes, excluding any bytes produced by the
+    /// end-of-input probe.
+    fn finalize(&mut self) -> Result<&[u8], io::Error> {
         match &mut self.decoder {
             #[cfg(feature = "brotli-compression-stream")]
             Decoder::Brotli(decoder) => {
+                decoder.get_mut().clear();
                 if decoder.close().is_ok() {
                     self.is_ended = true;
                 };
-                result.append(decoder.get_mut());
+                Ok(decoder.get_ref().as_slice())
             },
             Decoder::Deflate(decoder) => {
+                decoder.get_mut().clear();
                 // Compressed data in "Deflate" format does not have trailing bytes. Therefore,
                 // `ZlibEncoder::try_finish` is designed not to throw an error when the end of
                 // compressed input has not been reached, in order to decompress as much of the
@@ -351,27 +368,30 @@ impl DecompressionContext {
                 //
                 // Note that we need to pull out the data in buffer first to avoid the extra byte
                 // contaminate the output.
+                // Record the output length instead of moving the bytes, so any bytes generated
+                // by the probe are excluded from the output.
                 decoder.flush()?;
-                result.append(decoder.get_mut());
+                let output_len = decoder.get_mut().len();
                 if decoder.write(&[0])? == 0 {
                     self.is_ended = true;
                 }
                 decoder.try_finish()?;
+                Ok(&decoder.get_ref()[..output_len])
             },
             Decoder::DeflateRaw(decoder) => {
+                decoder.get_mut().clear();
                 if decoder.try_finish().is_ok() {
                     self.is_ended = true;
                 };
-                result.append(decoder.get_mut());
+                Ok(decoder.get_ref().as_slice())
             },
             Decoder::Gzip(decoder) => {
+                decoder.get_mut().clear();
                 if decoder.try_finish().is_ok() {
                     self.is_ended = true;
                 };
-                result.append(decoder.get_mut());
+                Ok(decoder.get_ref().as_slice())
             },
         }
-
-        Ok(result)
     }
 }

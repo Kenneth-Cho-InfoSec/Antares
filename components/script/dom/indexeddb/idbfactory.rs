@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use std::collections::HashSet;
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -11,7 +10,7 @@ use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::generic_channel::GenericSend;
 use servo_url::origin::ImmutableOrigin;
 use storage_traits::client_storage::{StorageIdentifier, StorageProxyMap, StorageType};
@@ -21,6 +20,7 @@ use storage_traits::indexeddb::{
 use stylo_atoms::Atom;
 use uuid::Uuid;
 
+use crate::dom::RootedPromise;
 use crate::dom::bindings::codegen::Bindings::IDBFactoryBinding::{
     IDBDatabaseInfo, IDBFactoryMethods,
 };
@@ -95,7 +95,7 @@ impl IDBFactory {
         // We implement the HTML-triggered deactivation effect by tracking script-created
         // transactions on the global and deactivating them at the microtask checkpoint.
         let snapshot: Vec<DomRoot<IDBTransaction>> = {
-            let mut map = self.indexeddb_transactions.borrow_mut();
+            let mut map = self.indexeddb_transactions.safe_borrow_mut(cx.no_gc());
 
             // Transactions are normally unregistered when they finish (commit/abort),
             // but unregister can occur in a queued task (e.g. finalize_abort), so we can
@@ -143,7 +143,7 @@ impl IDBFactory {
         }
 
         // Prune finished transactions again after maybe_commit() progress.
-        let mut map = self.indexeddb_transactions.borrow_mut();
+        let mut map = self.indexeddb_transactions.safe_borrow_mut(cx.no_gc());
         let keys: Vec<DBName> = map.iter().map(|(k, _)| k.clone()).collect();
         for key in keys {
             if let Some(bucket) = map.get_mut(&key) {
@@ -198,7 +198,7 @@ impl IDBFactory {
     }
 
     pub fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<IDBFactory> {
-        reflect_dom_object_with_cx(Box::new(IDBFactory::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(IDBFactory::new_inherited()), global)
     }
 
     /// Setup the callback to the backend service, if this hasn't been done already.
@@ -214,7 +214,7 @@ impl IDBFactory {
             .task_manager()
             .database_access_task_source()
             .to_sendable();
-        let callback = GenericCallback::new(global.time_profiler_chan().clone(), move |message| {
+        let callback = GenericCallback::new(move |message| {
             let response_listener = response_listener.clone();
             let response = match message {
                 Ok(inner) => inner,
@@ -405,7 +405,7 @@ impl IDBFactory {
 
         // Step 5.3.1: If result is an error, then:
         let request = {
-            let mut pending = self.connections.borrow_mut();
+            let mut pending = self.connections.safe_borrow_mut(cx.no_gc());
             let Some(entry) = pending.get_mut(&name) else {
                 return debug_assert!(false, "There should be a pending connection for {:?}", name);
             };
@@ -635,7 +635,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
     }
 
     /// <https://www.w3.org/TR/IndexedDB/#dom-idbfactory-databases>
-    fn Databases(&self, cx: &mut JSContext) -> Rc<Promise> {
+    fn Databases(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 1: Let environment be this’s relevant settings object.
         let global = self.global();
 
@@ -655,7 +655,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
 
         // Note: the option is required to pass the promise to a task from within the generic callback,
         // see #41356
-        let mut trusted_promise: Option<TrustedPromise> = Some(TrustedPromise::new(p.clone()));
+        let mut trusted_promise: Option<TrustedPromise> = Some(TrustedPromise::from(&p));
 
         // Step 4: Run these steps in parallel:
         // Note implementing by communicating with the backend.
@@ -663,7 +663,7 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
             .task_manager()
             .database_access_task_source()
             .to_sendable();
-        let callback = GenericCallback::new(global.time_profiler_chan().clone(), move |message| {
+        let callback = GenericCallback::new(move |message| {
             let result: BackendResult<Vec<DatabaseInfo>> = message.unwrap();
             let Some(trusted_promise) = trusted_promise.take() else {
                 return error!("Callback for `DataBases` called twice.");

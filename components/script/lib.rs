@@ -23,6 +23,9 @@ extern crate stylo_atoms;
 #[macro_use]
 mod tasks;
 
+#[macro_use]
+extern crate script_bindings;
+
 pub(crate) mod conversions;
 mod css;
 mod fetch;
@@ -32,18 +35,17 @@ pub(crate) use dom::canvas_context;
 mod drag;
 mod engine;
 mod event_loop;
-mod runtime;
-mod url;
-
 pub mod layout_dom;
 pub(crate) mod messaging;
 pub(crate) mod mime;
-pub(crate) mod modules;
 mod navigation;
 mod realms;
 mod routed_promise;
+mod runtime;
+mod scripting;
 pub mod test;
 mod unminify;
+mod url;
 mod window_named_properties;
 mod xpath;
 

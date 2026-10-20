@@ -7,14 +7,16 @@
 //! response is received, it is forwarded to the appropriate script thread.
 
 use std::cell::Cell;
+use std::rc::Rc;
 
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use crossbeam_channel::Sender;
 use embedder_traits::user_contents::UserContentManagerId;
-use embedder_traits::{Theme, ViewportDetails, WebDriverLoadStatus};
+use embedder_traits::{ViewportDetails, WebDriverLoadStatus};
 use http::header;
 use js::context::JSContext;
 use net_traits::blob_url_store::UrlWithBlobClaim;
+use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::request::{
     CredentialsMode, InsecureRequestsPolicy, Origin, PreloadedResources, RedirectMode,
     RequestBuilder, RequestClient, RequestMode,
@@ -25,7 +27,7 @@ use net_traits::{
     Metadata, ReferrerPolicy, fetch_async, set_default_accept_language,
 };
 use script_bindings::inheritance::Castable;
-use script_traits::{DocumentActivity, NewPipelineInfo};
+use script_traits::{DocumentActivity, NewPipelineInfo, WebViewState};
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
 use servo_constellation_traits::{
@@ -38,13 +40,13 @@ use url::Position;
 use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFrameElementMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::refcounted::Trusted;
+use crate::dom::document::AbortReason;
 use crate::dom::element::Element;
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::node::node::NodeTraits;
 use crate::dom::window::Window;
 use crate::dom::windowproxy::WindowProxy;
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::fetch::FetchCanceller;
 use crate::messaging::MainThreadScriptMsg;
 
 #[derive(Clone)]
@@ -146,9 +148,9 @@ pub(crate) struct InProgressLoad {
     /// The browsing context being loaded into.
     #[no_trace]
     pub(crate) browsing_context_id: BrowsingContextId,
-    /// The top level ancestor browsing context.
+    /// The shared state for the `WebView` of this [`InProgressLoad`].
     #[no_trace]
-    pub(crate) webview_id: WebViewId,
+    pub(crate) webview_state: Rc<WebViewState>,
     /// The parent pipeline and frame type associated with this load, if any.
     #[no_trace]
     pub(crate) parent_info: Option<PipelineId>,
@@ -167,20 +169,18 @@ pub(crate) struct InProgressLoad {
     #[no_trace]
     pub(crate) navigation_start: CrossProcessInstant,
     /// For cancelling the fetch
-    pub(crate) canceller: FetchCanceller,
+    #[no_trace]
+    pub(crate) controller: FetchController,
     /// The [`LoadData`] associated with this load.
     #[no_trace]
     pub(crate) load_data: LoadData,
     /// A list of URL to keep track of all the redirects that have happened during
     /// this load.
     #[no_trace]
-    pub(crate) url_list: Vec<ServoUrl>,
+    pub(crate) url_list: Vec<UrlWithBlobClaim>,
     #[no_trace]
     /// The [`UserContentManagerId`] associated with this load's `WebView`.
     pub(crate) user_content_manager_id: Option<UserContentManagerId>,
-    /// The [`Theme`] to use for this page, once it loads.
-    #[no_trace]
-    pub(crate) embedder_theme: Theme,
     /// The [`TargetSnapshotParams`] to use when creating this document.
     #[no_trace]
     pub(crate) target_snapshot_params: TargetSnapshotParams,
@@ -190,27 +190,33 @@ pub(crate) struct InProgressLoad {
 
 impl InProgressLoad {
     /// Create a new InProgressLoad object.
-    pub(crate) fn new(new_pipeline_info: NewPipelineInfo) -> InProgressLoad {
+    pub(crate) fn new(
+        new_pipeline_info: NewPipelineInfo,
+        webview_state: Rc<WebViewState>,
+    ) -> InProgressLoad {
         let url = new_pipeline_info.load_data.url.clone();
 
         InProgressLoad {
             pipeline_id: new_pipeline_info.new_pipeline_id,
             browsing_context_id: new_pipeline_info.browsing_context_id,
-            webview_id: new_pipeline_info.webview_id,
+            webview_state,
             parent_info: new_pipeline_info.parent_info,
             opener: new_pipeline_info.opener,
             viewport_details: new_pipeline_info.viewport_details,
             activity: DocumentActivity::FullyActive,
             throttled: false,
             navigation_start: CrossProcessInstant::now(),
-            canceller: Default::default(),
+            controller: Default::default(),
             load_data: new_pipeline_info.load_data,
-            url_list: vec![url],
+            url_list: vec![UrlWithBlobClaim::from_url_without_having_claimed_blob(url)],
             user_content_manager_id: new_pipeline_info.user_content_manager_id,
-            embedder_theme: new_pipeline_info.embedder_theme,
             target_snapshot_params: new_pipeline_info.target_snapshot_params,
             frame_name: new_pipeline_info.frame_name,
         }
+    }
+
+    pub(crate) fn webview_id(&self) -> WebViewId {
+        self.webview_state.id
     }
 
     pub(crate) fn request_builder(&mut self) -> RequestBuilder {
@@ -220,7 +226,7 @@ impl InProgressLoad {
         };
 
         let id = self.pipeline_id;
-        let webview_id = self.webview_id;
+        let webview_id = self.webview_state.id;
 
         let insecure_requests_policy = self
             .load_data
@@ -552,7 +558,7 @@ pub(crate) fn navigate(
         .task_manager()
         .navigation_and_traversal_task_source()
         .queue(task!(abort_a_document_and_its_descendants: move |cx| {
-            trusted_document.root().abort_a_document_and_its_descendants(cx);
+            trusted_document.root().abort_a_document_and_its_descendants(cx, AbortReason::Navigate);
         }));
 
     // Step 24.9. Attempt to populate the history entry's document for historyEntry,

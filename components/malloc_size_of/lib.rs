@@ -1212,6 +1212,17 @@ impl MallocSizeOf for data_url::mime::Mime {
     }
 }
 
+impl<T> MallocSizeOf for hyper_serde::Serde<T>
+where
+    T: MallocSizeOf,
+    for<'a> hyper_serde::Ser<'a, T>: serde_core::Serialize,
+    for<'de> hyper_serde::De<T>: serde_core::Deserialize<'de>,
+{
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.0.size_of(ops)
+    }
+}
+
 malloc_size_of_hash_map!(indexmap::IndexMap<K, V, S>);
 malloc_size_of_hash_set!(indexmap::IndexSet<T, S>);
 
@@ -1230,6 +1241,7 @@ malloc_size_of_is_0!(http::Method);
 malloc_size_of_is_0!(icu_locale_core::subtags::Language);
 malloc_size_of_is_0!(keyboard_types::Code);
 malloc_size_of_is_0!(keyboard_types::Modifiers);
+malloc_size_of_is_0!(headers::ContentType); // ContentType stores a mime type which is most likely an interned string
 malloc_size_of_is_0!(mime::Mime);
 malloc_size_of_is_0!(resvg::usvg::fontdb::ID);
 malloc_size_of_is_0!(resvg::usvg::fontdb::Style);
@@ -1261,6 +1273,7 @@ malloc_size_of_is_0!(time::Duration);
 malloc_size_of_is_0!(unicode_bidi::Level);
 malloc_size_of_is_0!(unicode_script::Script);
 malloc_size_of_is_0!(std::net::TcpStream);
+malloc_size_of_is_0!(memmap2::Mmap);
 
 malloc_size_of_is_0!(taffy::Layout);
 malloc_size_of_is_0!(taffy::Baselines);
@@ -1335,6 +1348,7 @@ malloc_size_of_is_webrender_malloc_size_of!(webrender_api::ExtendMode);
 malloc_size_of_is_webrender_malloc_size_of!(webrender_api::ExternalScrollId);
 malloc_size_of_is_webrender_malloc_size_of!(webrender_api::FontInstanceFlags);
 malloc_size_of_is_webrender_malloc_size_of!(webrender_api::FontInstanceKey);
+malloc_size_of_is_webrender_malloc_size_of!(webrender_api::FontInstancePlatformOptions);
 malloc_size_of_is_webrender_malloc_size_of!(webrender_api::FontKey);
 malloc_size_of_is_webrender_malloc_size_of!(webrender_api::FontVariation);
 malloc_size_of_is_webrender_malloc_size_of!(webrender_api::GlyphInstance);

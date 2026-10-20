@@ -5,11 +5,20 @@
 use std::default::Default;
 use std::iter;
 
+use dom_struct::dom_struct;
+use embedder_traits::{EmbedderControlRequest, SelectElementRequest};
+use embedder_traits::{SelectElementOption, SelectElementOptionOrOptgroup};
+use html5ever::{local_name, LocalName, Prefix};
+use js::context::{JSContext, NoGC};
+use js::rust::HandleObject;
+use script_bindings::cell::{DomRefCell, Ref};
+use script_bindings::dom::UnrootedDom;
+use style::attr::AttrValue;
+use stylo_dom::ElementState;
+
 use crate::dom::activation::Activatable;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::iterators::ShadowIncluding;
-use script_bindings::cell::{DomRefCell, Ref};
-use script_bindings::dom::UnrootedDom;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLCollectionBinding::HTMLCollectionMethods;
@@ -30,7 +39,7 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::characterdata::CharacterData;
 use crate::dom::document::Document;
 use crate::dom::document_embedder_controls::ControlElement;
-use crate::dom::element::{AttributeMutation, CustomElementCreationMode, Element, ElementCreator};
+use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::event::Event;
 use crate::dom::event::{EventBubbles, EventCancelable, EventComposed};
 use crate::dom::eventtarget::EventTarget;
@@ -43,19 +52,13 @@ use crate::dom::html::htmloptionelement::HTMLOptionElement;
 use crate::dom::html::htmloptionscollection::HTMLOptionsCollection;
 use crate::dom::node::{BindContext, ChildrenMutation, Node, NodeTraits,  UnbindContext};
 use crate::dom::nodelist::NodeList;
+use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::ua_shadowroot::{CreateUAShadowRootForSelf, UAShadowRoot};
 use crate::dom::text::Text;
 use crate::dom::types::FocusEvent;
 use crate::dom::validation::{is_barred_by_datalist_ancestor, Validatable};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
 use crate::dom::node::virtualmethods::VirtualMethods;
-use dom_struct::dom_struct;
-use embedder_traits::{EmbedderControlRequest, SelectElementRequest};
-use embedder_traits::{SelectElementOption, SelectElementOptionOrOptgroup};
-use html5ever::{local_name, ns, LocalName, Prefix, QualName};
-use js::context::{JSContext, NoGC};
-use js::rust::HandleObject;
-use style::attr::AttrValue;
-use stylo_dom::ElementState;
 
 const DEFAULT_SELECT_SIZE: u32 = 0;
 
@@ -142,6 +145,54 @@ struct ShadowTree {
     selected_option: Dom<Text>,
 }
 
+impl UAShadowRoot<ShadowTree> for HTMLSelectElement {
+    fn store_for_shadow_tree(&self, cx: &mut JSContext, shadow_root: DomRoot<ShadowRoot>) {
+        let document = self.owner_document();
+
+        let select_box = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
+        select_box.set_string_attribute(cx, &local_name!("style"), SELECT_BOX_STYLE.into());
+        shadow_root
+            .upcast::<Node>()
+            .AppendChild(cx, select_box.upcast::<Node>())
+            .unwrap();
+
+        let text_container = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
+        text_container.set_string_attribute(cx, &local_name!("style"), TEXT_CONTAINER_STYLE.into());
+        select_box
+            .upcast::<Node>()
+            .AppendChild(cx, text_container.upcast::<Node>())
+            .unwrap();
+
+        let text = Text::new(cx, DOMString::new(), &document);
+        text_container
+            .upcast::<Node>()
+            .AppendChild(cx, text.upcast::<Node>())
+            .unwrap();
+
+        let chevron_container = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
+        chevron_container.set_string_attribute(
+            cx,
+            &local_name!("style"),
+            CHEVRON_CONTAINER_STYLE.into(),
+        );
+        select_box
+            .upcast::<Node>()
+            .AppendChild(cx, chevron_container.upcast::<Node>())
+            .unwrap();
+
+        let _ = self
+            .shadow_tree
+            .safe_borrow_mut(cx.no_gc())
+            .insert(ShadowTree {
+                selected_option: text.as_traced(),
+            });
+    }
+
+    fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<ShadowTree>> {
+        self.shadow_tree.borrow()
+    }
+}
+
 impl HTMLSelectElement {
     fn new_inherited(
         local_name: LocalName,
@@ -221,7 +272,7 @@ impl HTMLSelectElement {
         }
     }
 
-    // https://html.spec.whatwg.org/multipage/#the-select-element:concept-form-reset-control
+    /// <https://html.spec.whatwg.org/multipage/#the-select-element:concept-form-reset-control>
     pub(crate) fn reset(&self, no_gc: &NoGC) {
         for opt in self.list_of_options(no_gc) {
             opt.set_selectedness(no_gc, opt.DefaultSelected());
@@ -230,7 +281,7 @@ impl HTMLSelectElement {
         self.ask_for_reset(no_gc);
     }
 
-    // https://html.spec.whatwg.org/multipage/#ask-for-a-reset
+    /// <https://html.spec.whatwg.org/multipage/#ask-for-a-reset>
     pub(crate) fn ask_for_reset(&self, no_gc: &NoGC) {
         if self.Multiple() {
             return;
@@ -275,7 +326,7 @@ impl HTMLSelectElement {
         }
     }
 
-    // https://html.spec.whatwg.org/multipage/#concept-select-pick
+    /// <https://html.spec.whatwg.org/multipage/#concept-select-pick>
     pub(crate) fn pick_option(&self, no_gc: &NoGC, picked: &HTMLOptionElement) {
         if !self.Multiple() {
             let picked = picked.upcast();
@@ -294,79 +345,6 @@ impl HTMLSelectElement {
         } else {
             self.Size()
         }
-    }
-
-    fn create_shadow_tree(&self, cx: &mut JSContext) {
-        let document = self.owner_document();
-        let root = self.upcast::<Element>().attach_ua_shadow_root(cx, true);
-
-        let select_box = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("div")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-        select_box.set_string_attribute(cx, &local_name!("style"), SELECT_BOX_STYLE.into());
-
-        let text_container = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("div")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-        text_container.set_string_attribute(cx, &local_name!("style"), TEXT_CONTAINER_STYLE.into());
-        select_box
-            .upcast::<Node>()
-            .AppendChild(cx, text_container.upcast::<Node>())
-            .unwrap();
-
-        let text = Text::new(cx, DOMString::new(), &document);
-        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {
-            selected_option: text.as_traced(),
-        });
-        text_container
-            .upcast::<Node>()
-            .AppendChild(cx, text.upcast::<Node>())
-            .unwrap();
-
-        let chevron_container = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("div")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-        chevron_container.set_string_attribute(
-            cx,
-            &local_name!("style"),
-            CHEVRON_CONTAINER_STYLE.into(),
-        );
-        select_box
-            .upcast::<Node>()
-            .AppendChild(cx, chevron_container.upcast::<Node>())
-            .unwrap();
-
-        root.upcast::<Node>()
-            .AppendChild(cx, select_box.upcast::<Node>())
-            .unwrap();
-    }
-
-    fn shadow_tree(&self, cx: &mut JSContext) -> Ref<'_, ShadowTree> {
-        if !self.upcast::<Element>().is_shadow_host() {
-            self.create_shadow_tree(cx);
-        }
-
-        Ref::filter_map(self.shadow_tree.borrow(), Option::as_ref)
-            .ok()
-            .expect("UA shadow tree was not created")
     }
 
     pub(crate) fn update_shadow_tree(&self, cx: &mut JSContext) {
@@ -782,8 +760,8 @@ impl HTMLSelectElementMethods<crate::DomTypeHolder> for HTMLSelectElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-willvalidate>
-    fn WillValidate(&self) -> bool {
-        self.is_instance_validatable()
+    fn WillValidate(&self, no_gc: &NoGC) -> bool {
+        self.is_instance_validatable(no_gc)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-validity>
@@ -838,14 +816,14 @@ impl VirtualMethods for HTMLSelectElement {
             local_name!("disabled") => {
                 let el = self.upcast::<Element>();
                 match mutation {
-                    AttributeMutation::Set(..) => {
+                    AttributeMutation::Set(_) => {
                         el.set_disabled_state(true);
                         el.set_enabled_state(false);
                     },
                     AttributeMutation::Removed => {
                         el.set_disabled_state(false);
                         el.set_enabled_state(true);
-                        el.check_ancestors_disabled_state_for_form_control();
+                        el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
                     },
                 }
 
@@ -870,7 +848,7 @@ impl VirtualMethods for HTMLSelectElement {
         }
 
         self.upcast::<Element>()
-            .check_ancestors_disabled_state_for_form_control();
+            .check_ancestors_disabled_state_for_form_control(cx.no_gc());
     }
 
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
@@ -882,7 +860,7 @@ impl VirtualMethods for HTMLSelectElement {
             .ancestors()
             .any(|ancestor| ancestor.is::<HTMLFieldSetElement>())
         {
-            el.check_ancestors_disabled_state_for_form_control();
+            el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
         } else {
             el.check_disabled_attribute();
         }
@@ -946,10 +924,11 @@ impl Validatable for HTMLSelectElement {
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
     }
 
-    fn is_instance_validatable(&self) -> bool {
+    fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
         // https://html.spec.whatwg.org/multipage/#enabling-and-disabling-form-controls%3A-the-disabled-attribute%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#the-datalist-element%3Abarred-from-constraint-validation
-        !self.upcast::<Element>().disabled_state() && !is_barred_by_datalist_ancestor(self.upcast())
+        !self.upcast::<Element>().disabled_state() &&
+            !is_barred_by_datalist_ancestor(no_gc, self.upcast())
     }
 
     fn perform_validation(

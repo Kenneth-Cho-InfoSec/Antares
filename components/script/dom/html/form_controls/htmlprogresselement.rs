@@ -5,12 +5,13 @@
 use std::cell::Ref;
 
 use dom_struct::dom_struct;
-use html5ever::{LocalName, Prefix, QualName, local_name, ns};
+use html5ever::{LocalName, Prefix, local_name};
 use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
+use style::selector_parser::PseudoElement;
+use stylo_dom::ElementState;
 
-use crate::dom::bindings::codegen::Bindings::ElementBinding::Element_Binding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLProgressElementBinding::HTMLProgressElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::Node_Binding::NodeMethods;
 use crate::dom::bindings::inheritance::Castable;
@@ -19,11 +20,13 @@ use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::document::Document;
 use crate::dom::element::attributes::storage::AttrRef;
-use crate::dom::element::{AttributeMutation, CustomElementCreationMode, Element, ElementCreator};
+use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::virtualmethods::VirtualMethods;
-use crate::dom::node::{BindContext, Node, NodeTraits};
+use crate::dom::node::{BindContext, Node};
 use crate::dom::nodelist::NodeList;
+use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::ua_shadowroot::{CreateUAShadowRootForSelf, UAShadowRoot};
 
 #[dom_struct]
 pub(crate) struct HTMLProgressElement {
@@ -39,6 +42,30 @@ struct ShadowTree {
     progress_bar: Dom<Element>,
 }
 
+impl UAShadowRoot<ShadowTree> for HTMLProgressElement {
+    fn store_for_shadow_tree(&self, cx: &mut JSContext, shadow_root: DomRoot<ShadowRoot>) {
+        let progress_bar = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
+        shadow_root
+            .upcast::<Node>()
+            .AppendChild(cx, progress_bar.upcast::<Node>())
+            .unwrap();
+        progress_bar
+            .upcast::<Node>()
+            .set_implemented_pseudo_element(PseudoElement::MozProgressBar);
+
+        let _ = self
+            .shadow_tree
+            .safe_borrow_mut(cx.no_gc())
+            .insert(ShadowTree {
+                progress_bar: progress_bar.as_traced(),
+            });
+    }
+
+    fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<ShadowTree>> {
+        self.shadow_tree.borrow()
+    }
+}
+
 impl HTMLProgressElement {
     fn new_inherited(
         local_name: LocalName,
@@ -46,7 +73,12 @@ impl HTMLProgressElement {
         document: &Document,
     ) -> HTMLProgressElement {
         HTMLProgressElement {
-            htmlelement: HTMLElement::new_inherited(local_name, prefix, document),
+            htmlelement: HTMLElement::new_inherited_with_state(
+                ElementState::INDETERMINATE,
+                local_name,
+                prefix,
+                document,
+            ),
             labels_node_list: MutNullableDom::new(None),
             shadow_tree: Default::default(),
         }
@@ -67,43 +99,6 @@ impl HTMLProgressElement {
             document,
             proto,
         )
-    }
-
-    fn create_shadow_tree(&self, cx: &mut JSContext) {
-        let document = self.owner_document();
-        let root = self.upcast::<Element>().attach_ua_shadow_root(cx, true);
-
-        let progress_bar = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("div")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-
-        // FIXME: This should use ::-moz-progress-bar
-        progress_bar.SetId(cx, DOMString::from_static("-servo-progress-bar"));
-        root.upcast::<Node>()
-            .AppendChild(cx, progress_bar.upcast::<Node>())
-            .unwrap();
-
-        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {
-            progress_bar: progress_bar.as_traced(),
-        });
-        self.upcast::<Node>()
-            .dirty(cx.no_gc(), crate::dom::node::NodeDamage::Other);
-    }
-
-    fn shadow_tree(&self, cx: &mut JSContext) -> Ref<'_, ShadowTree> {
-        if !self.upcast::<Element>().is_shadow_host() {
-            self.create_shadow_tree(cx);
-        }
-
-        Ref::filter_map(self.shadow_tree.borrow(), Option::as_ref)
-            .ok()
-            .expect("UA shadow tree was not created")
     }
 
     /// Update the visual width of bar
@@ -222,6 +217,13 @@ impl VirtualMethods for HTMLProgressElement {
         );
         if is_important_attribute {
             self.update_state(cx);
+        }
+
+        if matches!(attr.local_name(), &local_name!("value")) {
+            self.upcast::<Element>().set_state(
+                ElementState::INDETERMINATE,
+                matches!(mutation, AttributeMutation::Removed),
+            );
         }
     }
 

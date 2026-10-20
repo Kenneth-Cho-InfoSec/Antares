@@ -1,7 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-#![allow(rustdoc::private_intra_doc_links)]
+#![expect(rustdoc::private_intra_doc_links)]
 
 //! Same-formatting context blocks. This represents a block in block flow that does not
 //! establish a new formatting context.
@@ -14,7 +14,7 @@ use script::layout_dom::ServoLayoutNode;
 use servo_arc::Arc as ServoArc;
 use style::Zero;
 use style::context::SharedStyleContext;
-use style::logical_geometry::Direction;
+use style::logical_geometry::LogicalAxis;
 use style::properties::ComputedValues;
 use style::servo::selector_parser::PseudoElement;
 
@@ -28,7 +28,7 @@ use crate::fragment_tree::{BoxFragment, CollapsedBlockMargins, CollapsedMargin, 
 use crate::geom::{LogicalRect, LogicalSides1D, LogicalVec2};
 use crate::layout_box_base::LayoutBoxBase;
 use crate::positioned::PositioningContext;
-use crate::sizing::{InlineContentSizesResult, Size};
+use crate::sizing::InlineContentSizesResult;
 use crate::style_ext::LayoutStyle;
 use crate::{ConstraintSpace, ContainingBlock};
 
@@ -178,12 +178,15 @@ impl SameFormattingContextBlock {
             depends_on_block_constraints,
             available_block_size,
             justify_self,
+            automatic_block_size,
             ..
         } = solve_containing_block_padding_and_border_for_in_flow_box(
+            layout_context,
             containing_block,
             &layout_style,
             get_inline_content_sizes,
             ignore_block_margins_for_stretch,
+            &self.base,
             None,
             has_inline_parent,
         );
@@ -347,8 +350,8 @@ impl SameFormattingContextBlock {
         }
 
         let block_size = block_sizes.resolve(
-            Direction::Block,
-            Size::FitContent,
+            LogicalAxis::Block,
+            automatic_block_size,
             Au::zero,
             available_block_size,
             || content_block_size.into(),

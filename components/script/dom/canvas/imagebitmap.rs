@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, Ref};
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use euclid::default::{Point2D, Rect, Size2D};
@@ -14,6 +13,8 @@ use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::serializable::Serializable;
+use script_bindings::structuredclone::StructuredData;
 use servo_base::id::{ImageBitmapId, ImageBitmapIndex};
 use servo_constellation_traits::SerializableImageBitmap;
 
@@ -23,11 +24,9 @@ use crate::dom::bindings::codegen::Bindings::ImageBitmapBinding::{
 };
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::serializable::Serializable;
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::types::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 
 #[dom_struct]
 pub(crate) struct ImageBitmap {
@@ -275,7 +274,7 @@ impl ImageBitmap {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-createimagebitmap>
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn create_image_bitmap(
         global_scope: &GlobalScope,
         image: ImageBitmapSource,
@@ -285,7 +284,7 @@ impl ImageBitmap {
         sh: Option<i32>,
         options: &ImageBitmapOptions,
         realm: &mut CurrentRealm,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         let p = Promise::new_in_realm(realm);
 
         // Step 1. If either sw or sh is given and is 0, then return a promise rejected with a RangeError.
@@ -319,8 +318,8 @@ impl ImageBitmap {
 
         // The promise with image bitmap should be fulfilled on the bitmap task source.
         let fullfill_promise_on_bitmap_task_source =
-            |promise: &Rc<Promise>, image_bitmap: &ImageBitmap| {
-                let trusted_promise = TrustedPromise::new(promise.clone());
+            |promise: &RootedPromise, image_bitmap: &ImageBitmap| {
+                let trusted_promise = TrustedPromise::from(promise);
                 let trusted_image_bitmap = Trusted::new(image_bitmap);
 
                 global_scope.task_manager().bitmap_task_source().queue(
@@ -335,8 +334,8 @@ impl ImageBitmap {
 
         // The promise with "InvalidStateError" DOMException should be rejected
         // on the bitmap task source.
-        let reject_promise_on_bitmap_task_source = |promise: &Rc<Promise>| {
-            let trusted_promise = TrustedPromise::new(promise.clone());
+        let reject_promise_on_bitmap_task_source = |promise: &RootedPromise| {
+            let trusted_promise = TrustedPromise::from(promise);
 
             global_scope.task_manager().bitmap_task_source().queue(
                 task!(reject_promise: move |cx| {
@@ -603,7 +602,7 @@ impl ImageBitmap {
     }
 }
 
-impl Serializable for ImageBitmap {
+impl Serializable<crate::DomTypeHolder> for ImageBitmap {
     type Index = ImageBitmapIndex;
     type Data = SerializableImageBitmap;
 
@@ -685,7 +684,7 @@ impl Transferable for ImageBitmap {
         // Step 2. Set dataHolder.[[BitmapData]] to value's bitmap data.
         // Step 3. Unset value's bitmap data.
         let transferred = SerializableImageBitmap {
-            bitmap_data: bitmap_data.to_shared(),
+            bitmap_data: bitmap_data.into_shared(),
         };
 
         Ok((ImageBitmapId::new(), transferred))

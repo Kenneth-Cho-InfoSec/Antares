@@ -6,7 +6,8 @@ use dom_struct::dom_struct;
 use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::GeolocationPositionErrorBinding::GeolocationPositionErrorConstants::{PERMISSION_DENIED, POSITION_UNAVAILABLE, TIMEOUT};
 use script_bindings::codegen::GenericBindings::GeolocationPositionErrorBinding::GeolocationPositionErrorMethods;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::domstring::TracedDOMString;
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::root::DomRoot;
 use script_bindings::str::DOMString;
 
@@ -17,7 +18,7 @@ use crate::dom::globalscope::GlobalScope;
 pub struct GeolocationPositionError {
     reflector_: Reflector,
     code: u16,
-    message: DOMString,
+    message: TracedDOMString,
 }
 
 impl GeolocationPositionError {
@@ -25,7 +26,7 @@ impl GeolocationPositionError {
         GeolocationPositionError {
             reflector_: Reflector::new(),
             code,
-            message,
+            message: message.traced(),
         }
     }
 
@@ -35,7 +36,7 @@ impl GeolocationPositionError {
         code: u16,
         message: DOMString,
     ) -> DomRoot<Self> {
-        reflect_dom_object_with_cx(Box::new(Self::new_inherited(code, message)), global, cx)
+        reflect_dom_object(cx, Box::new(Self::new_inherited(code, message)), global)
     }
 
     pub(crate) fn permission_denied(
@@ -70,6 +71,6 @@ impl GeolocationPositionErrorMethods<DomTypeHolder> for GeolocationPositionError
     }
 
     fn Message(&self) -> DOMString {
-        self.message.clone()
+        self.message.clone().root()
     }
 }

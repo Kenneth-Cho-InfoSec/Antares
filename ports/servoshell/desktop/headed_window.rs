@@ -54,7 +54,7 @@ use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
     LINE_HEIGHT, LINE_WIDTH, MIN_WINDOW_INNER_SIZE, PlatformWindow, ServoShellWindow,
-    ServoShellWindowId,
+    ServoShellWindowId, TopLevelWebViewCreationRequest,
 };
 
 pub(crate) const INITIAL_WINDOW_TITLE: &str = "Servo";
@@ -342,19 +342,6 @@ impl HeadedWindow {
             .shortcut(CMD_OR_CONTROL, 'W', || {
                 window.close_webview(active_webview.id());
             })
-            .shortcut(CMD_OR_CONTROL, 'X', || {
-                active_webview
-                    .notify_input_event(InputEvent::EditingAction(servo::EditingActionEvent::Cut));
-            })
-            .shortcut(CMD_OR_CONTROL, 'C', || {
-                active_webview
-                    .notify_input_event(InputEvent::EditingAction(servo::EditingActionEvent::Copy));
-            })
-            .shortcut(CMD_OR_CONTROL, 'V', || {
-                active_webview.notify_input_event(InputEvent::EditingAction(
-                    servo::EditingActionEvent::Paste,
-                ));
-            })
             .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F9), || {
                 active_webview.capture_webrender();
             })
@@ -423,10 +410,11 @@ impl HeadedWindow {
                 }
             })
             .shortcut(CMD_OR_CONTROL, 'T', || {
+                let url = Url::parse("servo:newtab")
+                    .expect("Should be able to unconditionally parse 'servo:newtab' as URL");
                 window.create_and_activate_toplevel_webview(
                     state.clone(),
-                    Url::parse("servo:newtab")
-                        .expect("Should be able to unconditionally parse 'servo:newtab' as URL"),
+                    TopLevelWebViewCreationRequest::WithUrl(url),
                 );
             })
             .shortcut(CMD_OR_CONTROL, 'Q', || state.schedule_exit())
@@ -617,12 +605,12 @@ impl HeadedWindow {
                     .borrow_mut()
                     .on_window_event(&self.winit_window, event);
 
-                if let WindowEvent::Focused(true) = event {
-                    state.handle_focused(window.clone());
-                }
-
                 if response.repaint && *event != WindowEvent::RedrawRequested {
                     self.winit_window.request_redraw();
+                }
+
+                if let WindowEvent::Focused(focused) = event {
+                    state.set_window_has_focus(window.clone(), *focused);
                 }
 
                 // All CursorMoved events, even when forwarded to the WebView, are also
@@ -731,6 +719,12 @@ impl HeadedWindow {
                     Ime::Commit(text) => {
                         webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
                             servo::CompositionEvent {
+                                state: servo::CompositionState::Update,
+                                data: text.clone(),
+                            },
+                        )));
+                        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+                            servo::CompositionEvent {
                                 state: servo::CompositionState::End,
                                 data: text,
                             },
@@ -798,6 +792,10 @@ impl HeadedWindow {
 }
 
 impl PlatformWindow for HeadedWindow {
+    fn platform_manages_focus(&self) -> bool {
+        true
+    }
+
     fn as_headed_window(&self) -> Option<&Self> {
         Some(self)
     }
@@ -1060,10 +1058,6 @@ impl PlatformWindow for HeadedWindow {
             .shortcut(Modifiers::empty(), Key::Named(NamedKey::F5), || {
                 webview.reload()
             });
-    }
-
-    fn focus(&self) {
-        self.winit_window.focus_window();
     }
 
     fn has_platform_focus(&self) -> bool {

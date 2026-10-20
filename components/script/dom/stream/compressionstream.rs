@@ -18,10 +18,12 @@ use js::jsapi::JSObject;
 use js::jsval::UndefinedValue;
 use js::rust::{HandleObject as SafeHandleObject, HandleValue as SafeHandleValue};
 use js::typedarray::Uint8;
+#[cfg(feature = "brotli-compression-stream")]
+use malloc_size_of::MallocShallowSizeOf;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 
-use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_copy};
+use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_source_slice};
 use crate::dom::bindings::codegen::Bindings::CompressionStreamBinding::{
     CompressionFormat, CompressionStreamMethods,
 };
@@ -141,14 +143,20 @@ pub(crate) fn compress_and_enqueue_a_chunk(
     controller: &TransformStreamDefaultController,
 ) -> Fallible<()> {
     // Step 1. If chunk is not a BufferSource type, then throw a TypeError.
-    let chunk = convert_chunk_to_vec(cx, chunk)?;
+    let conversion_result =
+        ArrayBufferViewOrArrayBuffer::from_jsval(cx, chunk, ()).map_err(|_| {
+            Error::Type(c"Unable to convert chunk into ArrayBuffer or ArrayBufferView".to_owned())
+        })?;
+    let buffer_source = conversion_result.get_success_value().ok_or_else(|| {
+        Error::Type(c"Unable to convert chunk into ArrayBuffer or ArrayBufferView".to_owned())
+    })?;
 
     // Step 2. Let buffer be the result of compressing chunk with cs’s format and context.
     // NOTE: In our implementation, the enum type of context already indicates the format.
     let buffer = {
         let mut compression_context = cs.context.borrow_mut();
         let buffer = compression_context
-            .compress(&chunk)
+            .compress(get_buffer_source_slice(buffer_source, cx.no_gc()))
             .map_err(|_| Error::Operation(Some("Failed to compress a chunk of input".into())))?;
 
         // Step 3. If buffer is empty, return.
@@ -219,11 +227,10 @@ enum Encoder {
 }
 
 impl MallocSizeOf for Encoder {
-    #[cfg_attr(feature = "brotli-compression-stream", expect(unsafe_code))]
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         match self {
             #[cfg(feature = "brotli-compression-stream")]
-            Encoder::Brotli(encoder) => unsafe { ops.malloc_size_of(&**encoder) },
+            Encoder::Brotli(encoder) => encoder.shallow_size_of(ops),
             Encoder::Deflate(encoder) => encoder.size_of(ops),
             Encoder::DeflateRaw(encoder) => encoder.size_of(ops),
             Encoder::Gzip(encoder) => encoder.size_of(ops),
@@ -328,18 +335,4 @@ impl CompressionContext {
 
         Ok(result)
     }
-}
-
-pub(crate) fn convert_chunk_to_vec(
-    cx: &mut JSContext,
-    chunk: SafeHandleValue,
-) -> Result<Vec<u8>, Error> {
-    let conversion_result =
-        ArrayBufferViewOrArrayBuffer::from_jsval(cx, chunk, ()).map_err(|_| {
-            Error::Type(c"Unable to convert chunk into ArrayBuffer or ArrayBufferView".to_owned())
-        })?;
-    let buffer_source = conversion_result.get_success_value().ok_or_else(|| {
-        Error::Type(c"Unable to convert chunk into ArrayBuffer or ArrayBufferView".to_owned())
-    })?;
-    Ok(get_buffer_source_copy(buffer_source.into()))
 }

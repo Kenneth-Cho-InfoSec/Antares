@@ -7,8 +7,9 @@ use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::jsapi::{HandleValueArray, Heap, NewArrayObject, Value};
-use js::jsval::ObjectValue;
+use js::conversions::ToJSValConvertible;
+use js::jsapi::{Heap, Value};
+use js::jsval::UndefinedValue;
 use js::rust::HandleValue as SafeHandleValue;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
 
@@ -108,7 +109,7 @@ impl DefaultTeeUnderlyingSource {
             // Set readAgain to true.
             self.read_again.set(true);
             // Return a promise resolved with undefined.
-            return Promise::new_resolved_rooted(cx, &self.stream.global(), ());
+            return Promise::new_resolved(cx, &self.stream.global(), ());
         }
 
         // Set reading to true.
@@ -125,7 +126,7 @@ impl DefaultTeeUnderlyingSource {
             self.canceled_1.clone(),
             self.canceled_2.clone(),
             self.clone_for_branch_2.clone(),
-            &self.cancel_promise.root(),
+            &self.cancel_promise.root(cx),
             self,
         );
 
@@ -138,7 +139,7 @@ impl DefaultTeeUnderlyingSource {
         self.reader.read(cx, &read_request);
 
         // Return a promise resolved with undefined.
-        Promise::new_resolved_rooted(cx, &self.stream.global(), ())
+        Promise::new_resolved(cx, &self.stream.global(), ())
     }
 
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
@@ -164,7 +165,7 @@ impl DefaultTeeUnderlyingSource {
                     self.resolve_cancel_promise(cx, global);
                 }
                 // Return cancelPromise.
-                Some(Ok(self.cancel_promise.root()))
+                Some(Ok(self.cancel_promise.root(cx)))
             },
             DefaultTeeCancelAlgorithm::Cancel2Algorithm => {
                 // Set canceled_2 to true.
@@ -178,21 +179,19 @@ impl DefaultTeeUnderlyingSource {
                     self.resolve_cancel_promise(cx, global);
                 }
                 // Return cancelPromise.
-                Some(Ok(self.cancel_promise.root()))
+                Some(Ok(self.cancel_promise.root(cx)))
             },
         }
     }
 
-    #[expect(unsafe_code)]
     fn resolve_cancel_promise(&self, cx: &mut js::context::JSContext, global: &GlobalScope) {
         // Let compositeReason be ! CreateArrayFromList(« reason_1, reason_2 »).
         rooted_vec!(let mut reasons_values);
         reasons_values.push(self.reason_1.get());
         reasons_values.push(self.reason_2.get());
 
-        let reasons_values_array = HandleValueArray::from(&reasons_values);
-        rooted!(&in(cx) let reasons = unsafe { NewArrayObject(cx.raw_cx(), &reasons_values_array) });
-        rooted!(&in(cx) let reasons_value = ObjectValue(reasons.get()));
+        rooted!(&in(cx) let mut reasons_value = UndefinedValue());
+        reasons_values.to_jsval(cx, reasons_value.handle_mut());
 
         // Let cancelResult be ! ReadableStreamCancel(stream, compositeReason).
         let cancel_result = self.stream.cancel(cx, global, reasons_value.handle());
