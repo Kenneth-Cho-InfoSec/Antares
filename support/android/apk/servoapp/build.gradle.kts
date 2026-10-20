@@ -17,8 +17,8 @@ android {
         // by Solipsism only on Android 13 and newer.
         minSdk = 33
         targetSdk = 34
-        versionCode = 9
-        versionName = "0.4.0"
+        versionCode = 10
+        versionName = "0.5.0"
     }
 
     compileOptions {
