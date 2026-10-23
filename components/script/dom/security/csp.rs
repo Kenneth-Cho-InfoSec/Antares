@@ -20,6 +20,7 @@ use js::realm::CurrentRealm;
 use js::rust::describe_scripted_caller;
 use log::warn;
 use servo_constellation_traits::{LoadData, LoadOrigin};
+use servo_url::ImmutableOrigin;
 use url::Url;
 
 use super::csppolicyviolationreport::CSPViolationReportBuilder;
@@ -201,15 +202,8 @@ impl CspReporting for Option<CspList> {
             // Same-origin parents can go via their own script-thread (fast-path)
             if let Some(container_element) = window_proxy.frame_element() {
                 let container_document = container_element.owner_document();
-                let parent_origin = Url::parse(
-                    container_document
-                        .origin()
-                        .immutable()
-                        .ascii_serialization()
-                        .as_ref(),
-                )
-                .expect("Must always be able to parse document origin");
-                parent_navigable_origins.push(parent_origin);
+                parent_navigable_origins
+                    .push(origin_to_url(container_document.origin().immutable()));
                 window_proxy = container_document.window().window_proxy();
                 continue;
             }
@@ -220,10 +214,7 @@ impl CspReporting for Option<CspList> {
                 else {
                     break;
                 };
-                let parent_origin = parent_origin.immutable().ascii_serialization();
-                let parent_origin = Url::parse(&parent_origin)
-                    .expect("Must always be able to parse document origin");
-                parent_navigable_origins.push(parent_origin);
+                parent_navigable_origins.push(origin_to_url(parent_origin.immutable()));
                 window_proxy = DomRoot::from_ref(parent_proxy);
                 continue;
             }
@@ -365,6 +356,17 @@ impl CspReporting for Option<CspList> {
             },
         }
     }
+}
+
+/// Convert a document origin into a URL for the `frame-ancestors` check.
+///
+/// Opaque origins serialize as "null", which is not a valid absolute URL. Use an
+/// opaque `data:` URL instead so that source expressions such as `'self'` and
+/// `'none'` never match sandboxed ancestors. See
+/// <https://github.com/servo/servo/issues/48268>.
+fn origin_to_url(origin: &ImmutableOrigin) -> Url {
+    Url::parse(origin.ascii_serialization().as_ref())
+        .unwrap_or_else(|_| Url::parse("data:,").expect("data URL is valid"))
 }
 
 pub(crate) struct SourcePosition {
