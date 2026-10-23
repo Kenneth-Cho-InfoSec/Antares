@@ -480,7 +480,11 @@ impl WindowRenderingContext {
     pub fn take_window(&self) -> Result<(), Error> {
         let device = self.surfman_context.device.borrow_mut();
         let mut context = self.surfman_context.context.borrow_mut();
-        let mut surface = device.unbind_surface_from_context(&mut context)?.unwrap();
+        let Some(mut surface) = device.unbind_surface_from_context(&mut context)? else {
+            // The surface may already have been torn down by the platform before
+            // the embedder pauses painting. There is nothing left to unbind.
+            return Ok(());
+        };
         device.destroy_surface(&mut context, &mut surface)?;
         Ok(())
     }
