@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Antares is an experimental Servo-derived Android browser engine for Solipsism. Learn what it does, how to install the companion, and when to use WebView instead."
+    />
+    <meta name="theme-color" content="#101729" />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:title"
+      content="Antares — a second engine for Solipsism"
+    />
+    <meta
+      property="og:description"
+      content="An experimental Servo-based Android rendering core, installed separately and selected from Solipsism Browser."
+    />
+    <meta
+      property="og:image"
+      content="https://kenneth-cho-infosec.github.io/Antares/assets/antares-icon.png"
+    />
+    <title>Antares — a second engine for Solipsism</title>
+    <link rel="icon" type="image/png" href="assets/antares-icon.png" />
+    <link rel="stylesheet" href="assets/site.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header" id="top">
+      <a class="brand" href="#top" aria-label="Antares home"
+        ><img
+          src="assets/antares-icon.png"
+          width="44"
+          height="44"
+          alt=""
+        /><span>ANTARES<span class="brand__dot"> / ENGINE</span></span></a
+      >
+      <nav aria-label="Main navigation">
+        <a href="#architecture">Architecture</a
+        ><a href="#features">Capabilities</a><a href="#install">Install</a
+        ><a href="#compare">Compare</a><a href="#developers">Developers</a>
+      </nav>
+      <a
+        class="header-cta"
+        href="https://github.com/Kenneth-Cho-InfoSec/Antares/releases/tag/v0.5.0"
+        >Get 0.5.0 <span aria-hidden="true">↗</span></a
+      >
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero__grid" aria-hidden="true"></div>
+        <div class="hero__copy">
+          <p class="eyebrow">
+            <span class="status-light"></span> EXPERIMENTAL ENGINE / RELEASE
+            0.5.0
+          </p>
+          <h1 id="hero-title">A second engine<br />for <em>Solipsism.</em></h1>
+          <p class="hero__lead">
+            Antares is a Servo-derived Android rendering core you install beside
+            Solipsism Browser and choose when you want to try a different
+            engine.
+          </p>
+          <div class="hero__actions">
+            <a
+              class="button button--bright"
+              href="https://github.com/Kenneth-Cho-InfoSec/Antares/releases/tag/v0.5.0"
+              >Get Antares 0.5.0 <span aria-hidden="true">↗</span></a
+            ><a class="button button--quiet" href="#architecture"
+              >See how it fits <span aria-hidden="true">↓</span></a
+            >
+          </div>
+          <p class="hero__specs">
+            <span>ANDROID 13+</span><span>ARM64 RELEASE</span
+            ><span>SERVO-DERIVED</span>
+          </p>
+          <p class="hero__warning">
+            Experimental: web compatibility and media behaviour vary. Solipsism
+            keeps Android WebView available as the stable fallback.
+          </p>
+        </div>
+        <div
+          class="engine-map"
+          role="img"
+          aria-label="Architecture diagram: Solipsism owns browser controls and binds to the separate Antares rendering engine through a versioned Android service."
+        >
+          <div class="map-orbit map-orbit--outer" aria-hidden="true"></div>
+          <div class="map-orbit map-orbit--inner" aria-hidden="true"></div>
+          <div class="map-node map-node--host">
+            <div class="map-node__top">
+              <span class="map-node__mark">S</span><span>SOLIPSISM / HOST</span
+              ><span class="map-node__state">BROWSER UI</span>
+            </div>
+            <div class="browser-ghost" aria-hidden="true">
+              <div class="browser-ghost__bar">
+                <i></i><i></i><i></i><span>address · tabs · controls</span>
+              </div>
+              <div class="browser-ghost__body">
+                <span>YOUR BROWSER</span><b>Tabs · permissions · settings</b>
+              </div>
+            </div>
+            <p>Owns the browser experience</p>
+          </div>
+          <div class="map-link">
+            <span class="map-link__line" aria-hidden="true"></span
+            ><span class="map-link__tag">AIDL / PROTOCOL 14</span
+            ><span class="map-link__arrow" aria-hidden="true">↓</span>
+          </div>
+          <div class="map-node map-node--engine">
+            <div class="map-node__top">
+              <span class="map-node__mark map-node__mark--engine">A</span
+              ><span>ANTARES / ENGINE</span
+              ><span class="map-node__state">SEPARATE APK</span>
+            </div>
+            <div class="render-ghost" aria-hidden="true">
+              <span>HTML</span><i>→</i><span>LAYOUT</span><i>→</i
+              ><span>PAINT</span><i>→</i
+              ><span class="render-ghost__surface"></span>
+            </div>
+            <p>Renders web content in its own process</p>
+          </div>
+          <p class="engine-map__caption">
+            One host. One replaceable rendering core.
+          </p>
+        </div>
+        <div class="hero__base" aria-hidden="true">
+          <span>01 / HOST</span><span>02 / BRIDGE</span><span>03 / ENGINE</span>
+        </div>
+      </section>
+
+      <section class="spec-band" aria-label="Antares release profile">
+        <p><b>0.5.0</b><span>current release</span></p>
+        <p><b>API 33+</b><span>Android 13 or newer</span></p>
+        <p><b>ARM64</b><span>production APK target</span></p>
+        <p><b>MPL 2.0</b><span>Mozilla Public License</span></p>
+        <p class="spec-band__note">
+          For testing an alternative engine, not replacing your full browser.
+        </p>
+      </section>
+
+      <section
+        class="section architecture"
+        id="architecture"
+        aria-labelledby="architecture-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">The boundary is intentional</p>
+            <h2 id="architecture-title">
+              Engine work<br />without the <em>browser chrome.</em>
+            </h2>
+          </div>
+          <p>
+            Antares runs as a separate companion package. Solipsism supplies the
+            address bar, tabs, navigation, permissions and user-facing controls;
+            Antares supplies the page renderer.
+          </p>
+        </div>
+        <div class="architecture-grid">
+          <article class="architecture-card architecture-card--host">
+            <span class="architecture-card__index">A / SOLIPSISM</span>
+            <h3>The browser stays in the host.</h3>
+            <p>
+              Tabs, settings, bookmarks, downloads, permissions and the core
+              chooser remain part of Solipsism.
+            </p>
+            <a href="https://github.com/Kenneth-Cho-InfoSec/Solipsism"
+              >Explore Solipsism <span aria-hidden="true">↗</span></a
+            >
+          </article>
+          <div class="architecture-bridge" aria-hidden="true">
+            <span class="bridge-line"></span
+            ><span>VERSIONED<br />SERVICE API</span><b>⇄</b>
+          </div>
+          <article class="architecture-card architecture-card--engine">
+            <span class="architecture-card__index">B / ANTARES</span>
+            <h3>The engine can change.</h3>
+            <p>
+              A versioned Android service connects the host to a Servo-based
+              renderer in a separate process.
+            </p>
+            <a
+              href="https://github.com/Kenneth-Cho-InfoSec/Antares/blob/main/support/android/apk/servoapp/src/main/aidl/com/krystelligence/antares/protocol/IAntaresEngine.aidl"
+              >Inspect the AIDL interface <span aria-hidden="true">↗</span></a
+            >
+          </article>
+        </div>
+        <p class="architecture-footnote">
+          The separate package keeps the native engine optional. If a page does
+          not work as expected, switch back to Android WebView from Solipsism.
+        </p>
+      </section>
+
+      <section
+        class="feature-section"
+        id="features"
+        aria-labelledby="feature-title"
+      >
+        <div class="feature-intro">
+          <p class="eyebrow">A focused Android integration</p>
+          <h2 id="feature-title">
+            Built around the parts a browser <em>feels.</em>
+          </h2>
+          <p>
+            Antares adapts Servo’s Android view and engine lifecycle for a
+            companion app. The integration concentrates on rendering, text entry
+            and giving control back to the host.
+          </p>
+        </div>
+        <div class="feature-list">
+          <article>
+            <span>01</span>
+            <div>
+              <h3>Native page rendering</h3>
+              <p>
+                Servo-derived layout, scripting and painting delivered into
+                Solipsism’s view surface.
+              </p>
+            </div>
+            <b aria-hidden="true">↗</b>
+          </article>
+          <article>
+            <span>02</span>
+            <div>
+              <h3>Text input that belongs to the host</h3>
+              <p>
+                Unicode composition, deletion, Enter and keyboard dismissal
+                cross the engine boundary.
+              </p>
+            </div>
+            <b aria-hidden="true">⌨</b>
+          </article>
+          <article>
+            <span>03</span>
+            <div>
+              <h3>Input fields sized as requested</h3>
+              <p>
+                Text and search fields use the default character width and
+                honour the HTML <code>size</code> attribute.
+              </p>
+            </div>
+            <b aria-hidden="true">Aa</b>
+          </article>
+          <article>
+            <span>04</span>
+            <div>
+              <h3>Platform-aware surface handoff</h3>
+              <p>
+                The recent release updates Android surface ownership so the
+                renderer does not take the host’s keyboard connection.
+              </p>
+            </div>
+            <b aria-hidden="true">▱</b>
+          </article>
+        </div>
+      </section>
+
+      <section class="profile-section" aria-labelledby="profile-title">
+        <div class="profile-heading">
+          <p class="eyebrow">Android build profile</p>
+          <h2 id="profile-title">
+            A small surface area.<br /><em>A real web engine.</em>
+          </h2>
+        </div>
+        <div class="profile-grid">
+          <article class="profile-card profile-card--works">
+            <span class="profile-card__tag">AVAILABLE IN ANDROID</span>
+            <h3>What the package includes</h3>
+            <ul>
+              <li>ARM64 production release</li>
+              <li>Native HTML, CSS and JavaScript rendering</li>
+              <li>WebGL where the renderer supports it</li>
+              <li>Host-integrated text and search input</li>
+            </ul>
+          </article>
+          <article class="profile-card profile-card--not">
+            <span class="profile-card__tag">NOT IN THE ANDROID PACKAGE</span>
+            <h3>What to plan around</h3>
+            <ul>
+              <li>WebGPU and WebXR are disabled</li>
+              <li>Compatibility is not at WebView parity</li>
+              <li>Media, WebRTC, DRM, CAPTCHA and downloads vary</li>
+              <li>Site isolation and permissions depend on host and Android</li>
+            </ul>
+          </article>
+        </div>
+        <p class="profile-note">
+          If you depend on a site for work, sign-in or media, check it with
+          Android WebView too. Solipsism can switch cores without replacing the
+          browser app.
+        </p>
+      </section>
+
+      <section
+        class="install-section"
+        id="install"
+        aria-labelledby="install-title"
+      >
+        <div class="install-heading">
+          <p class="eyebrow">Install both pieces</p>
+          <h2 id="install-title">Engine first.<br /><em>Then choose.</em></h2>
+          <p>
+            Antares is not a standalone browser. Pair its companion APK with a
+            compatible Solipsism release.
+          </p>
+        </div>
+        <ol class="install-steps">
+          <li>
+            <span>01</span>
+            <div>
+              <h3>Install Solipsism 9.4.0</h3>
+              <p>
+                The current Antares 0.5.0 release notes specify Solipsism 9.4.0
+                as the matching host.
+              </p>
+            </div>
+            <a
+              href="https://github.com/Kenneth-Cho-InfoSec/Solipsism/releases/tag/v9.4.0"
+              aria-label="Get Solipsism 9.4.0"
+              >↗</a
+            >
+          </li>
+          <li>
+            <span>02</span>
+            <div>
+              <h3>Get Antares 0.5.0</h3>
+              <p>
+                Download the ARM64 companion APK from the official Antares
+                release on an Android 13+ device.
+              </p>
+            </div>
+            <a
+              href="https://github.com/Kenneth-Cho-InfoSec/Antares/releases/tag/v0.5.0"
+              aria-label="Get Antares 0.5.0"
+              >↗</a
+            >
+          </li>
+          <li class="install-steps__notice">
+            <span>!</span>
+            <div>
+              <h3>Updating from Antares 0.4.0?</h3>
+              <p>
+                The 0.5.0 companion uses a different signing certificate.
+                Android cannot update across those certificates: switch
+                Solipsism back to WebView, uninstall the old Antares package,
+                then install 0.5.0.
+              </p>
+            </div>
+            <a
+              href="https://github.com/Kenneth-Cho-InfoSec/Antares/releases/tag/v0.5.0"
+              aria-label="Read Antares 0.5.0 release notes"
+              >↗</a
+            >
+          </li>
+          <li>
+            <span>03</span>
+            <div>
+              <h3>Choose Antares in Solipsism</h3>
+              <p>
+                Open the core chooser or Debug Settings and select Antares. The
+                host checks the companion package before binding.
+              </p>
+            </div>
+            <span class="step-finish" aria-hidden="true">✓</span>
+          </li>
+          <li>
+            <span>04</span>
+            <div>
+              <h3>Switch back whenever you need</h3>
+              <p>
+                Choose Android WebView in Solipsism for pages that do not behave
+                as expected in the experimental core.
+              </p>
+            </div>
+            <span class="step-finish" aria-hidden="true">↺</span>
+          </li>
+        </ol>
+      </section>
+
+      <section
+        class="section compare-section"
+        id="compare"
+        aria-labelledby="compare-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Three different integration paths</p>
+            <h2 id="compare-title">Choose the engine for <em>the job.</em></h2>
+          </div>
+          <p>
+            These projects all render web content on Android, but they differ in
+            how an app gets and embeds the engine.
+          </p>
+        </div>
+        <div
+          class="table-scroll"
+          role="region"
+          aria-label="Comparison of Antares, Android WebView and GeckoView"
+          tabindex="0"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Approach</th>
+                <th scope="col">How it is delivered</th>
+                <th scope="col">Best fit</th>
+                <th scope="col">Trade-off</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="table-antares">
+                <th scope="row"><span>A</span> Antares</th>
+                <td>
+                  Servo-derived engine companion, selected inside Solipsism
+                </td>
+                <td>Solipsism users testing a second rendering core</td>
+                <td>
+                  Experimental; Android 13+ ARM64; feature compatibility varies
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  <a
+                    href="https://developer.android.com/develop/ui/views/layout/webapps/webview"
+                    >Android WebView</a
+                  >
+                </th>
+                <td>Android-provided web component</td>
+                <td>
+                  Apps that want platform web content through the system
+                  component; Solipsism’s stable fallback
+                </td>
+                <td>
+                  Engine version and behaviour follow the Android system WebView
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  <a href="https://mozilla.github.io/geckoview/">GeckoView</a>
+                </th>
+                <td>Gecko engine library embedded by an Android app</td>
+                <td>App teams choosing Mozilla’s embeddable engine and APIs</td>
+                <td>
+                  The app integrates the library and owns its browser experience
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="comparison-sources">
+          <span>PRIMARY PROJECT DOCUMENTATION</span
+          ><a
+            href="https://developer.android.com/develop/ui/views/layout/webapps/webview"
+            >Android WebView</a
+          ><a href="https://mozilla.github.io/geckoview/">GeckoView</a
+          ><a href="https://github.com/servo/servo">Servo</a>
+        </div>
+      </section>
+
+      <section class="policy-section" aria-labelledby="policy-title">
+        <div class="policy-mark" aria-hidden="true">i</div>
+        <div>
+          <p class="eyebrow">Browser policy stays in Solipsism</p>
+          <h2 id="policy-title">
+            The engine renders.<br /><em>The host sets the rules.</em>
+          </h2>
+          <p>
+            Tabs, privacy policy, permissions and feature controls belong to the
+            Solipsism app. Antares is a browser engine package and depends on
+            that host integration for user-facing policy.
+          </p>
+          <a
+            href="https://github.com/Kenneth-Cho-InfoSec/Antares/blob/main/README.md#current-status"
+            >Read the current status and limitations
+            <span aria-hidden="true">↗</span></a
+          >
+        </div>
+      </section>
+
+      <section
+        class="section developers"
+        id="developers"
+        aria-labelledby="developers-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Build, test, inspect</p>
+            <h2 id="developers-title">For engine <em>developers.</em></h2>
+          </div>
+          <p>
+            The Android package is built from a large Rust engine tree. A
+            desktop build is useful for engine work but is not the Android
+            companion APK.
+          </p>
+        </div>
+        <div class="developer-grid">
+          <article class="developer-panel developer-panel--build">
+            <span class="developer-panel__label">ANDROID ARM64 RELEASE</span>
+            <pre><code>./mach build --android --profile production-stripped --no-package<br />./mach package --android --profile production-stripped</code></pre>
+            <p>
+              Requires Rust, uv, Android SDK and NDK. Set
+              <code>ANDROID_SDK_ROOT</code> and
+              <code>ANDROID_NDK_ROOT</code> first.
+            </p>
+            <a
+              href="https://github.com/Kenneth-Cho-InfoSec/Antares/blob/main/README.md#build-from-source"
+              >Full build instructions <span aria-hidden="true">↗</span></a
+            >
+          </article>
+          <article class="developer-panel developer-panel--test">
+            <span class="developer-panel__label">REPOSITORY CHECKS</span>
+            <pre><code>./mach fmt --check<br />./mach test-tidy<br />./mach test-unit<br />./mach test-wpt</code></pre>
+            <p>
+              For Android, validate text entry, core switching and keyboard
+              ownership on a test device.
+            </p>
+            <a
+              href="https://github.com/Kenneth-Cho-InfoSec/Antares/blob/main/README.md#testing"
+              >Test guidance <span aria-hidden="true">↗</span></a
+            >
+          </article>
+        </div>
+        <div class="developer-links">
+          <a
+            href="https://github.com/Kenneth-Cho-InfoSec/Antares/blob/main/docs/ANTARES.md"
+            >Android architecture note <span>↗</span></a
+          ><a
+            href="https://github.com/Kenneth-Cho-InfoSec/Antares/blob/main/LICENSE"
+            >Mozilla Public License 2.0 <span>↗</span></a
+          ><a href="https://github.com/servo/servo"
+            >Upstream Servo <span>↗</span></a
+          >
+        </div>
+      </section>
+
+      <section class="closing" id="community" aria-labelledby="closing-title">
+        <img src="assets/antares-icon.png" width="72" height="72" alt="" />
+        <p class="eyebrow">A browser core for curious people</p>
+        <h2 id="closing-title">
+          Try the engine.<br /><em>Keep your fallback.</em>
+        </h2>
+        <p>
+          Install the matching packages, report a minimal repro, and help
+          improve the Android path.
+        </p>
+        <div class="closing__actions">
+          <a
+            class="button button--bright"
+            href="https://github.com/Kenneth-Cho-InfoSec/Antares/releases/tag/v0.5.0"
+            >Get Antares 0.5.0 <span aria-hidden="true">↗</span></a
+          ><a
+            class="button button--outline"
+            href="https://github.com/Kenneth-Cho-InfoSec/Solipsism/releases/tag/v9.4.0"
+            >Get Solipsism 9.4.0 <span aria-hidden="true">↗</span></a
+          >
+        </div>
+        <div class="closing__links">
+          <a href="https://github.com/Kenneth-Cho-InfoSec/Antares"
+            >Source on GitHub</a
+          ><a href="https://github.com/Kenneth-Cho-InfoSec/Antares/issues"
+            >Report an issue</a
+          ><a href="https://github.com/Kenneth-Cho-InfoSec/Antares/releases"
+            >All releases</a
+          >
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <a class="brand brand--footer" href="#top"
+        ><img
+          src="assets/antares-icon.png"
+          width="36"
+          height="36"
+          alt=""
+        /><span>ANTARES<span class="brand__dot"> / ENGINE</span></span></a
+      ><span>Mozilla Public License 2.0 · Servo-derived</span
+      ><a href="https://github.com/Kenneth-Cho-InfoSec/Antares"
+        >Project source ↗</a
+      >
+    </footer>
+  </body>
+</html>
